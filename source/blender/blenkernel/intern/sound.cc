@@ -48,6 +48,7 @@
 #include "DNA_userdef_types.h"
 
 #ifdef WITH_AUDASPACE
+#  include "BLI_map.hh"
 #  include "BLI_set.hh"
 #  include "BLI_vector.hh"
 
@@ -1188,6 +1189,43 @@ void BKE_sound_stop_scene(Scene *scene)
   sound_device_use_end();
 }
 
+void BKE_sound_play_ui(const char *filepath, const float volume, const float pitch)
+{
+  std::lock_guard lock(g_state.sound_device_mutex);
+
+  /* UI sounds are tiny: decode each file once and keep it in memory so playback is instant.
+   * A null entry marks a file that failed to load, so it isn't retried on every click. */
+  static Map<std::string, AUD_Sound> cache;
+  const AUD_Sound &sound = cache.lookup_or_add_cb(filepath, [&]() -> AUD_Sound {
+    try {
+      AUD_Sound file = AUD_Sound(new aud::File(filepath));
+      return AUD_Sound(new aud::StreamBuffer(file));
+    }
+    catch (aud::Exception &e) {
+      CLOG_WARN(&LOG, "Cannot load UI sound \"%s\": %s", filepath, e.getMessage().c_str());
+      return nullptr;
+    }
+  });
+  if (!sound) {
+    return;
+  }
+
+  sound_device_use_begin();
+  try {
+    AUD_Handle handle = g_state.sound_device->play(sound, false);
+    if (handle) {
+      handle->setVolume(volume);
+      if (pitch != 1.0f) {
+        handle->setPitch(pitch);
+      }
+    }
+  }
+  catch (aud::Exception &) {
+    /* Playback is best-effort; never let a UI sound interrupt the user. */
+  }
+  sound_device_use_end();
+}
+
 void BKE_sound_seek_scene(Main *bmain, Scene *scene)
 {
   std::lock_guard lock(g_state.sound_device_mutex);
@@ -1962,6 +2000,7 @@ void BKE_sound_move_scene_sound(const Scene * /*scene*/,
 void BKE_sound_move_scene_sound_defaults(Scene * /*scene*/, Strip * /*strip*/) {}
 void BKE_sound_play_scene(Scene * /*scene*/) {}
 void BKE_sound_stop_scene(Scene * /*scene*/) {}
+void BKE_sound_play_ui(const char * /*filepath*/, float /*volume*/, float /*pitch*/) {}
 void BKE_sound_seek_scene(Main * /*bmain*/, Scene * /*scene*/) {}
 double BKE_sound_sync_scene(Scene * /*scene*/)
 {

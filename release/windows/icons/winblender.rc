@@ -24,11 +24,11 @@ BEGIN
     BEGIN
       VALUE "FileVersion", BLEN_VER_RC_STR
       VALUE "ProductVersion", BLEN_VER_RC_STR
-      VALUE "CompanyName", "Blender Foundation"
-      VALUE "FileDescription", "Blender"
-      VALUE "LegalCopyright", "GPLv3 (Blender Foundation)"
-      VALUE "OriginalFilename", "blender.exe"
-      VALUE "ProductName", "Blender"
+      VALUE "CompanyName", "Phantom"
+      VALUE "FileDescription", "Phantom"
+      VALUE "LegalCopyright", "GPLv3 (Phantom, based on Blender by the Blender Foundation)"
+      VALUE "OriginalFilename", "phantom.exe"
+      VALUE "ProductName", "Phantom"
     END
   END
   BLOCK "VarFileInfo"

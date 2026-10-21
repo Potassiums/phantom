@@ -1047,6 +1047,14 @@ void WM_reports_from_reports_move(wmWindowManager *wm, ReportList *reports)
     wm = G_MAIN->wm.first();
   }
 
+  /* Phantom: audible feedback when an error is shown. */
+  for (const Report &report : reports->list) {
+    if (report.type & RPT_ERROR_ALL) {
+      WM_ui_sound_play(WMUISound::Error);
+      break;
+    }
+  }
+
   /* Add reports to the global list, otherwise they are not seen. */
   BKE_reports_move_to_reports(&wm->runtime->reports, reports);
 
@@ -2664,6 +2672,32 @@ static void wm_handler_operator_insert(wmWindow *win, wmEventHandler_Op *handler
 }
 
 /**
+ * Phantom: confirm/cancel sounds when an interactive edit ends (grab, rotate, extrude, knife...).
+ * Only operators that make undo steps qualify, which skips view navigation. Strokes and
+ * selection gestures are skipped too: they end on every mouse release.
+ */
+static void wm_operator_modal_ui_sound(const wmOperatorType *ot, const wmOperatorStatus retval)
+{
+  if (!(ot->flag & OPTYPE_UNDO)) {
+    return;
+  }
+  const char *idname = ot->idname;
+  if (strstr(idname, "stroke") || strstr(idname, "select") || STRPREFIX(idname, "PAINT_OT_") ||
+      STRPREFIX(idname, "SCULPT_OT_") || STRPREFIX(idname, "SCULPT_CURVES_OT_") ||
+      STRPREFIX(idname, "GREASE_PENCIL_OT_"))
+  {
+    return;
+  }
+  const bool finished = retval & OPERATOR_FINISHED;
+  /* Grab/rotate/scale and the "do something then move it" macros get the softer set. */
+  if (STRPREFIX(idname, "TRANSFORM_OT_") || strstr(idname, "_move") || strstr(idname, "_slide")) {
+    WM_ui_sound_play(finished ? WMUISound::TransformConfirm : WMUISound::TransformCancel);
+    return;
+  }
+  WM_ui_sound_play(finished ? WMUISound::Confirm : WMUISound::Cancel);
+}
+
+/**
  * \warning this function removes a modal handler, when finished.
  */
 static eHandlerActionFlag wm_handler_operator_call(bContext *C,
@@ -2724,6 +2758,7 @@ static eHandlerActionFlag wm_handler_operator_call(bContext *C,
         wm_event_modalkeymap_end(event, &event_backup);
 
         if (retval & (OPERATOR_CANCELLED | OPERATOR_FINISHED)) {
+          wm_operator_modal_ui_sound(ot, retval);
           wm_operator_reports(C, op, retval, false);
 
           wmOperator *op_test = handler->op->opm ? handler->op->opm : handler->op;

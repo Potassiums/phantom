@@ -1467,6 +1467,19 @@ static Button *uiItemFullO_ptr_ex(Layout *layout,
     but->flag |= UI_SELECT_DRAW;
   }
 
+  /* Phantom: a tall icon-only button showing a preview image (e.g. a brush thumbnail)
+   * fills the button with the preview, like #uiDefIconPreviewBut. */
+  if (icon >= BIFICONID_LAST_STATIC && name->is_empty() && layout->scale_y() >= 2.0f) {
+    def_but_icon(but, icon, UI_HAS_ICON | BUT_ICON_PREVIEW);
+    button_drawflag_disable(but, BUT_ICON_LEFT);
+  }
+
+  /* Phantom: quick-brush slots can be dragged out of their panel to remove them. The slot
+   * number is only filled in after this, so the drag payload is set in #button_drag_start. */
+  if (STREQ(ot->idname, "SCULPT_OT_phantom_quick_brush")) {
+    button_drag_set_path(but, "phantom_quick_brush:");
+  }
+
   if (flag & ITEM_R_ICON_ONLY) {
     button_drawflag_disable(but, BUT_ICON_LEFT);
   }

@@ -219,6 +219,20 @@ class InterfacePanel:
     bl_context = "interface"
 
 
+class USERPREF_PT_interface_sounds(InterfacePanel, CenterAlignMixIn, Panel):
+    """Phantom: interface sound effects."""
+    bl_label = "Sounds"
+
+    def draw_header(self, context):
+        self.layout.prop(context.preferences.view, "use_ui_sounds", text="")
+
+    def draw_centered(self, context, layout):
+        view = context.preferences.view
+        col = layout.column()
+        col.active = view.use_ui_sounds
+        col.prop(view, "ui_sound_volume", text="Volume", slider=True)
+
+
 class USERPREF_PT_interface_display(InterfacePanel, CenterAlignMixIn, Panel):
     bl_label = "Display"
 
@@ -3115,6 +3129,7 @@ classes = (
     USERPREF_MT_save_load,
 
     USERPREF_PT_interface_display,
+    USERPREF_PT_interface_sounds,
     USERPREF_PT_interface_editors,
     USERPREF_PT_interface_temporary_windows,
     USERPREF_PT_interface_statusbar,

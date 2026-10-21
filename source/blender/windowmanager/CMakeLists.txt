@@ -50,6 +50,7 @@ set(SRC
   intern/wm_surface.cc
   intern/wm_toolsystem.cc
   intern/wm_tooltip.cc
+  intern/wm_ui_sound.cc
   intern/wm_uilist_type.cc
   intern/wm_utils.cc
   intern/wm_window.cc

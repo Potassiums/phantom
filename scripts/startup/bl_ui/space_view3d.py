@@ -6481,9 +6481,10 @@ class VIEW3D_PT_active_tool(Panel, ToolActivePanelHelper):
     # bl_options = {'HIDE_HEADER'}
 
     # Don't show in properties editor.
+    # Phantom: hidden in Sculpt Mode, where the Brush Asset panel shows the active tool.
     @classmethod
     def poll(cls, context):
-        return context.area.type == 'VIEW_3D'
+        return context.area.type == 'VIEW_3D' and context.mode != 'SCULPT'
 
 
 # FIXME(campbell): remove this second panel once 'HIDE_HEADER' works with category tabs,
@@ -9323,6 +9324,8 @@ class AssetShelfHiddenByDefault:
 
 
 class VIEW3D_AST_brush_sculpt(View3DAssetShelf, bpy.types.AssetShelf):
+    # Phantom: sculpt brushes can be dragged onto the sidebar to make quick brushes.
+    bl_options = View3DAssetShelf.bl_options - {'NO_ASSET_DRAG'}
     mode = 'SCULPT'
     mode_prop = "use_paint_sculpt"
     brush_type_prop = "sculpt_brush_type"

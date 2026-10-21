@@ -4415,6 +4415,7 @@ static wmOperatorStatus knifetool_modal(bContext *C, wmOperator *op, const wmEve
 
         /* Get the value of the event which triggered this one. */
         if (event->prev_val != KM_RELEASE) {
+          WM_ui_sound_play_varied(WMUISound::KnifeCut, 0.06f);
           if (kcd->mode == MODE_DRAGGING) {
             knife_add_cut(kcd);
           }

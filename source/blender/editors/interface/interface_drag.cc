@@ -10,7 +10,12 @@
 
 #include "ED_asset.hh"
 
+#include "RNA_access.hh"
+
 #include "WM_api.hh"
+#include "WM_types.hh"
+
+#include <string>
 
 #include "interface_intern.hh"
 
@@ -103,6 +108,14 @@ bool button_drag_is_draggable(const Button *but)
 
 void button_drag_start(bContext *C, Button *but)
 {
+  /* Phantom: a quick-brush slot drags "phantom_quick_brush:<slot>", dropping it outside its
+   * panel removes it. The slot is read now since it is set after the button is created. */
+  if (but->optype && but->opptr && STREQ(but->optype->idname, "SCULPT_OT_phantom_quick_brush")) {
+    const std::string payload = "phantom_quick_brush:" +
+                                std::to_string(RNA_int_get(but->opptr, "slot"));
+    button_drag_set_path(but, payload.c_str());
+  }
+
   wmDrag *drag = WM_drag_data_create(C,
                                      but->icon,
                                      but->dragtype,

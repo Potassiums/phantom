@@ -118,6 +118,18 @@ static int rna_Region_alignment_get(PointerRNA *ptr)
   return RGN_ALIGN_ENUM_FROM_MASK(region->alignment);
 }
 
+static int rna_Region_phantom_info_offset_get(PointerRNA *ptr)
+{
+  const ARegion *region = static_cast<ARegion *>(ptr->data);
+  return region->runtime->info_offset_y;
+}
+
+static void rna_Region_phantom_info_offset_set(PointerRNA *ptr, int value)
+{
+  ARegion *region = static_cast<ARegion *>(ptr->data);
+  region->runtime->info_offset_y = value;
+}
+
 static bool rna_Screen_fullscreen_get(PointerRNA *ptr)
 {
   bScreen *screen = static_cast<bScreen *>(ptr->data);
@@ -719,6 +731,17 @@ static void rna_def_region(BlenderRNA *brna)
       prop, "Region Data", "Region specific data (the type depends on the region type)");
   RNA_def_property_struct_type(prop, "AnyType");
   RNA_def_property_pointer_funcs(prop, "rna_Region_data_get", nullptr, nullptr, nullptr);
+
+  prop = RNA_def_property(srna, "phantom_info_offset", PROP_INT, PROP_PIXEL);
+  RNA_def_property_int_funcs(
+      prop, "rna_Region_phantom_info_offset_get", "rna_Region_phantom_info_offset_set", nullptr);
+  RNA_def_property_range(prop, 0, 100000);
+  RNA_def_property_clear_flag(prop, PROP_ANIMATABLE);
+  RNA_def_property_ui_text(
+      prop,
+      "Info Offset",
+      "Phantom: push the 3D Viewport's text info down by this many pixels (runtime only), "
+      "making room for a panel docked in the top-left corner");
 
   prop = RNA_def_property(srna, "active_panel_category", PROP_ENUM, PROP_NONE);
   RNA_def_property_editable_func(prop, "rna_Region_active_panel_category_editable_get");

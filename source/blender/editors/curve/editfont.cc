@@ -1683,6 +1683,7 @@ void FONT_OT_change_character(wmOperatorType *ot)
 
 static wmOperatorStatus line_break_exec(bContext *C, wmOperator * /*op*/)
 {
+  WM_ui_sound_play(WMUISound::TypeEnter);
   Object *obedit = CTX_data_edit_object(C);
   Curve *cu = id_cast<Curve *>(obedit->data);
   EditFont *ef = cu->editfont;
@@ -1730,6 +1731,7 @@ static const EnumPropertyItem delete_type_items[] = {
 
 static wmOperatorStatus delete_exec(bContext *C, wmOperator *op)
 {
+  WM_ui_sound_play_varied(WMUISound::TypeDelete, 0.06f);
 #ifdef WITH_INPUT_IME
   if (const std::optional<wmOperatorStatus> status = WM_operator_IME_edit_maybe(C)) {
     return *status;
@@ -1879,6 +1881,7 @@ void FONT_OT_delete(wmOperatorType *ot)
 
 static wmOperatorStatus insert_text_exec(bContext *C, wmOperator *op)
 {
+  WM_ui_sound_play_varied(WMUISound::Type, 0.12f);
   Object *obedit = CTX_data_edit_object(C);
   char32_t *inserted_text;
   int a, len;

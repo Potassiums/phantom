@@ -2629,4 +2629,37 @@ bool WM_xr_actionmap_binding_remove(XrActionMapItem *ami, XrActionMapBinding *am
 XrActionMapBinding *WM_xr_actionmap_binding_find(XrActionMapItem *ami, const char *name);
 #endif /* WITH_XR_OPENXR */
 
+/* `wm_ui_sound.cc` (Phantom) */
+
+enum class WMUISound {
+  Click,
+  ToggleOn,
+  ToggleOff,
+  MenuOpen,
+  Confirm,
+  Cancel,
+  Error,
+  /* Interactive transform (grab/rotate/scale): start, confirm, reset. */
+  GrabStart,
+  TransformConfirm,
+  TransformCancel,
+  /* Typing in text fields, the Text Editor, Python console and 3D text. */
+  Type,
+  TypeDelete,
+  TypeEnter,
+  OutlinerSelect,
+  LoopCut,
+  SlideTick,
+  KnifeCut,
+  Undo,
+  Redo,
+  ModeSwitch,
+};
+#define WM_UI_SOUND_COUNT (int(WMUISound::ModeSwitch) + 1)
+
+/** Play an interface sound effect, if enabled in the preferences. */
+void WM_ui_sound_play(WMUISound sound, float pitch = 1.0f);
+/** Like #WM_ui_sound_play with a random pitch within `1 +/- spread`, for repeated sounds. */
+void WM_ui_sound_play_varied(WMUISound sound, float spread);
+
 }  // namespace blender

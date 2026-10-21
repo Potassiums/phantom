@@ -38,6 +38,8 @@
 #include "WM_api.hh"
 #include "WM_types.hh"
 
+#include "GPU_texture.hh"
+
 #include "ED_clip.hh"
 #include "ED_node.hh"
 #include "ED_screen.hh"
@@ -916,6 +918,9 @@ void ED_region_exit(bContext *C, ARegion *region)
     WM_event_timer_remove(wm, win, region->runtime->regiontimer);
     region->runtime->regiontimer = nullptr;
   }
+
+  GPU_TEXTURE_FREE_SAFE(region->runtime->tool_anim_snapshot);
+  region->runtime->tool_anim_active = false;
 
   WM_msgbus_clear_by_owner(wm->runtime->message_bus, region);
 

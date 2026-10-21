@@ -190,6 +190,13 @@ void BKE_sound_play_scene(Scene *scene);
 
 void BKE_sound_stop_scene(Scene *scene);
 
+/**
+ * Phantom: play a short interface sound effect from a file (decoded once and cached).
+ * \param volume: Linear volume, 0..1.
+ * \param pitch: Playback speed/pitch factor, 1.0 is unchanged.
+ */
+void BKE_sound_play_ui(const char *filepath, float volume, float pitch);
+
 void BKE_sound_seek_scene(Main *bmain, Scene *scene);
 
 double BKE_sound_sync_scene(Scene *scene);

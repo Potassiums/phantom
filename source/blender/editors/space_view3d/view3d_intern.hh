@@ -43,6 +43,9 @@ void view3d_operatortypes();
 /* `view3d_edit.cc` */
 
 void VIEW3D_OT_zoom_camera_1_to_1(wmOperatorType *ot);
+/* view3d_dropboxes.cc (Phantom) */
+void VIEW3D_OT_phantom_quick_brush_drop(wmOperatorType *ot);
+void VIEW3D_OT_phantom_quick_brush_drop_remove(wmOperatorType *ot);
 void VIEW3D_OT_view_roll_set(wmOperatorType *ot);
 void VIEW3D_OT_view_flip(wmOperatorType *ot);
 void VIEW3D_OT_view_lock_clear(wmOperatorType *ot);

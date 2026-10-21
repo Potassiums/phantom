@@ -309,6 +309,38 @@ class VIEW3D_PT_tools_brush_select(Panel, View3DPaintBrushPanel, BrushSelectPane
     def poll(cls, context):
         return cls.active_tool_uses_brushes(context) and cls.get_brush_mode(context) is not None
 
+    def draw(self, context):
+        # Phantom: in Sculpt Mode this panel replaces "Active Tool", so show the tool on top.
+        if context.mode == 'SCULPT' and context.area.type == 'VIEW_3D':
+            from bl_ui.space_toolsystem_common import ToolSelectPanelHelper
+            space_type, mode = ToolSelectPanelHelper._tool_key_from_context(context)
+            tool_cls = ToolSelectPanelHelper._tool_class_from_space_type(space_type)
+            item, _tool, icon_value = tool_cls._tool_get_active(
+                context, space_type, mode, with_icon=True)
+            if item is not None:
+                self.layout.label(
+                    text="    " + iface_(item.label, i18n_contexts.operator_default),
+                    icon_value=icon_value,
+                    translate=False,
+                )
+        super().draw(context)
+
+
+class VIEW3D_PT_tools_brush_quick(Panel, View3DPaintBrushPanel):
+    """Phantom: four quick-brush slots, drawn inside the Brush Asset panel under the selector."""
+    bl_context = ".paint_common"
+    bl_label = "Quick Brushes"
+    bl_parent_id = "VIEW3D_PT_tools_brush_select"
+    bl_options = {'HIDE_HEADER'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == 'SCULPT' and cls.active_tool_uses_brushes(context)
+
+    def draw(self, context):
+        import phantom_quick_brushes
+        phantom_quick_brushes.draw(self.layout, context)
+
 
 class VIEW3D_PT_tools_brush_settings(Panel, View3DPaintBrushPanel):
     bl_context = ".paint_common"
@@ -329,6 +361,15 @@ class VIEW3D_PT_tools_brush_settings(Panel, View3DPaintBrushPanel):
         brush = settings.brush
 
         brush_settings(layout.column(), context, brush, popover=self.is_popover)
+
+        # Phantom: Lazy Mouse (stroke stabilizer) right in the main settings while sculpting.
+        if context.mode == 'SCULPT' and hasattr(brush, "use_smooth_stroke"):
+            col = layout.column()
+            col.prop(brush, "use_smooth_stroke", text="Lazy Mouse")
+            sub = col.column()
+            sub.active = brush.use_smooth_stroke
+            sub.prop(brush, "smooth_stroke_radius", text="Radius", slider=True)
+            sub.prop(brush, "smooth_stroke_factor", text="Factor", slider=True)
 
 
 class VIEW3D_PT_tools_brush_settings_advanced(Panel, View3DPaintBrushPanel):
@@ -2441,6 +2482,7 @@ classes = (
     VIEW3D_PT_slots_color_attributes,
     VIEW3D_PT_slots_vertex_groups,
     VIEW3D_PT_tools_brush_select,
+    VIEW3D_PT_tools_brush_quick,
     VIEW3D_PT_tools_brush_settings,
     VIEW3D_PT_tools_brush_color,
     VIEW3D_PT_tools_brush_swatches,

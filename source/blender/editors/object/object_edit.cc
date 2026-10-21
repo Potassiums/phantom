@@ -2055,6 +2055,9 @@ static wmOperatorStatus object_mode_set_exec(bContext *C, wmOperator *op)
     return OPERATOR_CANCELLED;
   }
 
+  /* Phantom: remembered to play a sound when the mode actually changes. */
+  const eObjectMode mode_before = eObjectMode(ob->mode);
+
   /**
    * Mode Switching Logic (internal details).
    *
@@ -2113,6 +2116,11 @@ static wmOperatorStatus object_mode_set_exec(bContext *C, wmOperator *op)
         }
       }
     }
+  }
+
+  if (ob->mode != mode_before) {
+    /* Slightly lower when returning to Object Mode, like stepping back out. */
+    WM_ui_sound_play(WMUISound::ModeSwitch, (ob->mode == OB_MODE_OBJECT) ? 0.88f : 1.0f);
   }
 
   if (use_submode) {

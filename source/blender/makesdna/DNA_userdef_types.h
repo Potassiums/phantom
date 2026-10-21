@@ -1028,7 +1028,11 @@ struct UserDef {
   /** #date_string::TimeFormat */
   char time_format = 0;
 
-  char _pad8[4] = {};
+  /** Phantom: play interface sound effects (clicks, confirm, cancel...). */
+  char ui_sounds = 1;
+  /** Phantom: interface sound volume, 0-100. */
+  char ui_sound_volume = 60;
+  char _pad8[2] = {};
   /**
    * Experimental flag for app-templates to make changes to behavior
    * which are outside the scope of typical preferences.

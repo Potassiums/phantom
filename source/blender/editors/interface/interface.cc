@@ -2338,6 +2338,13 @@ static bool but_pixelrect_in_view(const ARegion *region, const rcti *rect)
   return BLI_rcti_isect(&region->winrct, &rect_winspace, nullptr);
 }
 
+static float g_block_draw_offset_x = 0.0f;
+
+void block_draw_offset_x_set(const float dx)
+{
+  g_block_draw_offset_x = dx;
+}
+
 void block_draw(const bContext *C, Block *block)
 {
   uiStyle style = *style_get_dpi(); /* XXX pass on as arg */
@@ -2371,6 +2378,9 @@ void block_draw(const bContext *C, Block *block)
   GPU_matrix_identity_set();
 
   wmOrtho2_region_pixelspace(region);
+  if (g_block_draw_offset_x != 0.0f) {
+    GPU_matrix_translate_2f(g_block_draw_offset_x, 0.0f);
+  }
 
   int scissor[4];
   GPU_scissor_get(scissor);

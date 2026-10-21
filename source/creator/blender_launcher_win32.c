@@ -98,8 +98,8 @@ int WINAPI wWinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, PWSTR pCmdLine
     return -1;
   }
 
-  /* Add blender.exe to path, resulting in the full path to the blender executable. */
-  if (PathCchCombine(path, MAX_PATH, path, L"blender.exe") != S_OK) {
+  /* Add phantom.exe to path, resulting in the full path to the blender executable. */
+  if (PathCchCombine(path, MAX_PATH, path, L"phantom.exe") != S_OK) {
     return -1;
   }
 

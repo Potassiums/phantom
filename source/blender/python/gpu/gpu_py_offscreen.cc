@@ -381,7 +381,7 @@ PyDoc_STRVAR(
     /* Wrap. */
     pygpu_offscreen_draw_view3d_doc,
     ".. method:: draw_view3d(scene, view_layer, view3d, region, view_matrix, projection_matrix, "
-    "*, do_color_management=False, draw_background=True)\n"
+    "*, do_color_management=False, draw_background=True, silhouette=False)\n"
     "\n"
     "   Draw the 3d viewport in the offscreen object.\n"
     "\n"
@@ -400,7 +400,10 @@ PyDoc_STRVAR(
     "   :param do_color_management: Color manage the output.\n"
     "   :type do_color_management: bool\n"
     "   :param draw_background: Draw background.\n"
-    "   :type draw_background: bool\n");
+    "   :type draw_background: bool\n"
+    "   :param silhouette: Draw all objects flat black on a white background, without overlays\n"
+    "      (Phantom: used by the sculpt silhouette thumbnail).\n"
+    "   :type silhouette: bool\n");
 static PyObject *pygpu_offscreen_draw_view3d(BPyGPUOffScreen *self, PyObject *args, PyObject *kwds)
 {
   MatrixObject *py_mat_view, *py_mat_projection;
@@ -414,6 +417,7 @@ static PyObject *pygpu_offscreen_draw_view3d(BPyGPUOffScreen *self, PyObject *ar
 
   bool do_color_management = false;
   bool draw_background = true;
+  bool silhouette = false;
 
   BPY_GPU_OFFSCREEN_CHECK_OBJ(self);
 
@@ -426,6 +430,7 @@ static PyObject *pygpu_offscreen_draw_view3d(BPyGPUOffScreen *self, PyObject *ar
       "projection_matrix",
       "do_color_management",
       "draw_background",
+      "silhouette",
       nullptr,
   };
   static _PyArg_Parser _parser = {
@@ -438,6 +443,7 @@ static PyObject *pygpu_offscreen_draw_view3d(BPyGPUOffScreen *self, PyObject *ar
       "|$" /* Optional, keyword only arguments. */
       "O&" /* `do_color_management` */
       "O&" /* `draw_background` */
+      "O&" /* `silhouette` */
       ":draw_view3d",
       _keywords,
       nullptr,
@@ -456,7 +462,9 @@ static PyObject *pygpu_offscreen_draw_view3d(BPyGPUOffScreen *self, PyObject *ar
                                         PyC_ParseBool,
                                         &do_color_management,
                                         PyC_ParseBool,
-                                        &draw_background) ||
+                                        &draw_background,
+                                        PyC_ParseBool,
+                                        &silhouette) ||
       (!(scene = static_cast<Scene *>(PyC_RNA_AsPointer(py_scene, "Scene"))) ||
        !(view_layer = static_cast<ViewLayer *>(PyC_RNA_AsPointer(py_view_layer, "ViewLayer"))) ||
        !(v3d = static_cast<View3D *>(PyC_RNA_AsPointer(py_view3d, "SpaceView3D"))) ||
@@ -485,6 +493,27 @@ static PyObject *pygpu_offscreen_draw_view3d(BPyGPUOffScreen *self, PyObject *ar
   }
   else {
     GPU_viewport_tag_update(self->viewport);
+  }
+
+  /* Silhouette: draw from a copy so the user's viewport settings are never touched. */
+  View3D v3d_silhouette;
+  if (silhouette) {
+    v3d_silhouette = dna::shallow_copy(*v3d);
+    View3DShading &shading = v3d_silhouette.shading;
+    shading.type = OB_SOLID;
+    shading.light = V3D_LIGHTING_FLAT;
+    shading.color_type = V3D_SHADING_SINGLE_COLOR;
+    shading.background_type = V3D_SHADING_BACKGROUND_VIEWPORT;
+    for (int i = 0; i < 3; i++) {
+      shading.single_color[i] = 0.0f;
+      shading.background_color[i] = 1.0f;
+    }
+    shading.flag &= ~(V3D_SHADING_OBJECT_OUTLINE | V3D_SHADING_XRAY | V3D_SHADING_SHADOW |
+                      V3D_SHADING_SPECULAR_HIGHLIGHT | V3D_SHADING_CAVITY |
+                      V3D_SHADING_DEPTH_OF_FIELD);
+    v3d_silhouette.flag2 |= V3D_HIDE_OVERLAYS;
+    v3d = &v3d_silhouette;
+    draw_background = true;
   }
 
   ED_view3d_draw_offscreen(depsgraph,

@@ -37,6 +37,10 @@ namespace asset_system {
 class AssetRepresentation;
 }
 
+namespace gpu {
+class Texture;
+}
+
 namespace ui {
 struct Layout;
 struct Block;
@@ -666,6 +670,17 @@ struct ARegionRuntime {
 
   /** Blend in/out. */
   wmTimer *regiontimer = nullptr;
+
+  /** Phantom: tool-bar collapse/reopen animation, started when the editing mode changes. */
+  int tool_anim_mode = -1;
+  double tool_anim_start = 0.0;
+  bool tool_anim_active = false;
+  /** Last frame of the previous mode's tools, shown while they collapse. */
+  gpu::Texture *tool_anim_snapshot = nullptr;
+
+  /** Phantom: push the 3D Viewport's text info (and statistics) down by this many pixels,
+   * to make room for a panel docked in the top-left corner. */
+  int info_offset_y = 0;
 
   /** For calling after building a blocks. */
   Vector<std::function<void(const bContext &C, ui::Block &Block)>> post_block_layout_fns;

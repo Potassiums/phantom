@@ -720,6 +720,7 @@ static wmOperatorStatus ed_undo_exec(bContext *C, wmOperator *op)
   wmOperatorStatus ret = ed_undo_step_direction(C, STEP_UNDO, op->reports);
   if (ret & OPERATOR_FINISHED) {
     ed_undo_refresh_for_op(C);
+    WM_ui_sound_play(WMUISound::Undo);
   }
   return ret;
 }
@@ -746,6 +747,7 @@ static wmOperatorStatus ed_redo_exec(bContext *C, wmOperator *op)
   wmOperatorStatus ret = ed_undo_step_direction(C, STEP_REDO, op->reports);
   if (ret & OPERATOR_FINISHED) {
     ed_undo_refresh_for_op(C);
+    WM_ui_sound_play(WMUISound::Redo);
   }
   return ret;
 }

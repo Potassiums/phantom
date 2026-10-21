@@ -562,6 +562,11 @@ static wmOperatorStatus transform_invoke(bContext *C, wmOperator *op, const wmEv
     transformApply(C, t);
   }
 
+  /* Phantom: soft pick-up sound. Loop cut plays its own sound before sliding. */
+  if (!(op->opm && STREQ(op->opm->type->idname, "MESH_OT_loopcut_slide"))) {
+    WM_ui_sound_play(WMUISound::GrabStart);
+  }
+
   return OPERATOR_RUNNING_MODAL;
 }
 

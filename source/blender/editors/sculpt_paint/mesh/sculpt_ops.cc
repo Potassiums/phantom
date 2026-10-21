@@ -12,6 +12,7 @@
 #include "BLI_enumerable_thread_specific.hh"
 #include "BLI_math_matrix.hh"
 #include "BLI_math_vector.hh"
+#include "BLI_rect.hh"
 
 #include "BLT_translation.hh"
 
@@ -1414,9 +1415,195 @@ static void SCULPT_OT_mask_from_boundary(wmOperatorType *ot)
 
 }  // namespace mask
 
+/* -------------------------------------------------------------------- */
+/** \name Phantom: ZBrush-style Smart Mask
+ *
+ * Drag (Ctrl-drag, chosen by what is under the cursor when it starts):
+ * - On the mesh: paint with the mask brush for the duration of the stroke.
+ * - Off the mesh: drag a screen-space box mask.
+ * - A box over empty space clears the mask, or voxel-remeshes when there is no mask
+ *   (like ZBrush's DynaMesh gesture).
+ * With "erase" (Ctrl-Alt) the same gestures remove the mask instead.
+ *
+ * Click (Ctrl-click):
+ * - On the mesh: smooth the mask ("sharpen" with Ctrl-Alt).
+ * - On empty space: invert the mask.
+ * \{ */
+
+namespace smart_mask {
+
+static bool mesh_under(bContext *C, const float2 &mval)
+{
+  return cursor_geometry_info_update(C, mval, false).has_value();
+}
+
+/** Sample a grid of rays across the box: true when none of them hits the mesh. */
+static bool box_is_empty(bContext *C, const rcti &rect)
+{
+  const int width = BLI_rcti_size_x(&rect);
+  const int height = BLI_rcti_size_y(&rect);
+  const int steps_x = std::clamp(width / 6, 2, 24);
+  const int steps_y = std::clamp(height / 6, 2, 24);
+  for (int y = 0; y < steps_y; y++) {
+    for (int x = 0; x < steps_x; x++) {
+      const float2 mval(rect.xmin + width * (x + 0.5f) / steps_x,
+                        rect.ymin + height * (y + 0.5f) / steps_y);
+      if (mesh_under(C, mval)) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+static bool object_has_mask(const Object &object)
+{
+  const Array<float> mask = mask::duplicate_mask(object);
+  return std::any_of(mask.begin(), mask.end(), [](const float value) { return value > 0.0f; });
+}
+
+/** Run #PAINT_OT_mask_flood_fill (it pushes its own undo step). */
+static wmOperatorStatus mask_flood_fill(bContext *C, const char *mode, const float value)
+{
+  wmOperatorType *ot = WM_operatortype_find("PAINT_OT_mask_flood_fill", false);
+  PointerRNA ptr = WM_operator_properties_create_ptr(ot);
+  RNA_enum_set_identifier(C, &ptr, "mode", mode);
+  RNA_float_set(&ptr, "value", value);
+  const wmOperatorStatus ret = WM_operator_name_call_ptr(
+      C, ot, wm::OpCallContext::ExecDefault, &ptr, nullptr);
+  WM_operator_properties_free(&ptr);
+  return ret;
+}
+
+static wmOperatorStatus smart_mask_invoke(bContext *C, wmOperator *op, const wmEvent *event)
+{
+  const bool erase = RNA_boolean_get(op->ptr, "erase");
+
+  /* Bound to click-drag, so test where the press started rather than where the drag is now. */
+  int press_mval[2];
+  WM_event_drag_start_mval(event, CTX_wm_region(C), press_mval);
+
+  if (mesh_under(C, float2(press_mval[0], press_mval[1]))) {
+    /* On the mesh: a regular stroke with the mask brush (inverted to erase). */
+    wmOperatorType *ot = WM_operatortype_find("SCULPT_OT_brush_stroke", false);
+    PointerRNA ptr = WM_operator_properties_create_ptr(ot);
+    RNA_enum_set(&ptr, "mode", int(erase ? BrushStrokeMode::Invert : BrushStrokeMode::Normal));
+    RNA_enum_set(&ptr, "brush_toggle", int(BrushSwitchMode::Mask));
+    WM_operator_name_call_ptr(C, ot, wm::OpCallContext::InvokeDefault, &ptr, event);
+    WM_operator_properties_free(&ptr);
+    return OPERATOR_FINISHED;
+  }
+
+  /* Off the mesh: a box that starts right away from this press. */
+  RNA_boolean_set(op->ptr, "wait_for_input", false);
+  return WM_gesture_box_invoke(C, op, event);
+}
+
+static wmOperatorStatus smart_mask_exec(bContext *C, wmOperator *op)
+{
+  const bool erase = RNA_boolean_get(op->ptr, "erase");
+  rcti rect;
+  WM_operator_properties_border_to_rcti(op, &rect);
+  /* Ignore stray clicks: a tiny box must never trigger a remesh. */
+  if (BLI_rcti_size_x(&rect) < 8 || BLI_rcti_size_y(&rect) < 8) {
+    return OPERATOR_CANCELLED;
+  }
+
+  if (box_is_empty(C, rect)) {
+    /* Empty space: clear an existing mask first; only an unmasked mesh gets remeshed. */
+    if (erase || object_has_mask(*CTX_data_active_object(C))) {
+      return mask_flood_fill(C, "VALUE", 0.0f);
+    }
+    return WM_operator_name_call(
+        C, "OBJECT_OT_voxel_remesh", wm::OpCallContext::ExecDefault, nullptr, nullptr);
+  }
+
+  wmOperatorType *ot = WM_operatortype_find("PAINT_OT_mask_box_gesture", false);
+  PointerRNA ptr = WM_operator_properties_create_ptr(ot);
+  RNA_int_set(&ptr, "xmin", rect.xmin);
+  RNA_int_set(&ptr, "xmax", rect.xmax);
+  RNA_int_set(&ptr, "ymin", rect.ymin);
+  RNA_int_set(&ptr, "ymax", rect.ymax);
+  RNA_boolean_set(&ptr, "wait_for_input", false);
+  RNA_enum_set_identifier(C, &ptr, "mode", "VALUE");
+  RNA_float_set(&ptr, "value", erase ? 0.0f : 1.0f);
+  const wmOperatorStatus ret = WM_operator_name_call_ptr(
+      C, ot, wm::OpCallContext::ExecDefault, &ptr, nullptr);
+  WM_operator_properties_free(&ptr);
+  return ret;
+}
+
+static void SCULPT_OT_phantom_smart_mask(wmOperatorType *ot)
+{
+  ot->name = "Smart Mask";
+  ot->idname = "SCULPT_OT_phantom_smart_mask";
+  ot->description =
+      "Mask like ZBrush: paint on the mesh, drag a box off the mesh, "
+      "or box empty space to voxel remesh";
+
+  ot->invoke = smart_mask_invoke;
+  ot->modal = WM_gesture_box_modal;
+  ot->exec = smart_mask_exec;
+  ot->poll = sculpt_mode_poll_view3d;
+
+  /* No undo flag: the stroke, box mask or remesh it runs each push their own undo step. */
+  ot->flag = 0;
+
+  WM_operator_properties_border(ot);
+  PropertyRNA *prop = RNA_def_boolean(
+      ot->srna, "erase", false, "Erase", "Remove the mask instead of adding it");
+  /* Never reuse the last value: Ctrl must mask even right after a Ctrl-Alt erase. */
+  RNA_def_property_flag(prop, PROP_SKIP_SAVE);
+}
+
+static wmOperatorStatus smart_mask_click_invoke(bContext *C, wmOperator *op, const wmEvent *event)
+{
+  const bool sharpen = RNA_boolean_get(op->ptr, "sharpen");
+
+  if (mesh_under(C, float2(event->mval[0], event->mval[1]))) {
+    /* On the mesh: soften (or tighten) the mask's edges. */
+    wmOperatorType *ot = WM_operatortype_find("SCULPT_OT_mask_filter", false);
+    PointerRNA ptr = WM_operator_properties_create_ptr(ot);
+    RNA_enum_set_identifier(C, &ptr, "filter_type", sharpen ? "SHARPEN" : "SMOOTH");
+    const wmOperatorStatus ret = WM_operator_name_call_ptr(
+        C, ot, wm::OpCallContext::ExecDefault, &ptr, nullptr);
+    WM_operator_properties_free(&ptr);
+    return ret;
+  }
+  if (sharpen) {
+    return OPERATOR_CANCELLED;
+  }
+  /* Empty space: flip what is masked. */
+  return mask_flood_fill(C, "INVERT", 1.0f);
+}
+
+static void SCULPT_OT_phantom_smart_mask_click(wmOperatorType *ot)
+{
+  ot->name = "Smart Mask Click";
+  ot->idname = "SCULPT_OT_phantom_smart_mask_click";
+  ot->description =
+      "Mask like ZBrush: click the mesh to smooth the mask (sharpen with Alt), "
+      "click empty space to invert it";
+
+  ot->invoke = smart_mask_click_invoke;
+  ot->poll = sculpt_mode_poll_view3d;
+  /* No undo flag: the mask filter or flood fill it runs pushes its own undo step. */
+  ot->flag = 0;
+
+  PropertyRNA *prop = RNA_def_boolean(
+      ot->srna, "sharpen", false, "Sharpen", "Sharpen the mask instead of smoothing it");
+  RNA_def_property_flag(prop, PROP_SKIP_SAVE);
+}
+
+}  // namespace smart_mask
+
+/** \} */
+
 void operatortypes_sculpt()
 {
   WM_operatortype_append(SCULPT_OT_brush_stroke);
+  WM_operatortype_append(smart_mask::SCULPT_OT_phantom_smart_mask);
+  WM_operatortype_append(smart_mask::SCULPT_OT_phantom_smart_mask_click);
   WM_operatortype_append(SCULPT_OT_sculptmode_toggle);
   WM_operatortype_append(SCULPT_OT_set_persistent_base);
   WM_operatortype_append(dyntopo::SCULPT_OT_dynamic_topology_toggle);

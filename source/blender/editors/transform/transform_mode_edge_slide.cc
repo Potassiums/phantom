@@ -32,6 +32,8 @@
 #include "UI_interface.hh"
 #include "UI_view2d.hh"
 
+#include "WM_api.hh"
+
 #include "BLT_translation.hh"
 
 #include "transform.hh"
@@ -790,6 +792,22 @@ static void applyEdgeSlide(TransInfo *t)
     ofs += BLI_snprintf_utf8_rlen(str + ofs, sizeof(str) - ofs, "%.4f ", final);
   }
   /* Done with header string. */
+
+  /* Phantom: a soft tick each 1/16th of the slide, pitched by position. */
+  {
+    static const TransInfo *tick_transform = nullptr;
+    static int tick_step = 0;
+    const int step = int(roundf(final * 16.0f));
+    if (tick_transform != t) {
+      /* New slide: remember where it starts without ticking. */
+      tick_transform = t;
+      tick_step = step;
+    }
+    else if (step != tick_step) {
+      tick_step = step;
+      WM_ui_sound_play(WMUISound::SlideTick, 1.0f + 0.22f * std::clamp(final, -1.0f, 1.0f));
+    }
+  }
 
   /* Do stuff here. */
   doEdgeSlide(t, final);

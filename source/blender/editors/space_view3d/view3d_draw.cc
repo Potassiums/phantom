@@ -1591,7 +1591,8 @@ void view3d_draw_region_info(const bContext *C, ARegion *region)
 
   if ((v3d->flag2 & V3D_HIDE_OVERLAYS) == 0) {
     int xoffset = rect->xmin + (0.5f * U.widget_unit);
-    int yoffset = rect->ymax - (0.1f * U.widget_unit);
+    /* Phantom: start below a panel docked in the top-left corner (e.g. the silhouette). */
+    int yoffset = rect->ymax - (0.1f * U.widget_unit) - region->runtime->info_offset_y;
 
     const uiFontStyle *fstyle = UI_FSTYLE_WIDGET;
     ui::fontstyle_set(fstyle);

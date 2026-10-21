@@ -360,6 +360,9 @@ else()
     endif()
     target_compile_definitions(blender-launcher PRIVATE -D_UNICODE -DUNICODE)
     target_link_libraries(blender-launcher Pathcch.lib)
+    # Phantom: ship as phantom.exe / phantom-launcher.exe.
+    set_target_properties(blender PROPERTIES OUTPUT_NAME phantom)
+    set_target_properties(blender-launcher PROPERTIES OUTPUT_NAME phantom-launcher)
   endif()
 endif()
 
@@ -570,6 +573,12 @@ endif()
 # fonts
 install(
   DIRECTORY ${CMAKE_SOURCE_DIR}/release/datafiles/fonts
+  DESTINATION ${TARGETDIR_VER}/datafiles
+)
+
+# Phantom: interface sound effects.
+install(
+  DIRECTORY ${CMAKE_SOURCE_DIR}/release/datafiles/sounds
   DESTINATION ${TARGETDIR_VER}/datafiles
 )
 
@@ -1111,11 +1120,12 @@ elseif(WIN32)
     install(
       FILES ${CMAKE_BINARY_DIR}/blender.exe.manifest
       DESTINATION "."
+      RENAME phantom.exe.manifest
     )
     install(
       FILES ${CMAKE_BINARY_DIR}/blender.exe.manifest
       DESTINATION "."
-      RENAME blender-launcher.exe.manifest
+      RENAME phantom-launcher.exe.manifest
     )
   endif()
   windows_install_shared_manifest(
@@ -2224,7 +2234,7 @@ endif()
 # Setup launcher
 
 if(WIN32 AND NOT WITH_PYTHON_MODULE)
-  set(BLENDER_BIN "blender.exe")
+  set(BLENDER_BIN "phantom.exe")
   install(
     TARGETS blender blender-launcher
     COMPONENT Blender

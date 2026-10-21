@@ -2001,7 +2001,12 @@ static wmOperatorStatus outliner_item_activate_invoke(bContext *C,
 
   int mval[2];
   WM_event_drag_start_mval(event, region, mval);
-  return outliner_item_do_activate_from_cursor(C, mval, extend, use_range, deselect_all, recurse);
+  const wmOperatorStatus status = outliner_item_do_activate_from_cursor(
+      C, mval, extend, use_range, deselect_all, recurse);
+  if (status & OPERATOR_FINISHED) {
+    WM_ui_sound_play_varied(WMUISound::OutlinerSelect, 0.05f);
+  }
+  return status;
 }
 
 void OUTLINER_OT_item_activate(wmOperatorType *ot)

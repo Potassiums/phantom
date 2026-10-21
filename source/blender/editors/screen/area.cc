@@ -21,6 +21,7 @@
 #include "BLI_string.hh"
 #include "BLI_string_utf8.hh"
 #include "BLI_string_utils.hh"
+#include "BLI_time.hh"
 #include "BLI_utildefines.hh"
 
 #include "BKE_context.hh"
@@ -46,12 +47,16 @@
 #include "ED_userpref.hh"
 #include "ED_view3d.hh"
 
+#include "GPU_batch_presets.hh"
 #include "GPU_framebuffer.hh"
 #include "GPU_immediate.hh"
 #include "GPU_immediate_util.hh"
 #include "GPU_matrix.hh"
 #include "GPU_platform.hh"
 #include "GPU_state.hh"
+#include "GPU_texture.hh"
+
+#include "wm_draw.hh"
 
 #include "BLF_api.hh"
 
@@ -512,6 +517,169 @@ void ED_region_do_layout(bContext *C, ARegion *region)
   at->layout(C, region);
 }
 
+/* -------------------------------------------------------------------- */
+/** \name Phantom: Tool-Bar Mode Switch Animation
+ *
+ * When the editing mode changes, the previous mode's tools collapse to the left in a quick
+ * wave, the tool-bar stays empty for a beat, then the new tools cascade back in row by row
+ * with a small springy overshoot.
+ *
+ * The old tools are a snapshot of the region's last frame (still in its off-screen buffer
+ * when the mode change is first drawn). Rows are drawn as horizontal bands, each clipped to
+ * its strip and shifted horizontally.
+ * \{ */
+
+static constexpr float TOOL_ANIM_COLLAPSE_TIME = 0.11f;
+static constexpr float TOOL_ANIM_COLLAPSE_STAGGER = 0.008f;
+static constexpr float TOOL_ANIM_PAUSE_TIME = 0.06f;
+static constexpr float TOOL_ANIM_REOPEN_TIME = 0.26f;
+static constexpr float TOOL_ANIM_REOPEN_STAGGER = 0.022f;
+
+/** Copy the region's current frame (the previous mode's tools) before it is redrawn. */
+static void tool_anim_snapshot_capture(ARegion *region)
+{
+  bke::ARegionRuntime &runtime = *region->runtime;
+  GPU_TEXTURE_FREE_SAFE(runtime.tool_anim_snapshot);
+  if (!runtime.draw_buffer || !runtime.draw_buffer->offscreen) {
+    return;
+  }
+  gpu::Texture *src = GPU_offscreen_color_texture(runtime.draw_buffer->offscreen);
+  gpu::Texture *dst = GPU_texture_create_2d("tool_anim_snapshot",
+                                            GPU_texture_width(src),
+                                            GPU_texture_height(src),
+                                            1,
+                                            GPU_texture_format(src),
+                                            GPU_TEXTURE_USAGE_SHADER_READ |
+                                                GPU_TEXTURE_USAGE_ATTACHMENT,
+                                            nullptr);
+  GPU_texture_copy(dst, src);
+  runtime.tool_anim_snapshot = dst;
+}
+
+/** Draw one horizontal band of the snapshot, shifted left by `offset` pixels. */
+static void tool_anim_snapshot_draw_band(
+    gpu::Texture *snapshot, const ARegion *region, int y_bottom, int y_top, float offset)
+{
+  const float w = float(region->winx);
+  const float h = float(region->winy);
+  const float rect_tex[4] = {0.0f, y_bottom / h, 1.0f, y_top / h};
+  const float rect_geo[4] = {-offset, float(y_bottom), w - offset, float(y_top)};
+
+  gpu::Shader *shader = GPU_shader_get_builtin_shader(GPU_SHADER_2D_IMAGE_RECT_COLOR);
+  GPU_shader_bind(shader);
+  GPU_texture_bind(snapshot, GPU_shader_get_sampler_binding(shader, "image"));
+  GPU_shader_uniform_float_ex(shader, GPU_shader_get_uniform(shader, "rect_icon"), 4, 1, rect_tex);
+  GPU_shader_uniform_float_ex(shader, GPU_shader_get_uniform(shader, "rect_geom"), 4, 1, rect_geo);
+  GPU_shader_uniform_float_ex(shader,
+                              GPU_shader_get_builtin_uniform(shader, GPU_UNIFORM_COLOR),
+                              4,
+                              1,
+                              float4(1.0f));
+  gpu::Batch *quad = GPU_batch_preset_quad();
+  GPU_batch_set_shader(quad, shader);
+  GPU_batch_draw(quad);
+  GPU_texture_unbind(snapshot);
+}
+
+static float tool_anim_ease_in_cubic(const float t)
+{
+  return t * t * t;
+}
+
+static float tool_anim_ease_out_back(const float t)
+{
+  const float c1 = 1.70158f;
+  const float c3 = c1 + 1.0f;
+  const float u = t - 1.0f;
+  return 1.0f + c3 * u * u * u + c1 * u * u;
+}
+
+static bool region_tool_anim_supported(const ScrArea *area, const ARegion *region)
+{
+  return area && region->regiontype == RGN_TYPE_TOOLS &&
+         ELEM(area->spacetype, SPACE_VIEW3D, SPACE_IMAGE);
+}
+
+/** Draw the region, animating the tools when the mode has just changed. */
+static void region_draw_tool_anim(bContext *C, ARegion *region, ARegionType *at)
+{
+  bke::ARegionRuntime &runtime = *region->runtime;
+  const int mode = int(CTX_data_mode_enum(C));
+  const double now = BLI_time_now_seconds();
+  if (runtime.tool_anim_mode != mode) {
+    /* The first draw only records the mode, so opening a file doesn't animate. */
+    if (runtime.tool_anim_mode != -1 && region->winx > 1 && region->winy > 1) {
+      runtime.tool_anim_active = true;
+      runtime.tool_anim_start = now;
+      tool_anim_snapshot_capture(region);
+    }
+    runtime.tool_anim_mode = mode;
+  }
+
+  if (!runtime.tool_anim_active || region->winx <= 1 || region->winy <= 1) {
+    runtime.tool_anim_active = false;
+    GPU_TEXTURE_FREE_SAFE(runtime.tool_anim_snapshot);
+    at->draw(C, region);
+    return;
+  }
+
+  const float t = float(now - runtime.tool_anim_start);
+  const int band_height = std::max(1, int(1.6f * U.widget_unit));
+  const int bands = region->winy / band_height + 1;
+  /* Cap the total wave length so tall (high-DPI) tool-bars don't animate for longer. */
+  const float collapse_stagger = std::min(TOOL_ANIM_COLLAPSE_STAGGER, 0.06f / bands);
+  const float reopen_stagger = std::min(TOOL_ANIM_REOPEN_STAGGER, 0.18f / bands);
+  const float collapse_end = TOOL_ANIM_COLLAPSE_TIME + bands * collapse_stagger;
+  const float reopen_start = collapse_end + TOOL_ANIM_PAUSE_TIME;
+  const float width = float(region->winx);
+
+  if (t < reopen_start) {
+    /* Collapse the old tools (snapshot), then hold an empty tool-bar for a beat. */
+    ED_region_clear(C, region, TH_BACK);
+    if (runtime.tool_anim_snapshot && t < collapse_end) {
+      GPU_blend(GPU_BLEND_ALPHA_PREMULT);
+      for (int i = 0; i < bands; i++) {
+        const float f = std::clamp(
+            (t - i * collapse_stagger) / TOOL_ANIM_COLLAPSE_TIME, 0.0f, 1.0f);
+        const int y_top = region->winy - i * band_height;
+        const int y_bottom = std::max(0, y_top - band_height);
+        tool_anim_snapshot_draw_band(runtime.tool_anim_snapshot,
+                                     region,
+                                     y_bottom,
+                                     y_top,
+                                     width * tool_anim_ease_in_cubic(f));
+      }
+      GPU_blend(GPU_BLEND_NONE);
+    }
+    return;
+  }
+
+  GPU_TEXTURE_FREE_SAFE(runtime.tool_anim_snapshot);
+  bool finished = true;
+
+  /* Cascade the new tools in. Bands are numbered from the top, where the tools start. */
+  for (int i = 0; i < bands; i++) {
+    const float f = (t - reopen_start - i * reopen_stagger) / TOOL_ANIM_REOPEN_TIME;
+    if (f < 1.0f) {
+      finished = false;
+    }
+    const float offset = width * (1.0f - tool_anim_ease_out_back(std::clamp(f, 0.0f, 1.0f)));
+
+    const int y_top = region->winy - i * band_height;
+    const int y_bottom = std::max(0, y_top - band_height);
+    GPU_scissor(0, y_bottom, region->winx, y_top - y_bottom);
+    /* The region re-runs its layout while drawing, so offset at the final block draw. */
+    ui::block_draw_offset_x_set(-offset);
+    at->draw(C, region);
+    ui::block_draw_offset_x_set(0.0f);
+  }
+
+  GPU_scissor(0, 0, region->winx, region->winy);
+  runtime.tool_anim_active = !finished;
+}
+
+/** \} */
+
 void ED_region_do_draw(bContext *C, ARegion *region)
 {
   wmWindow *win = CTX_wm_window(C);
@@ -541,7 +709,12 @@ void ED_region_do_draw(bContext *C, ARegion *region)
     region_draw_status_text(area, region);
   }
   else if (at->draw) {
-    at->draw(C, region);
+    if (region_tool_anim_supported(area, region)) {
+      region_draw_tool_anim(C, region, at);
+    }
+    else {
+      at->draw(C, region);
+    }
   }
 
 #ifdef WITH_INPUT_IME

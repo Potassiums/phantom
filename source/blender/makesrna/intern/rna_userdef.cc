@@ -5341,6 +5341,19 @@ static void rna_def_userdef_view(BlenderRNA *brna)
   RNA_def_property_boolean_negative_sdna(prop, nullptr, "uiflag", USER_SPLASH_DISABLE);
   RNA_def_property_ui_text(prop, "Show Splash", "Display splash screen on startup");
 
+  /* Phantom: interface sound effects. */
+  prop = RNA_def_property(srna, "use_ui_sounds", PROP_BOOLEAN, PROP_NONE);
+  RNA_def_property_boolean_sdna(prop, nullptr, "ui_sounds", 1);
+  RNA_def_property_ui_text(
+      prop, "Interface Sounds", "Play sound effects when clicking, confirming and cancelling");
+  RNA_def_property_update(prop, 0, "rna_userdef_update");
+
+  prop = RNA_def_property(srna, "ui_sound_volume", PROP_INT, PROP_NONE);
+  RNA_def_property_int_sdna(prop, nullptr, "ui_sound_volume");
+  RNA_def_property_range(prop, 0, 100);
+  RNA_def_property_ui_text(prop, "Sound Volume", "Volume of interface sound effects (percent)");
+  RNA_def_property_update(prop, 0, "rna_userdef_update");
+
   prop = RNA_def_property(srna, "show_playback_fps", PROP_BOOLEAN, PROP_NONE);
   RNA_def_property_boolean_sdna(prop, nullptr, "uiflag", USER_SHOW_FPS);
   RNA_def_property_ui_text(prop,

@@ -1502,6 +1502,7 @@ static void dialog_exec_cb(bContext *C, wmOpPopUp *data, ui::Block *block)
    * in case WM_operator_call_ex exits/reloads the current file (#49199). */
 
   popup_menu_retval_set(block, ui::RETURN_OK, true);
+  WM_ui_sound_play(WMUISound::Confirm);
 
   /* Get context data *after* WM_operator_call_ex
    * which might have closed the current file and changed context. */
@@ -1518,6 +1519,7 @@ static void dialog_cancel_cb(bContext *C, wmOpPopUp *data, ui::Block *block)
 {
   wm_operator_ui_popup_cancel(C, data);
   popup_menu_retval_set(block, ui::RETURN_CANCEL, true);
+  WM_ui_sound_play(WMUISound::Cancel);
   wmWindow *win = CTX_wm_window(C);
   popup_block_close(C, win, block);
 }
@@ -4519,6 +4521,7 @@ static void gesture_box_modal_keymap(wmKeyConfig *keyconf)
   WM_modalkeymap_assign(keymap, "CLIP_OT_graph_select_box");
   WM_modalkeymap_assign(keymap, "MASK_OT_select_box");
   WM_modalkeymap_assign(keymap, "PAINT_OT_mask_box_gesture");
+  WM_modalkeymap_assign(keymap, "SCULPT_OT_phantom_smart_mask");
   WM_modalkeymap_assign(keymap, "SCULPT_OT_face_set_box_gesture");
   WM_modalkeymap_assign(keymap, "SCULPT_OT_trim_box_gesture");
   WM_modalkeymap_assign(keymap, "VIEW2D_OT_zoom_border");

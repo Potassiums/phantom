@@ -1274,6 +1274,7 @@ static void apply_but_funcs_after(bContext *C)
 
 static void apply_but_BUT(bContext *C, Button *but, HandleButtonData *data)
 {
+  WM_ui_sound_play(WMUISound::Click);
   apply_but_func(C, but);
 
   data->retval = but->retval;
@@ -1282,6 +1283,7 @@ static void apply_but_BUT(bContext *C, Button *but, HandleButtonData *data)
 
 static void apply_but_BUTM(bContext *C, Button *but, HandleButtonData *data)
 {
+  WM_ui_sound_play(WMUISound::Click);
   button_value_set(but, double(but->retval));
   apply_but_func(C, but);
 
@@ -1317,6 +1319,15 @@ static void apply_but_TOG(bContext *C, Button *but, HandleButtonData *data)
     button_update_edited(but);
   }
 
+  /* Phantom: "N" toggles store the inverse of what they display. */
+  const bool shown_on = ELEM(but->type,
+                             ButtonType::ToggleN,
+                             ButtonType::IconToggleN,
+                             ButtonType::CheckboxN) ?
+                            !value_toggle :
+                            bool(value_toggle);
+  WM_ui_sound_play(shown_on ? WMUISound::ToggleOn : WMUISound::ToggleOff);
+
   apply_but_func(C, but);
 
   data->retval = but->retval;
@@ -1325,6 +1336,7 @@ static void apply_but_TOG(bContext *C, Button *but, HandleButtonData *data)
 
 static void apply_but_ROW(bContext *C, Block *block, Button *but, HandleButtonData *data)
 {
+  WM_ui_sound_play(WMUISound::Click);
   button_value_set(but, but->hardmax);
 
   apply_but_func(C, but);
@@ -1404,6 +1416,7 @@ static void apply_but_TAB(bContext *C, Button *but, HandleButtonData *data)
     button_update_edited(but);
   }
   else {
+    WM_ui_sound_play(WMUISound::Click);
     button_value_set(but, but->hardmax);
     apply_but_func(C, but);
   }
@@ -4396,6 +4409,9 @@ static int do_but_textedit(
                                                                                 STRCUR_DIR_PREV;
         const eStrCursorJumpType jump = textedit_jump_type_from_event(event);
         changed = textedit_delete(but, text_edit, direction, jump);
+        if (changed) {
+          WM_ui_sound_play_varied(WMUISound::TypeDelete, 0.06f);
+        }
         retval = WM_UI_HANDLER_BREAK;
         break;
       }
@@ -4499,6 +4515,9 @@ static int do_but_textedit(
         const int utf8_buf_len = BLI_str_utf8_size_or_error(utf8_buf);
         BLI_assert(utf8_buf_len != -1);
         changed = textedit_insert_buf(but, text_edit, utf8_buf, utf8_buf_len);
+        if (changed) {
+          WM_ui_sound_play_varied(WMUISound::Type, 0.12f);
+        }
       }
 
       retval = WM_UI_HANDLER_BREAK;
@@ -4853,6 +4872,8 @@ static void but_extra_operator_icon_apply(bContext *C, Button *but, ButtonExtraO
 
 static void block_open_begin(bContext *C, Button *but, HandleButtonData *data)
 {
+  WM_ui_sound_play(WMUISound::MenuOpen);
+
   BlockCreateFunc func = nullptr;
   BlockHandleCreateFunc handlefunc = nullptr;
   MenuCreateFunc menufunc = nullptr;

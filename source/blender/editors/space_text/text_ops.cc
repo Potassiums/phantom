@@ -1290,6 +1290,7 @@ void TEXT_OT_unindent(wmOperatorType *ot)
 
 static wmOperatorStatus text_line_break_exec(bContext *C, wmOperator * /*op*/)
 {
+  WM_ui_sound_play(WMUISound::TypeEnter);
   SpaceText *st = CTX_wm_space_text(C);
   Text *text = CTX_data_edit_text(C);
   int a, curts;
@@ -2485,6 +2486,7 @@ static const EnumPropertyItem delete_type_items[] = {
 
 static wmOperatorStatus text_delete_exec(bContext *C, wmOperator *op)
 {
+  WM_ui_sound_play_varied(WMUISound::TypeDelete, 0.06f);
 #ifdef WITH_INPUT_IME
   if (const std::optional<wmOperatorStatus> status = WM_operator_IME_edit_maybe(C)) {
     return *status;
@@ -3564,6 +3566,7 @@ void TEXT_OT_line_number(wmOperatorType *ot)
 
 static wmOperatorStatus text_insert_exec(bContext *C, wmOperator *op)
 {
+  WM_ui_sound_play_varied(WMUISound::Type, 0.12f);
   SpaceText *st = CTX_wm_space_text(C);
   Text *text = CTX_data_edit_text(C);
   char *str;

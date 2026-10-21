@@ -508,6 +508,7 @@ void CONSOLE_OT_move(wmOperatorType *ot)
 
 static wmOperatorStatus console_insert_exec(bContext *C, wmOperator *op)
 {
+  WM_ui_sound_play_varied(WMUISound::Type, 0.12f);
   SpaceConsole *sc = CTX_wm_space_console(C);
   ScrArea *area = CTX_wm_area(C);
   ARegion *region = BKE_area_find_region_type(area, RGN_TYPE_WINDOW);
@@ -762,6 +763,7 @@ static const EnumPropertyItem console_delete_type_items[] = {
 
 static wmOperatorStatus console_delete_exec(bContext *C, wmOperator *op)
 {
+  WM_ui_sound_play_varied(WMUISound::TypeDelete, 0.06f);
 #ifdef WITH_INPUT_IME
   if (const std::optional<wmOperatorStatus> status = WM_operator_IME_edit_maybe(C)) {
     return *status;

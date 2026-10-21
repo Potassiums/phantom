@@ -543,6 +543,7 @@ static wmOperatorStatus loopcut_finish(RingSelOpData *lcd, bContext *C, wmOperat
     /* execute */
     ringsel_finish(C, op);
     ringsel_exit(C, op);
+    WM_ui_sound_play(WMUISound::LoopCut);
   }
   else {
     ringcut_cancel(C, op);

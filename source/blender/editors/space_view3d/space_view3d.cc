@@ -1197,6 +1197,10 @@ static void view3d_buttons_region_init(wmWindowManager *wm, ARegion *region)
   keymap = WM_keymap_ensure(
       wm->runtime->defaultconf, "3D View Generic", SPACE_VIEW3D, RGN_TYPE_WINDOW);
   WM_event_add_keymap_handler(&region->runtime->handlers, keymap);
+
+  /* Phantom: drop brush assets on the sidebar to add quick brushes. */
+  ListBaseT<wmDropBox> *lb = WM_dropboxmap_find("View3D Sidebar", SPACE_VIEW3D, RGN_TYPE_UI);
+  WM_event_add_dropbox_handler(&region->runtime->handlers, lb);
 }
 
 std::array<const char *, 4> ED_view3d_buttons_contexts(const bContext *C)

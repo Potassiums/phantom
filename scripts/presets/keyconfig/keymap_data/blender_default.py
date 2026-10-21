@@ -5360,14 +5360,26 @@ def km_sculpt(params):
     items.extend([
         # Brush strokes
         ("sculpt.brush_stroke", {"type": 'LEFTMOUSE', "value": 'PRESS'}, None),
-        ("sculpt.brush_stroke", {"type": 'LEFTMOUSE', "value": 'PRESS', "ctrl": True},
+        # Phantom: ZBrush-style modifiers. Alt inverts the brush.
+        # Ctrl-drag masks: paint on the mesh, box off the mesh, box over empty space clears the
+        # mask (or remeshes when there is none). Ctrl-Alt-drag erases the mask the same way.
+        # Ctrl-click smooths the mask on the mesh or inverts it on empty space,
+        # Ctrl-Alt-click sharpens it.
+        ("sculpt.brush_stroke", {"type": 'LEFTMOUSE', "value": 'PRESS', "alt": True},
          {"properties": [("mode", 'INVERT')]}),
         ("sculpt.brush_stroke", {"type": 'LEFTMOUSE', "value": 'PRESS', "shift": True},
          {"properties": [("brush_toggle", 'SMOOTH')]}),
-        ("sculpt.brush_stroke", {"type": 'LEFTMOUSE', "value": 'PRESS', "alt": True},
-         {"properties": [("brush_toggle", 'MASK')]}),
-        ("sculpt.brush_stroke", {"type": 'LEFTMOUSE', "value": 'PRESS', "ctrl": True, "alt": True},
-         {"properties": [("mode", 'INVERT'), ("brush_toggle", 'MASK')]}),
+        ("sculpt.phantom_smart_mask", {"type": 'LEFTMOUSE', "value": 'CLICK_DRAG', "ctrl": True},
+         {"properties": [("erase", False)]}),
+        ("sculpt.phantom_smart_mask", {"type": 'LEFTMOUSE', "value": 'CLICK_DRAG', "ctrl": True, "alt": True},
+         {"properties": [("erase", True)]}),
+        ("sculpt.phantom_smart_mask_click", {"type": 'LEFTMOUSE', "value": 'CLICK', "ctrl": True},
+         {"properties": [("sharpen", False)]}),
+        ("sculpt.phantom_smart_mask_click", {"type": 'LEFTMOUSE', "value": 'CLICK', "ctrl": True, "alt": True},
+         {"properties": [("sharpen", True)]}),
+        # Phantom: X toggles X-axis symmetry.
+        ("wm.context_toggle", {"type": 'X', "value": 'PRESS'},
+         {"properties": [("data_path", 'object.data.use_mirror_x')]}),
         # Expand
         ("sculpt.expand", {"type": 'A', "value": 'PRESS', "shift": True},
          {"properties": [
@@ -5442,7 +5454,6 @@ def km_sculpt(params):
         ("paint.sample_color",
          {"type": 'X', "value": 'PRESS', "shift": True, "ctrl": True},
          {"properties": [("merged", True)]}),
-        ("paint.brush_colors_flip", {"type": 'X', "value": 'PRESS', }, None),
         ("sculpt.color_filter",
          {"type": 'X', "value": 'PRESS', "ctrl": True},
          {"properties": [("type", 'FILL'), ("strength", 1.0), ("use_immediate", True)]}),

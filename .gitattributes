@@ -111,3 +111,6 @@
 *.rgb filter=lfs diff=lfs merge=lfs -text
 *.btx filter=lfs diff=lfs merge=lfs -text
 scripts/modules/_bpy_internal/assets/remote_library/*_openapi.py linguist-generated=true
+release/datafiles/sounds/*.wav !text !filter !merge !diff
+release/datafiles/splash.png !text !filter !merge !diff
+tools/phantom/branding/phantom_source.webp !text !filter !merge !diff

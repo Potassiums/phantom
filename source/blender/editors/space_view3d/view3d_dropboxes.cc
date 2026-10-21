@@ -18,6 +18,7 @@
 #include "BKE_object.hh"
 
 #include "BLI_listbase.hh"
+#include "BLI_string.hh"
 #include "BLI_math_matrix_c.hh"
 #include "BLI_math_rotation_c.hh"
 #include "BLI_math_vector_c.hh"
@@ -31,6 +32,7 @@
 #include "DNA_collection_types.h"
 #include "DNA_screen_types.h"
 
+#include "ED_asset_menu_utils.hh"
 #include "ED_object.hh"
 #include "ED_outliner.hh"
 #include "ED_screen.hh"
@@ -40,6 +42,7 @@
 #include "UI_resources.hh"
 
 #include "RNA_access.hh"
+#include "RNA_define.hh"
 
 #include "WM_api.hh"
 #include "WM_types.hh"
@@ -673,11 +676,138 @@ static void view3d_id_path_drop_copy(bContext *C, wmDrag *drag, wmDropBox *drop)
   }
 }
 
+/* -------------------------------------------------------------------- */
+/** \name Phantom: Quick Brush Drag & Drop
+ *
+ * A brush asset dropped on the sidebar becomes a quick brush; a quick-brush slot dragged into
+ * the viewport is removed. The slots live in Python (`phantom_quick_brushes`), so these
+ * operators forward to its operators, which aren't registered yet when drop-boxes are.
+ * \{ */
+
+static constexpr const char *QUICK_BRUSH_DRAG_PREFIX = "phantom_quick_brush:";
+
+static bool view3d_quick_brush_add_poll(bContext *C, wmDrag *drag, const wmEvent * /*event*/)
+{
+  return CTX_data_mode_enum(C) == CTX_MODE_SCULPT &&
+         WM_drag_get_asset_data(drag, ID_BR) != nullptr;
+}
+
+static void view3d_quick_brush_add_copy(bContext * /*C*/, wmDrag *drag, wmDropBox *drop)
+{
+  const wmDragAsset *asset_drag = WM_drag_get_asset_data(drag, ID_BR);
+  ed::asset::operator_asset_reference_props_set(*asset_drag->asset, *drop->ptr);
+}
+
+/** The slot a dragged quick-brush button carries, or -1 for any other drag. */
+static int quick_brush_slot_from_drag(const wmDrag *drag)
+{
+  if (drag->type != WM_DRAG_PATH) {
+    return -1;
+  }
+  const char *path = WM_drag_get_single_path(drag);
+  if (path == nullptr || !STRPREFIX(path, QUICK_BRUSH_DRAG_PREFIX)) {
+    return -1;
+  }
+  return atoi(path + strlen(QUICK_BRUSH_DRAG_PREFIX));
+}
+
+static bool view3d_quick_brush_remove_poll(bContext * /*C*/,
+                                           wmDrag *drag,
+                                           const wmEvent * /*event*/)
+{
+  return quick_brush_slot_from_drag(drag) >= 0;
+}
+
+static void view3d_quick_brush_remove_copy(bContext * /*C*/, wmDrag *drag, wmDropBox *drop)
+{
+  RNA_int_set(drop->ptr, "slot", quick_brush_slot_from_drag(drag));
+}
+
+static wmOperatorStatus quick_brush_drop_exec(bContext *C, wmOperator *op)
+{
+  wmOperatorType *ot = WM_operatortype_find("SCULPT_OT_phantom_quick_brush_add", true);
+  if (ot == nullptr) {
+    return OPERATOR_CANCELLED;
+  }
+  const char *library_type = nullptr;
+  PropertyRNA *prop = RNA_struct_find_property(op->ptr, "asset_library_type");
+  RNA_property_enum_identifier(
+      C, op->ptr, prop, RNA_property_enum_get(op->ptr, prop), &library_type);
+
+  PointerRNA ptr = WM_operator_properties_create_ptr(ot);
+  RNA_string_set(&ptr, "asset_library_type", library_type ? library_type : "");
+  RNA_string_set(&ptr,
+                 "asset_library_identifier",
+                 RNA_string_get(op->ptr, "asset_library_identifier").c_str());
+  RNA_string_set(&ptr,
+                 "relative_asset_identifier",
+                 RNA_string_get(op->ptr, "relative_asset_identifier").c_str());
+  const wmOperatorStatus ret = WM_operator_name_call_ptr(
+      C, ot, wm::OpCallContext::ExecDefault, &ptr, nullptr);
+  WM_operator_properties_free(&ptr);
+  return ret;
+}
+
+void VIEW3D_OT_phantom_quick_brush_drop(wmOperatorType *ot)
+{
+  ot->name = "Add Quick Brush";
+  ot->idname = "VIEW3D_OT_phantom_quick_brush_drop";
+  ot->description = "Add the dropped brush to the quick brushes";
+  ot->exec = quick_brush_drop_exec;
+  ot->flag = OPTYPE_INTERNAL;
+  ed::asset::operator_asset_reference_props_register(*ot->srna);
+}
+
+static wmOperatorStatus quick_brush_drop_remove_exec(bContext *C, wmOperator *op)
+{
+  wmOperatorType *ot = WM_operatortype_find("SCULPT_OT_phantom_quick_brush_remove", true);
+  if (ot == nullptr) {
+    return OPERATOR_CANCELLED;
+  }
+  PointerRNA ptr = WM_operator_properties_create_ptr(ot);
+  RNA_int_set(&ptr, "slot", RNA_int_get(op->ptr, "slot"));
+  const wmOperatorStatus ret = WM_operator_name_call_ptr(
+      C, ot, wm::OpCallContext::ExecDefault, &ptr, nullptr);
+  WM_operator_properties_free(&ptr);
+  return ret;
+}
+
+void VIEW3D_OT_phantom_quick_brush_drop_remove(wmOperatorType *ot)
+{
+  ot->name = "Remove Quick Brush";
+  ot->idname = "VIEW3D_OT_phantom_quick_brush_drop_remove";
+  ot->description = "Remove the quick brush dragged out of its panel";
+  ot->exec = quick_brush_drop_remove_exec;
+  ot->flag = OPTYPE_INTERNAL;
+  RNA_def_int(ot->srna, "slot", 0, 0, INT_MAX, "Slot", "", 0, INT_MAX);
+}
+
+/** \} */
+
 void view3d_dropboxes()
 {
+  /* Phantom: brush assets dropped on the sidebar become quick brushes. */
+  ListBaseT<wmDropBox> *lb_sidebar = WM_dropboxmap_find(
+      "View3D Sidebar", SPACE_VIEW3D, RGN_TYPE_UI);
+  wmDropBox *drop_quick = WM_dropbox_add(lb_sidebar,
+                                         "VIEW3D_OT_phantom_quick_brush_drop",
+                                         view3d_quick_brush_add_poll,
+                                         view3d_quick_brush_add_copy,
+                                         nullptr,
+                                         nullptr);
+  drop_quick->draw_droptip = WM_drag_draw_item_name_fn;
+
   ListBaseT<wmDropBox> *lb = WM_dropboxmap_find("View3D", SPACE_VIEW3D, RGN_TYPE_WINDOW);
 
   wmDropBox *drop;
+
+  /* Phantom: a quick-brush slot dragged into the viewport is removed. */
+  WM_dropbox_add(lb,
+                 "VIEW3D_OT_phantom_quick_brush_drop_remove",
+                 view3d_quick_brush_remove_poll,
+                 view3d_quick_brush_remove_copy,
+                 nullptr,
+                 nullptr);
   drop = WM_dropbox_add(lb,
                         "OBJECT_OT_add_named",
                         view3d_ob_drop_poll_local_id,
