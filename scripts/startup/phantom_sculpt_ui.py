@@ -402,10 +402,13 @@ def _sync_shortcuts():
     if km is None:
         return SHORTCUT_SYNC_INTERVAL
 
+    # With the keymap option off (Preferences > Keymap), nothing is taken over and anything
+    # switched off before comes back.
+    import phantom_keymap
     taken = {
         _shortcut_key(kmi) for kmi in km.keymap_items
         if kmi.idname == QUICK_BRUSH_OPERATOR and kmi.active
-    }
+    } if phantom_keymap.quick_brush_takeover(bpy.context) else set()
     disabled = quick_brushes.disabled_shortcuts()
     changed = False
     for kmi in km.keymap_items:

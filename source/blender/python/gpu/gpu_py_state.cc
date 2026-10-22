@@ -618,7 +618,15 @@ static PyObject *pygpu_state_phantom_viewport_depth_get(PyObject * /*self*/)
   bContext *C = BPY_context_get();
   ARegion *region = C ? CTX_wm_region(C) : nullptr;
   GPUViewport *viewport = region ? WM_draw_region_get_bound_viewport(region) : nullptr;
-  gpu::Texture *depth = viewport ? GPU_viewport_depth_texture(viewport) : nullptr;
+  if (viewport == nullptr) {
+    Py_RETURN_NONE;
+  }
+  /* The scene's own depth, without overlays (cameras, lights, grid...), when there is one yet;
+   * otherwise the full depth (the first redraw after asking). */
+  gpu::Texture *depth = GPU_viewport_phantom_scene_depth(viewport);
+  if (depth == nullptr) {
+    depth = GPU_viewport_depth_texture(viewport);
+  }
   if (depth == nullptr) {
     Py_RETURN_NONE;
   }

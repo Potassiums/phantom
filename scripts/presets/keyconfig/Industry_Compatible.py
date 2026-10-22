@@ -17,6 +17,20 @@ def update_fn(_self, _context):
     load()
 
 
+class Prefs(bpy.types.KeyConfigPreferences):
+    """Phantom: the Industry Compatible keymap's preferences (Phantom's sculpting controls)."""
+    bl_idname = IDNAME
+
+    def draw(self, layout):
+        layout.use_property_split = True
+        layout.use_property_decorate = False
+        phantom_keymap.draw(self, layout)
+
+
+import phantom_keymap  # noqa: E402
+phantom_keymap.add_properties(Prefs, update_fn)
+
+
 industry_compatible = bpy.utils.execfile(os.path.join(DIRNAME, "keymap_data", "industry_compatible_data.py"))
 
 
@@ -27,7 +41,10 @@ def load():
     prefs = bpy.context.preferences
 
     kc = bpy.context.window_manager.keyconfigs.new(IDNAME)
-    params = industry_compatible.Params(use_mouse_emulate_3_button=prefs.inputs.use_mouse_emulate_3_button)
+    params = industry_compatible.Params(
+        use_mouse_emulate_3_button=prefs.inputs.use_mouse_emulate_3_button,
+        phantom=phantom_keymap.enabled(kc.preferences),
+    )
     keyconfig_data = industry_compatible.generate_keymaps(params)
 
     if platform == "darwin":
@@ -38,4 +55,5 @@ def load():
 
 
 if __name__ == "__main__":
+    bpy.utils.register_class(Prefs)
     load()

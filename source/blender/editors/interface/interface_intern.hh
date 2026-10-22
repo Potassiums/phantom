@@ -441,6 +441,10 @@ struct ButtonColor : public Button {
 /** Derived struct for #ButtonType::Tab */
 struct ButtonTab : public Button {
   MenuType *menu = nullptr;
+  /** Phantom: hover "pop" spring (0 at rest, 1 lifted), its velocity and last update time. */
+  float phantom_pop = 0.0f;
+  float phantom_pop_velocity = 0.0f;
+  double phantom_pop_time = 0.0;
 };
 
 /** Derived struct for #ButtonType::SearchMenu */

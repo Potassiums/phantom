@@ -29,6 +29,7 @@
 #include "BLI_set.hh"
 #include "BLI_string.hh"
 #include "BLI_string_utf8.hh"
+#include "BLI_time.hh"
 #include "BLI_vector.hh"
 
 #include "BLI_utildefines.hh"
@@ -1168,6 +1169,15 @@ static bool but_update_from_old_block(Block *block,
   Button *oldbut = oldbut_uptr->get();
 
   BLI_assert(!matched_old_buttons.contains(oldbut));
+
+  /* Phantom: keep a tab's hover animation going across redraws. */
+  if (oldbut->type == ButtonType::Tab && but->type == ButtonType::Tab) {
+    const ButtonTab *old_tab = static_cast<const ButtonTab *>(oldbut);
+    ButtonTab *tab = static_cast<ButtonTab *>(but);
+    tab->phantom_pop = old_tab->phantom_pop;
+    tab->phantom_pop_velocity = old_tab->phantom_pop_velocity;
+    tab->phantom_pop_time = old_tab->phantom_pop_time;
+  }
 
   if (oldbut->type == ButtonType::TextBox) {
     ButtonTextBox *textbox = static_cast<ButtonTextBox *>(but);
@@ -2340,6 +2350,44 @@ static bool but_pixelrect_in_view(const ARegion *region, const rcti *rect)
 
 static float g_block_draw_offset_x = 0.0f;
 
+/**
+ * Phantom: tabs pop up with a little bounce while hovered and settle back when the cursor
+ * leaves. Advances the tab's spring and returns how far up to draw it, in pixels.
+ */
+static float tab_pop_offset(ARegion *region, ButtonTab &tab)
+{
+  /* Lift in pixels at rest when hovered; the spring overshoots it a little. */
+  const float lift = 2.0f * UI_SCALE_FAC;
+  const double now = BLI_time_now_seconds();
+  float dt = tab.phantom_pop_time > 0.0 ? float(now - tab.phantom_pop_time) : 0.0f;
+  tab.phantom_pop_time = now;
+  dt = std::min(dt, 0.05f);
+
+  const bool hovered = (tab.flag & UI_HOVER) != 0;
+  const float target = hovered ? 1.0f : 0.0f;
+  /* Bouncy on the way up, settles without bouncing on the way down. */
+  const float stiffness = hovered ? 420.0f : 300.0f;
+  const float damping = hovered ? 15.0f : 2.0f * sqrtf(300.0f);
+  /* Fixed small steps keep the spring stable at any frame rate. */
+  const float step = 1.0f / 240.0f;
+  for (float t = 0.0f; t < dt; t += step) {
+    const float h = std::min(step, dt - t);
+    const float accel = stiffness * (target - tab.phantom_pop) - damping * tab.phantom_pop_velocity;
+    tab.phantom_pop_velocity += accel * h;
+    tab.phantom_pop += tab.phantom_pop_velocity * h;
+  }
+
+  if (fabsf(tab.phantom_pop - target) < 0.002f && fabsf(tab.phantom_pop_velocity) < 0.02f) {
+    tab.phantom_pop = target;
+    tab.phantom_pop_velocity = 0.0f;
+  }
+  else {
+    /* Keep drawing frames until it settles (see #wm_draw_region). */
+    region->runtime->phantom_ui_anim = true;
+  }
+  return tab.phantom_pop * lift;
+}
+
 void block_draw_offset_x_set(const float dx)
 {
   g_block_draw_offset_x = dx;
@@ -2449,7 +2497,27 @@ void block_draw(const bContext *C, Block *block)
     /* XXX: figure out why invalid coordinates happen when closing render window */
     /* and material preview is redrawn in main window (temp fix for bug #23848) */
     if (rect.xmin < rect.xmax && rect.ymin < rect.ymax) {
-      draw_button(C, region, &style, &but, &rect);
+      const float pop = but.type == ButtonType::Tab ?
+                            tab_pop_offset(region, static_cast<ButtonTab &>(but)) :
+                            0.0f;
+      if (pop != 0.0f) {
+        /* Draw what was batched so far, then this tab moved up by a fraction of a pixel. */
+        widgetbase_draw_cache_end();
+        BLF_batch_draw_end();
+        GPU_matrix_push();
+        GPU_matrix_translate_2f(0.0f, pop);
+        BLF_batch_draw_begin();
+        widgetbase_draw_cache_begin();
+        draw_button(C, region, &style, &but, &rect);
+        widgetbase_draw_cache_end();
+        BLF_batch_draw_end();
+        GPU_matrix_pop();
+        BLF_batch_draw_begin();
+        widgetbase_draw_cache_begin();
+      }
+      else {
+        draw_button(C, region, &style, &but, &rect);
+      }
     }
   }
 

@@ -319,6 +319,14 @@ class Prefs(bpy.types.KeyConfigPreferences):
         col.label(text="File Browser")
         col.row().prop(self, "use_file_single_click")
 
+        # Phantom settings.
+        phantom_keymap.draw(self, layout)
+
+
+# Phantom: options to turn Phantom's sculpting controls on or off.
+import phantom_keymap  # noqa: E402
+phantom_keymap.add_properties(Prefs, update_fn)
+
 
 blender_default = bpy.utils.execfile(os.path.join(DIRNAME, "keymap_data", "blender_default.py"))
 
@@ -369,6 +377,7 @@ def load():
             use_pie_click_drag=kc_prefs.use_pie_click_drag,
             use_file_single_click=kc_prefs.use_file_single_click,
             use_alt_navigation=kc_prefs.use_alt_navigation,
+            phantom=phantom_keymap.enabled(kc_prefs),
         ),
     )
 

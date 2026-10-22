@@ -1387,6 +1387,10 @@ void DRWContext::engines_draw_scene()
       /* Mask the render result before the overlay engine. */
       drw_render_border_mask(*this);
       render_border_masked = true;
+      /* Phantom: keep the scene's depth without overlays for the silhouette thumbnail. */
+      if (this->viewport) {
+        GPU_viewport_phantom_scene_depth_store(this->viewport);
+      }
     }
 
     GPU_debug_group_begin(instance.name_get().c_str());

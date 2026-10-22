@@ -22,8 +22,20 @@ __all__ = (
 # Configurable Parameters
 
 
+# Phantom keymap options (see `phantom_keymap.py`), all on unless the keymap preferences say so.
+PHANTOM_OPTIONS = frozenset((
+    "masking",      # ZBrush-style masking with Ctrl, Ctrl-Alt; Alt inverts the brush.
+    "face_sets",    # Ctrl-W mask to face set, Ctrl-Shift-click isolate, Ctrl-F PolyFrame.
+    "trim",         # Ctrl-Shift-drag trims with the selected trim tool.
+    "symmetry_x",   # X toggles X symmetry.
+    "w_move",       # W is Move (gizmo or Transpose).
+    "c_sample",     # C samples color with a paint brush.
+))
+
+
 class Params:
     __slots__ = (
+        "phantom",
         "legacy",
         "select_mouse",
         "select_mouse_value",
@@ -123,6 +135,7 @@ class Params:
             use_alt_click_leader=False,
             use_pie_click_drag=False,
             use_alt_navigation=True,
+            phantom=None,
             use_file_single_click=False,
             v3d_tilde_action='VIEW',
             v3d_alt_mmb_drag_action='RELATIVE',
@@ -198,6 +211,8 @@ class Params:
         self.use_pie_click_drag = use_pie_click_drag
 
         self.use_alt_navigation = use_alt_navigation
+        # Phantom: which Phantom keymap options are on (all by default).
+        self.phantom = PHANTOM_OPTIONS if phantom is None else frozenset(phantom)
 
         self.use_file_single_click = use_file_single_click
 
@@ -5356,6 +5371,8 @@ def km_sculpt(params):
         {"space_type": 'EMPTY', "region_type": 'WINDOW'},
         {"items": items},
     )
+    # Phantom keymap options (Preferences > Keymap > Phantom).
+    phantom = params.phantom
 
     items.extend([
         # Brush strokes
@@ -5365,30 +5382,47 @@ def km_sculpt(params):
         # mask (or remeshes when there is none). Ctrl-Alt-drag erases the mask the same way.
         # Ctrl-click smooths the mask on the mesh or inverts it on empty space,
         # Ctrl-Alt-click sharpens it.
-        ("sculpt.brush_stroke", {"type": 'LEFTMOUSE', "value": 'PRESS', "alt": True},
-         {"properties": [("mode", 'INVERT')]}),
+        *((
+            ("sculpt.brush_stroke", {"type": 'LEFTMOUSE', "value": 'PRESS', "alt": True},
+             {"properties": [("mode", 'INVERT')]}),
+            ("sculpt.phantom_smart_mask", {"type": 'LEFTMOUSE', "value": 'CLICK_DRAG', "ctrl": True},
+             {"properties": [("erase", False)]}),
+            ("sculpt.phantom_smart_mask", {"type": 'LEFTMOUSE', "value": 'CLICK_DRAG', "ctrl": True, "alt": True},
+             {"properties": [("erase", True)]}),
+            ("sculpt.phantom_smart_mask_click", {"type": 'LEFTMOUSE', "value": 'CLICK', "ctrl": True},
+             {"properties": [("sharpen", False)]}),
+            ("sculpt.phantom_smart_mask_click", {"type": 'LEFTMOUSE', "value": 'CLICK', "ctrl": True, "alt": True},
+             {"properties": [("sharpen", True)]}),
+        ) if "masking" in phantom else (
+            ("sculpt.brush_stroke", {"type": 'LEFTMOUSE', "value": 'PRESS', "ctrl": True},
+             {"properties": [("mode", 'INVERT')]}),
+            ("sculpt.brush_stroke", {"type": 'LEFTMOUSE', "value": 'PRESS', "alt": True},
+             {"properties": [("brush_toggle", 'MASK')]}),
+            ("sculpt.brush_stroke", {"type": 'LEFTMOUSE', "value": 'PRESS', "ctrl": True, "alt": True},
+             {"properties": [("mode", 'INVERT'), ("brush_toggle", 'MASK')]}),
+        )),
         ("sculpt.brush_stroke", {"type": 'LEFTMOUSE', "value": 'PRESS', "shift": True},
          {"properties": [("brush_toggle", 'SMOOTH')]}),
-        ("sculpt.phantom_smart_mask", {"type": 'LEFTMOUSE', "value": 'CLICK_DRAG', "ctrl": True},
-         {"properties": [("erase", False)]}),
-        ("sculpt.phantom_smart_mask", {"type": 'LEFTMOUSE', "value": 'CLICK_DRAG', "ctrl": True, "alt": True},
-         {"properties": [("erase", True)]}),
-        ("sculpt.phantom_smart_mask_click", {"type": 'LEFTMOUSE', "value": 'CLICK', "ctrl": True},
-         {"properties": [("sharpen", False)]}),
-        ("sculpt.phantom_smart_mask_click", {"type": 'LEFTMOUSE', "value": 'CLICK', "ctrl": True, "alt": True},
-         {"properties": [("sharpen", True)]}),
         # Phantom: Ctrl-Shift-drag trims with the trim tool selected in the tool-bar, and
         # Ctrl-Shift-click isolates face sets like ZBrush (swap when isolated, show all off the mesh).
-        ("sculpt.phantom_trim", {"type": 'LEFTMOUSE', "value": 'CLICK_DRAG', "ctrl": True, "shift": True}, None),
-        ("sculpt.face_set_change_visibility", {"type": 'LEFTMOUSE', "value": 'CLICK', "ctrl": True, "shift": True},
-         {"properties": [("mode", 'ISOLATE')]}),
+        *((
+            ("sculpt.phantom_trim", {"type": 'LEFTMOUSE', "value": 'CLICK_DRAG', "ctrl": True, "shift": True}, None),
+        ) if "trim" in phantom else ()),
+        *((
+            ("sculpt.face_set_change_visibility", {"type": 'LEFTMOUSE', "value": 'CLICK', "ctrl": True, "shift": True},
+             {"properties": [("mode", 'ISOLATE')]}),
+        ) if "face_sets" in phantom else ()),
         # Phantom: W is Move (gizmo or Transpose, see the tool header). The 3D View's W (box
         # select tool) doesn't exist in Sculpt Mode.
-        ("sculpt.phantom_transform_tool", {"type": 'W', "value": 'PRESS'},
-         {"properties": [("mode", 'MOVE')]}),
-        # Phantom: X toggles X-axis symmetry.
-        ("wm.context_toggle", {"type": 'X', "value": 'PRESS'},
-         {"properties": [("data_path", 'object.data.use_mirror_x')]}),
+        *((
+            ("sculpt.phantom_transform_tool", {"type": 'W', "value": 'PRESS'},
+             {"properties": [("mode", 'MOVE')]}),
+        ) if "w_move" in phantom else ()),
+        # Phantom: X toggles X-axis symmetry (else X flips the brush colors, as in Blender).
+        (("wm.context_toggle", {"type": 'X', "value": 'PRESS'},
+          {"properties": [("data_path", 'object.data.use_mirror_x')]})
+         if "symmetry_x" in phantom else
+         ("paint.brush_colors_flip", {"type": 'X', "value": 'PRESS'}, None)),
         # Expand
         ("sculpt.expand", {"type": 'A', "value": 'PRESS', "shift": True},
          {"properties": [
@@ -5434,7 +5468,10 @@ def km_sculpt(params):
         ("paint.visibility_filter", {"type": 'PAGE_DOWN', "value": 'PRESS', "repeat": True},
          {"properties": [("action", 'SHRINK')]}),
         # Phantom: Ctrl+W turns the masked area into a face set and clears the mask.
-        ("sculpt.phantom_mask_to_face_set", {"type": 'W', "value": 'PRESS', "ctrl": True}, None),
+        (("sculpt.phantom_mask_to_face_set", {"type": 'W', "value": 'PRESS', "ctrl": True}, None)
+         if "face_sets" in phantom else
+         ("sculpt.face_set_edit", {"type": 'W', "value": 'PRESS', "ctrl": True},
+          {"properties": [("mode", 'GROW')]})),
         ("sculpt.face_set_edit", {"type": 'W', "value": 'PRESS', "ctrl": True, "alt": True},
          {"properties": [("mode", 'SHRINK')]}),
         # Subdivision levels
@@ -5472,11 +5509,13 @@ def km_sculpt(params):
         ("brush.scale_size", {"type": 'RIGHT_BRACKET', "value": 'PRESS', "repeat": True},
          {"properties": [("scalar", 1.0 / 0.9)]}),
         # Phantom: Ctrl-F is PolyFrame (below), so the texture angle moves to Ctrl-Alt-F.
-        *_template_paint_radial_control("sculpt"),
-        ("wm.radial_control", {"type": 'F', "value": 'PRESS', "ctrl": True, "alt": True},
-         radial_control_properties("sculpt", "texture_slot.angle", secondary_prop=None)),
-        # Phantom: Ctrl-F shows/hides face sets (polygroups) with the wireframe, like ZBrush.
-        ("sculpt.phantom_polyframe", {"type": 'F', "value": 'PRESS', "ctrl": True}, None),
+        *_template_paint_radial_control("sculpt", rotation="face_sets" not in phantom),
+        *((
+            ("wm.radial_control", {"type": 'F', "value": 'PRESS', "ctrl": True, "alt": True},
+             radial_control_properties("sculpt", "texture_slot.angle", secondary_prop=None)),
+            # Phantom: Ctrl-F shows/hides face sets (polygroups) with the wireframe, like ZBrush.
+            ("sculpt.phantom_polyframe", {"type": 'F', "value": 'PRESS', "ctrl": True}, None),
+        ) if "face_sets" in phantom else ()),
         # Stencil
         ("brush.stencil_control", {"type": 'RIGHTMOUSE', "value": 'PRESS'},
          {"properties": [("mode", 'TRANSLATION')]}),
@@ -5534,7 +5573,8 @@ def km_sculpt(params):
              ("relative_asset_identifier", "brushes/essentials_brushes-mesh_sculpt.blend/Brush/Scrape/Fill"),
          ]}),
         # Phantom: with a paint brush, C samples the mesh's color (otherwise it falls through).
-        ("sculpt.phantom_sample_color", {"type": 'C', "value": 'PRESS'}, None),
+        *((("sculpt.phantom_sample_color", {"type": 'C', "value": 'PRESS'}, None),)
+          if "c_sample" in phantom else ()),
         ("brush.asset_activate", {"type": 'C', "value": 'PRESS'},
          {"properties": [
              ("asset_library_type", 'ESSENTIALS'),

@@ -89,6 +89,13 @@ struct GPUViewport {
    * moment. The end goal would be to let the GPUViewport do the color management. */
   bool do_color_management = false;
   GPUViewportBatch batch;
+
+  /**
+   * Phantom: copy of the depth after the scene was drawn and before overlays (cameras, lights,
+   * grid...), for the silhouette thumbnail. Only kept up to date while asked for.
+   */
+  gpu::Texture *phantom_scene_depth_tx = nullptr;
+  bool phantom_scene_depth_wanted = false;
 };
 
 enum {
@@ -202,6 +209,38 @@ static void gpu_viewport_textures_free(GPUViewport *viewport)
   }
 
   GPU_TEXTURE_FREE_SAFE(viewport->depth_tx);
+  GPU_TEXTURE_FREE_SAFE(viewport->phantom_scene_depth_tx);
+}
+
+void GPU_viewport_phantom_scene_depth_store(GPUViewport *viewport)
+{
+  if (!viewport->phantom_scene_depth_wanted || viewport->depth_tx == nullptr) {
+    return;
+  }
+  /* Asked for again by the next read, so it stops when the silhouette is hidden. */
+  viewport->phantom_scene_depth_wanted = false;
+  gpu::Texture *depth = viewport->depth_tx;
+  gpu::Texture *&copy = viewport->phantom_scene_depth_tx;
+  if (copy == nullptr || GPU_texture_width(copy) != GPU_texture_width(depth) ||
+      GPU_texture_height(copy) != GPU_texture_height(depth) ||
+      GPU_texture_format(copy) != GPU_texture_format(depth))
+  {
+    GPU_TEXTURE_FREE_SAFE(copy);
+    copy = GPU_texture_create_2d("phantom_scene_depth",
+                                 GPU_texture_width(depth),
+                                 GPU_texture_height(depth),
+                                 1,
+                                 GPU_texture_format(depth),
+                                 GPU_TEXTURE_USAGE_SHADER_READ | GPU_TEXTURE_USAGE_ATTACHMENT,
+                                 nullptr);
+  }
+  GPU_texture_copy(copy, depth);
+}
+
+gpu::Texture *GPU_viewport_phantom_scene_depth(GPUViewport *viewport)
+{
+  viewport->phantom_scene_depth_wanted = true;
+  return viewport->phantom_scene_depth_tx;
 }
 
 void GPU_viewport_bind(GPUViewport *viewport, int view, const rcti *rect)

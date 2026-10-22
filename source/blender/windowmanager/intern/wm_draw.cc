@@ -1172,7 +1172,8 @@ static void wm_draw_area_offscreen(bContext *C, wmWindow *win, ScrArea *area, bo
 
     region.runtime->do_draw = 0;
     /* Phantom: keep drawing frames while the tool-bar animation runs. */
-    if (region.runtime->tool_anim_active) {
+    if (region.runtime->tool_anim_active || region.runtime->phantom_ui_anim) {
+      region.runtime->phantom_ui_anim = false;
       ED_region_tag_redraw_no_rebuild(&region);
     }
 

@@ -677,6 +677,8 @@ struct ARegionRuntime {
   bool tool_anim_active = false;
   /** Last frame of the previous mode's tools, shown while they collapse. */
   gpu::Texture *tool_anim_snapshot = nullptr;
+  /** Phantom: an interface animation (like a tab's hover pop) needs another frame. */
+  bool phantom_ui_anim = false;
 
   /** Phantom: push the 3D Viewport's text info (and statistics) down or right by this many
    * pixels, to make room for a panel docked on the left. */

@@ -87,6 +87,13 @@ bool GPU_viewport_is_stereo_get(GPUViewport *viewport);
 gpu::Texture *GPU_viewport_color_texture(GPUViewport *viewport, int view);
 gpu::Texture *GPU_viewport_overlay_texture(GPUViewport *viewport, int view);
 gpu::Texture *GPU_viewport_depth_texture(GPUViewport *viewport);
+/**
+ * Phantom: depth of the scene alone (no overlays), as of the last redraw, or null. Asking for it
+ * keeps it updated on the next redraws (see #GPU_viewport_phantom_scene_depth_store).
+ */
+gpu::Texture *GPU_viewport_phantom_scene_depth(GPUViewport *viewport);
+/** Phantom: called by the draw manager after the scene and before overlays are drawn. */
+void GPU_viewport_phantom_scene_depth_store(GPUViewport *viewport);
 
 /**
  * Color render and overlay frame-buffers for drawing outside of DRW module.
