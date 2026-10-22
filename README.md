@@ -9,8 +9,7 @@ Phantom
 =======
 
 Phantom is a fork of [Blender](https://www.blender.org) tuned for sculpting: ZBrush-style
-masking, polygroups and Transpose, a live silhouette preview, quick brushes, a large matcap
-library, a charcoal look with cozy interface sounds, and many smaller quality-of-life changes.
+masking, polygroups and Transpose, a live silhouette preview, quick brushes, a charcoal look with cozy interface sounds, and many smaller quality-of-life changes.
 Everything else in Blender is still there and works as before.
 
 **[Download Phantom 0.2.3](https://github.com/Potassiums/phantom/releases/latest)** (Windows, 64-bit).
