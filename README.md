@@ -13,11 +13,19 @@ masking, polygroups and Transpose, a live silhouette preview, quick brushes, a l
 library, a charcoal look with cozy interface sounds, and many smaller quality-of-life changes.
 Everything else in Blender is still there and works as before.
 
-**[Download Phantom 0.2.2](https://github.com/Potassiums/phantom/releases/latest)** (Windows, 64-bit).
+**[Download Phantom 0.2.3](https://github.com/Potassiums/phantom/releases/latest)** (Windows, 64-bit).
 Unzip it anywhere and run `phantom.exe`; nothing needs installing. Phantom keeps its settings in
 `%APPDATA%\Phantom`, apart from any Blender install.
 
 Phantom is in **alpha** and follows Blender's in-development code (currently 5.4): save often.
+
+New in 0.2.3
+------------
+
+- **Smarter actions bar:** it hides when the mask is cleared, the polygroup bar goes away when
+  you pick another tool or brush, and isolating a polygroup (Ctrl+Shift-click) brings up the
+  polygroup bar for it.
+- **Sculpting tab:** previews of **Sculpt Layers** and **ClayPolish**, coming soon.
 
 New in 0.2.2
 ------------

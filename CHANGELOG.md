@@ -4,6 +4,19 @@ Phantom is a fork of Blender tuned for sculpting. This file lists what Phantom c
 own changes come from the Blender version each release is built on.
 
 
+## 0.2.3 alpha (2026-10-22)
+
+Built on Blender 5.4 alpha, on top of 0.2.2.
+
+- **The actions bar hides when the mask is cleared**, also when erasing or inverting leaves the
+  mask empty, and comes back with undo.
+- **The polygroup bar goes away** when you pick another tool or brush.
+- **Isolating a polygroup shows the polygroup bar:** Ctrl+Shift-click a polygroup and the bar
+  switches to polygroup actions for it (Hide, Unhide, Split Hidden...).
+- **Sculpting tab:** the Properties editor's Sculpting tab previews **Sculpt Layers** and
+  **ClayPolish**, marked "Coming soon".
+
+
 ## 0.2.2 alpha (2026-10-22)
 
 Built on Blender 5.4 alpha.
