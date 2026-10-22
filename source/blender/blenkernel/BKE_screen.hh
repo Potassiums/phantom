@@ -690,6 +690,11 @@ struct ARegionRuntime {
    * 'D' (below), 'U' (above), 'R' (to the right), 'L' (to the left), or 0 (not from a button).
    */
   char popup_anim_slide = 0;
+  /**
+   * Phantom: window-space rectangle of the menu a submenu opened from. While sliding out, the
+   * submenu is clipped to its edge, so it seems to come out from underneath it.
+   */
+  rcti popup_anim_parent = {};
 
   /** For calling after building a blocks. */
   Vector<std::function<void(const bContext &C, ui::Block &Block)>> post_block_layout_fns;

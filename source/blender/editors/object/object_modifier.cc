@@ -2068,6 +2068,9 @@ static wmOperatorStatus modifier_apply_exec_ex(bContext *C,
     }
   }
 
+  /* Phantom: the soft "settled into place" sound, like remeshing. */
+  WM_ui_sound_play(WMUISound::TransformConfirm);
+
   return OPERATOR_FINISHED;
 }
 

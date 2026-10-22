@@ -921,6 +921,23 @@ static void wm_draw_popup_open_anim(ARegion *region, rcti &rect_geo, rctf &rect_
         rect_tex.xmax -= tex_w * (1.0f - ease);
         break;
     }
+
+    /* Submenus come out from underneath their parent menu: hide what overlaps it. */
+    const rcti &parent = region->runtime->popup_anim_parent;
+    if (!BLI_rcti_is_empty(&parent) && BLI_rcti_size_x(&rect_geo) > 0) {
+      const float geo_w = float(BLI_rcti_size_x(&rect_geo));
+      const float tex_span = rect_tex.xmax - rect_tex.xmin;
+      if (slide_dir == 'R' && rect_geo.xmin < parent.xmax) {
+        const int clip = std::min(parent.xmax, rect_geo.xmax);
+        rect_tex.xmin += tex_span * float(clip - rect_geo.xmin) / geo_w;
+        rect_geo.xmin = clip;
+      }
+      else if (slide_dir == 'L' && rect_geo.xmax > parent.xmin) {
+        const int clip = std::max(parent.xmin, rect_geo.xmin);
+        rect_tex.xmax -= tex_span * float(rect_geo.xmax - clip) / geo_w;
+        rect_geo.xmax = clip;
+      }
+    }
     ED_region_tag_redraw_no_rebuild(region);
     return;
   }

@@ -443,12 +443,21 @@ static void point_with_symmetry_draw(const PaintMode paint_mode,
   }
 }
 
+/**
+ * Phantom: like ZBrush's focal shift ring, the inner cursor ring shows the brush hardness
+ * ("Focal Shift"): halfway out for a soft brush, reaching the outer ring when fully hard.
+ */
+static float cursor_inner_ring_factor(const Brush &brush)
+{
+  return 0.5f + 0.5f * std::clamp(brush.hardness, 0.0f, 1.0f);
+}
+
 static void inactive_cursor_draw(PaintCursorContext &pcontext)
 {
   const bool has_cube_tip = BKE_brush_has_cube_tip(pcontext.brush, pcontext.mode);
   const float roundness = has_cube_tip ? pcontext.brush->tip_roundness : 1.0f;
   const float tip_scale_x = has_cube_tip ? pcontext.brush->tip_scale_x : 1.0f;
-  const float alpha = std::clamp(BKE_brush_alpha_get(pcontext.paint, pcontext.brush), 0.0f, 1.0f);
+  const float alpha = cursor_inner_ring_factor(*pcontext.brush);
 
   GPU_line_width(1.0f);
   /* Reduce alpha to increase the contrast when the cursor is over the mesh. */
@@ -733,7 +742,7 @@ static void main_inactive_cursor_draw(const PaintCursorContext &pcontext)
   bool has_cube_tip = BKE_brush_has_cube_tip(pcontext.brush, pcontext.mode);
   const float roundness = has_cube_tip ? pcontext.brush->tip_roundness : 1.0f;
   const float tip_scale_x = has_cube_tip ? pcontext.brush->tip_scale_x : 1.0f;
-  const float alpha = std::clamp(BKE_brush_alpha_get(pcontext.paint, pcontext.brush), 0.0f, 1.0f);
+  const float alpha = cursor_inner_ring_factor(*pcontext.brush);
 
   immUniformColor3fvAlpha(pcontext.outline_col, pcontext.outline_alpha);
   GPU_line_width(2.0f);

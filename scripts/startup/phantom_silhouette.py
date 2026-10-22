@@ -6,9 +6,10 @@
 Phantom: floating silhouette thumbnail for Sculpt Mode.
 
 Shows the 3D Viewport with everything drawn in it pure black on white (read from
-the viewport's depth, so it is live and costs no extra render), in a small panel anchored to the top-right of the 3D Viewport. Drag the panel
-to move it, drag its corner grip to resize it. The grip fades in while the
-cursor is over the panel.
+the viewport's depth, so it is live and costs no extra render), in a small panel with the
+viewport's own aspect ratio. New users start with it on, docked in the top-left corner. Drag
+the panel to move it, drag its corner grip to resize it. The grip fades in while the cursor is
+over the panel.
 
 Drag it next to the tool-bar to dock it on the left: it then sits beside the
 tool-bar (and the sidebar, when that is on the left), moving over when they
@@ -32,15 +33,16 @@ from gpu_extras.batch import batch_for_shader
 
 # Panel geometry is stored in unscaled pixels and multiplied by the UI scale.
 DEFAULT_SETTINGS = {
-    "enabled": False,
+    "enabled": True,
     "width": 260,
+    # Unused: the height follows the viewport's aspect ratio. Kept so old settings files load.
     "height": 200,
     # From the region's right and top edges: below the navigation gizmo,
     # clear of the zoom/pan buttons.
     "margin_x": 70,
     "margin_y": 150,
     # "LEFT" when docked next to the tool-bar, "" when floating.
-    "dock": "",
+    "dock": "LEFT",
     # Docked: distance from the top (0 = top-left corner, statistics go below it).
     "dock_top": 0,
 }
@@ -165,6 +167,16 @@ def _left_inset(area, region, return_sliding=False):
     return (inset, sliding) if return_sliding else inset
 
 
+def _top_inset(area, region):
+    """Pixels at the top of the region covered by headers drawn over it (region overlap)."""
+    region_top = region.y + region.height
+    inset = 0
+    for other in area.regions:
+        if other.type in {'HEADER', 'TOOL_HEADER'} and other.alignment == 'TOP' and other.height > 1:
+            inset = max(inset, region_top - other.y)
+    return max(0, inset)
+
+
 # Docked panels slide (instead of jumping) when the tool-bar or sidebar opens or closes.
 INSET_SLIDE_TIME = 0.06  # Seconds, time constant of the ease.
 _inset_state = {}  # Area pointer -> [shown inset, last update time].
@@ -193,16 +205,24 @@ def _animated_inset(area, region):
     return round(value)
 
 
+def _view_aspect(region):
+    return region.width / max(region.height, 1)
+
+
 def panel_rect(area, region):
-    """Return (x, y, width, height) of the panel in region pixel space (y up)."""
+    """Return (x, y, width, height) of the panel in region pixel space (y up).
+
+    The height follows the viewport's aspect ratio, so the silhouette fills the panel.
+    """
     s = _ui_scale()
+    aspect = _view_aspect(region)
     w = max(MIN_SIZE, round(_settings["width"] * s))
-    h = max(MIN_SIZE, round(_settings["height"] * s))
-    w = min(w, region.width - 2)
-    h = min(h, region.height - 2)
+    w = min(w, region.width - 2, round((region.height - 2) * aspect))
+    h = max(1, round(w / aspect))
     if _docked():
         x = _animated_inset(area, region) + round(DOCK_GAP * s)
-        y = region.height - round((DOCK_GAP + _settings["dock_top"]) * s) - h
+        y = (region.height - _top_inset(area, region) -
+             round((DOCK_GAP + _settings["dock_top"]) * s) - h)
     else:
         x = region.width - round(_settings["margin_x"] * s) - w
         y = region.height - round(_settings["margin_y"] * s) - h
@@ -427,13 +447,15 @@ class VIEW3D_OT_phantom_silhouette_drag(Operator):
         context.window_manager.modal_handler_add(self)
         return {'RUNNING_MODAL'}
 
-    def _resize(self, dx, dy):
+    def _resize(self, context, dx, dy):
         s = _ui_scale()
         _x, _y, w, h = self.start_rect
         # Floating panels grow from the lower-left grip, docked ones from the lower-right.
-        new_w = w + dx if _docked() else w - dx
+        # The aspect ratio is locked, so follow whichever direction the grip moved further.
+        from_x = w + dx if _docked() else w - dx
+        from_y = (h - dy) * _view_aspect(context.region)
+        new_w = from_x if abs(from_x - w) >= abs(from_y - w) else from_y
         _settings["width"] = round(max(MIN_SIZE, new_w) / s)
-        _settings["height"] = round(max(MIN_SIZE, h - dy) / s)
 
     def _move(self, context, dx, dy):
         s = _ui_scale()
@@ -443,7 +465,8 @@ class VIEW3D_OT_phantom_silhouette_drag(Operator):
         y += dy
         if x <= _left_inset(context.area, region) + DOCK_SNAP * s:
             # Close to the tools: dock on the left, snapping into the top-left corner.
-            dock_top = max(0, round((region.height - (y + h)) / s) - DOCK_GAP)
+            top = region.height - _top_inset(context.area, region)
+            dock_top = max(0, round((top - (y + h)) / s) - DOCK_GAP)
             _settings["dock"] = "LEFT"
             _settings["dock_top"] = 0 if dock_top < DOCK_TOP_SNAP else dock_top
         else:
@@ -456,7 +479,7 @@ class VIEW3D_OT_phantom_silhouette_drag(Operator):
             dx = event.mouse_region_x - self.start_mouse[0]
             dy = event.mouse_region_y - self.start_mouse[1]
             if self.resizing:
-                self._resize(dx, dy)
+                self._resize(context, dx, dy)
             else:
                 self._move(context, dx, dy)
             _schedule_save()

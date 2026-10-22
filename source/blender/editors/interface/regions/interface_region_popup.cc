@@ -782,6 +782,13 @@ Block *popup_block_refresh(bContext *C, PopupBlockHandle *handle, ARegion *butre
     else if (block->direction & UI_DIR_LEFT) {
       region->runtime->popup_anim_slide = 'L';
     }
+    region->runtime->popup_anim_parent = {};
+    if (butregion->regiontype == RGN_TYPE_TEMPORARY) {
+      /* A submenu: remember the parent menu's body to slide out from under it. */
+      rctf parent_rect;
+      block_to_window_rctf(butregion, but->block, &parent_rect, &but->block->rect);
+      BLI_rcti_rctf_copy_round(&region->runtime->popup_anim_parent, &parent_rect);
+    }
   }
   else {
     /* Keep a list of these, needed for pull-down menus. */
