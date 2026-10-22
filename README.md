@@ -181,7 +181,11 @@ Building
 
 Phantom builds like Blender: see Blender's
 [build instructions](https://developer.blender.org/docs/handbook/building_blender/). On Windows,
-`make.bat ninja` in the repository builds `phantom.exe`. Phantom's branding, theme, sound and
+`make.bat ninja` in the repository builds `phantom.exe`.
+
+When cloning from GitHub, set `GIT_LFS_SKIP_SMUDGE=1` for the initial clone to avoid Git LFS
+errors, then get Blender's large files as described in Blender's
+[cloning instructions](https://developer.blender.org/docs/handbook/contributing/using_git/clone_update/#github-mirror). Phantom's branding, theme, sound and
 icon generators are in [tools/phantom/branding](tools/phantom/branding).
 
 
