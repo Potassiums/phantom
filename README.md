@@ -13,11 +13,20 @@ masking, face sets and Transpose, a live silhouette preview, quick brushes, a la
 library, a charcoal look with cozy interface sounds, and many smaller quality-of-life changes.
 Everything else in Blender is still there and works as before.
 
-**[Download Phantom 0.2.0](https://github.com/Potassiums/phantom/releases/latest)** (Windows, 64-bit).
+**[Download Phantom 0.2.1](https://github.com/Potassiums/phantom/releases/latest)** (Windows, 64-bit).
 Unzip it anywhere and run `phantom.exe`; nothing needs installing. Phantom keeps its settings in
 `%APPDATA%\Phantom`, apart from any Blender install.
 
 Phantom is in **alpha** and follows Blender's in-development code (currently 5.4): save often.
+
+New in 0.2.1
+------------
+
+- **Keymap options:** each of Phantom's sculpt controls can be switched off in Preferences >
+  Keymap, and the **Industry Compatible** keymap now has them too (X symmetry, masking, face
+  sets, Transpose keys).
+- **Silhouette thumbnail shows only geometry** (no cameras, lights or grid).
+- **Tabs pop up with a little bounce** when you hover over them.
 
 New in 0.2.0
 ------------
@@ -38,6 +47,9 @@ Controls
 --------
 
 Phantom keeps Blender's controls except where listed here. Keys are for the default keymap.
+Each group can be switched back to Blender's keys in Preferences > Keymap > Phantom Sculpting.
+In the Industry Compatible keymap, masking uses Ctrl / Ctrl+Alt, the face sets pie is on Alt+W,
+and W, E and R are Move, Rotate and Scale.
 
 ### Sculpt Mode: masking and face sets
 

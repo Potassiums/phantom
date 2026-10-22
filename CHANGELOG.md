@@ -4,6 +4,36 @@ Phantom is a fork of Blender tuned for sculpting. This file lists what Phantom c
 own changes come from the Blender version each release is built on.
 
 
+## 0.2.1 alpha (2026-10-22)
+
+A hotfix on top of 0.2.0, built on Blender 5.4 alpha.
+
+### Keymap options
+
+- **Phantom's sculpt controls are now options** in Preferences > Keymap, under "Phantom
+  Sculpting". Each one can be switched off to get the keymap's original keys back:
+  - ZBrush Masking (Ctrl / Ctrl+Alt mask, Alt inverts the brush)
+  - ZBrush Face Sets (Ctrl+W mask to face set, Ctrl+Shift-click isolate, Ctrl+F PolyFrame)
+  - Ctrl+Shift Trim
+  - X Toggles Symmetry
+  - Move / Transpose Keys
+  - C Samples Paint Color
+  - Quick Brush Keys Take Over (a quick brush's shortcut switches off other Sculpt shortcuts on
+    that key)
+- **Industry Compatible keymap:** Phantom's sculpt controls work there too. X toggles X symmetry;
+  masking uses Ctrl and Ctrl+Alt (Alt navigates in this keymap) and the brush inverts with
+  Ctrl+Shift+Alt; Ctrl+W, Ctrl+Shift-click and Ctrl+F work as in the default keymap, with the face
+  sets pie on Alt+W; W, E and R are Move, Rotate and Scale with the gizmo or Transpose; C samples
+  paint color.
+
+### Fixes and polish
+
+- **The silhouette thumbnail shows only geometry.** Cameras, lights and the floor grid no longer
+  appear in it.
+- **Tabs pop up with a small bounce when hovered** and settle back when the cursor leaves
+  (workspace tabs, Properties editor tabs, sidebar tabs).
+
+
 ## 0.2.0 alpha (2026-10-22)
 
 Built on Blender 5.4 alpha.
