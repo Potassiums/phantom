@@ -768,6 +768,20 @@ Block *popup_block_refresh(bContext *C, PopupBlockHandle *handle, ARegion *butre
     block->aspect = but->block->aspect;
     popup_block_position(window, butregion, but, block);
     handle->direction = block->direction;
+
+    /* Phantom: remember the side it opened toward, for the slide-in animation. */
+    if (block->direction & UI_DIR_DOWN) {
+      region->runtime->popup_anim_slide = 'D';
+    }
+    else if (block->direction & UI_DIR_UP) {
+      region->runtime->popup_anim_slide = 'U';
+    }
+    else if (block->direction & UI_DIR_RIGHT) {
+      region->runtime->popup_anim_slide = 'R';
+    }
+    else if (block->direction & UI_DIR_LEFT) {
+      region->runtime->popup_anim_slide = 'L';
+    }
   }
   else {
     /* Keep a list of these, needed for pull-down menus. */

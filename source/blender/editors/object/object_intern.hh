@@ -370,6 +370,7 @@ void TRANSFORM_OT_vertex_random(wmOperatorType *ot);
 void OBJECT_OT_voxel_remesh(wmOperatorType *ot);
 void OBJECT_OT_voxel_size_edit(wmOperatorType *ot);
 void OBJECT_OT_quadriflow_remesh(wmOperatorType *ot);
+void OBJECT_OT_auto_remesh(wmOperatorType *ot);
 
 /* object_data_transfer.cc */
 

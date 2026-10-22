@@ -1075,6 +1075,23 @@ class VIEW3D_PT_sculpt_voxel_remesh(Panel, View3DPaintPanel):
         layout.operator("object.voxel_remesh", text="Remesh")
 
 
+class VIEW3D_PT_sculpt_quad_remesh(Panel, View3DPaintPanel):
+    """Phantom: AutoRemesher quad remesh, with its settings saved on the scene."""
+    bl_context = ".sculpt_mode"  # dot on purpose (access from topbar)
+    bl_label = "Quad Remesh"
+    bl_options = {'DEFAULT_CLOSED'}
+    bl_ui_units_x = 12
+
+    @classmethod
+    def poll(cls, context):
+        return (context.sculpt_object and context.tool_settings.sculpt and
+                hasattr(context.scene, "phantom_quad_remesh"))
+
+    def draw(self, context):
+        import phantom_quad_remesh
+        phantom_quad_remesh.draw_settings(self.layout, context)
+
+
 class VIEW3D_PT_sculpt_options(Panel, View3DPaintPanel):
     bl_context = ".sculpt_mode"  # dot on purpose (access from topbar)
     bl_label = "Options"
@@ -2542,6 +2559,7 @@ classes = (
 
     VIEW3D_PT_sculpt_dyntopo,
     VIEW3D_PT_sculpt_voxel_remesh,
+    VIEW3D_PT_sculpt_quad_remesh,
     VIEW3D_PT_sculpt_symmetry,
     VIEW3D_PT_sculpt_symmetry_for_topbar,
     VIEW3D_PT_sculpt_options,

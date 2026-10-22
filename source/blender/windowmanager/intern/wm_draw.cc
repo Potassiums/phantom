@@ -871,26 +871,59 @@ gpu::Texture *wm_draw_region_texture(ARegion *region, int view)
 
 /** Phantom: duration of the popup open animation, in seconds. */
 static constexpr float POPUP_ANIM_TIME = 0.14f;
+/** Phantom: duration of the slide-in for menus opened from a button (like the asset shelf). */
+static constexpr float POPUP_SLIDE_TIME = 0.24f;
 
 /**
- * Phantom: animate a popup region while it opens: fade in, grow from 94% and settle down
- * from a few pixels above. Keeps the popup redrawing until the animation ends.
+ * Phantom: animate a popup region while it opens. Menus opened from a button slide out of the
+ * side they open toward while fading in, revealing their content like the asset shelf does
+ * (the visible part of the texture is cropped by `rect_tex`). Other popups fade in, grow from
+ * 94% and settle down from a few pixels above. Keeps the popup redrawing until it ends.
  */
-static void wm_draw_popup_open_anim(ARegion *region, rcti &rect_geo, float &alpha)
+static void wm_draw_popup_open_anim(ARegion *region, rcti &rect_geo, rctf &rect_tex, float &alpha)
 {
   const double now = BLI_time_now_seconds();
   if (region->runtime->popup_anim_start == 0.0) {
     region->runtime->popup_anim_start = now;
   }
-  const float t = std::clamp(float(now - region->runtime->popup_anim_start) / POPUP_ANIM_TIME,
-                             0.0f,
-                             1.0f);
+  const char slide_dir = region->runtime->popup_anim_slide;
+  const float duration = slide_dir ? POPUP_SLIDE_TIME : POPUP_ANIM_TIME;
+  const float t = std::clamp(
+      float(now - region->runtime->popup_anim_start) / duration, 0.0f, 1.0f);
   if (t >= 1.0f) {
     return;
   }
   /* Cubic ease-out. */
   const float ease = 1.0f - (1.0f - t) * (1.0f - t) * (1.0f - t);
   alpha *= ease;
+
+  if (slide_dir) {
+    /* Reveal from the edge next to the button, the content moving out with that edge. */
+    const int hidden_x = int(roundf(BLI_rcti_size_x(&rect_geo) * (1.0f - ease)));
+    const int hidden_y = int(roundf(BLI_rcti_size_y(&rect_geo) * (1.0f - ease)));
+    const float tex_w = rect_tex.xmax - rect_tex.xmin;
+    const float tex_h = rect_tex.ymax - rect_tex.ymin;
+    switch (slide_dir) {
+      case 'D': /* Opens below: anchored at the top, slides down. */
+        rect_geo.ymin += hidden_y;
+        rect_tex.ymax -= tex_h * (1.0f - ease);
+        break;
+      case 'U': /* Opens above: anchored at the bottom, slides up. */
+        rect_geo.ymax -= hidden_y;
+        rect_tex.ymin += tex_h * (1.0f - ease);
+        break;
+      case 'R': /* Opens to the right: anchored at the left, slides right. */
+        rect_geo.xmax -= hidden_x;
+        rect_tex.xmin += tex_w * (1.0f - ease);
+        break;
+      case 'L': /* Opens to the left: anchored at the right, slides left. */
+        rect_geo.xmin += hidden_x;
+        rect_tex.xmax -= tex_w * (1.0f - ease);
+        break;
+    }
+    ED_region_tag_redraw_no_rebuild(region);
+    return;
+  }
 
   const float scale = 0.94f + 0.06f * ease;
   const float half_w = BLI_rcti_size_x(&rect_geo) * 0.5f * scale;
@@ -930,19 +963,19 @@ void wm_draw_region_blend(ARegion *region, int view, bool blend)
     ED_region_blend_rect(region, &rect_geo);
   }
 
-  /* Phantom: popups (menus, popovers, tooltips) open with a quick fade, grow and settle. */
-  if (blend && region->regiontype == RGN_TYPE_TEMPORARY) {
-    wm_draw_popup_open_anim(region, rect_geo, alpha);
-  }
-
-  rect_geo.xmax += 1;
-  rect_geo.ymax += 1;
-
   rctf rect_tex;
   rect_tex.xmin = halfx;
   rect_tex.ymin = halfy;
   rect_tex.xmax = 1.0f + halfx;
   rect_tex.ymax = 1.0f + halfy;
+
+  /* Phantom: popups (menus, popovers, tooltips) animate open. */
+  if (blend && region->regiontype == RGN_TYPE_TEMPORARY) {
+    wm_draw_popup_open_anim(region, rect_geo, rect_tex, alpha);
+  }
+
+  rect_geo.xmax += 1;
+  rect_geo.ymax += 1;
 
   /* Phantom: the slide (not the fade) decides how much of a sliding region shows. */
   const float slide = blend ? ED_region_blend_slide(region) : 1.0f;

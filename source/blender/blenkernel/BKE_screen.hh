@@ -685,6 +685,11 @@ struct ARegionRuntime {
 
   /** Phantom: when a popup region was first shown, for its open animation (0 = not yet). */
   double popup_anim_start = 0.0;
+  /**
+   * Phantom: which way a popup opened from its button, so it can slide in from that side:
+   * 'D' (below), 'U' (above), 'R' (to the right), 'L' (to the left), or 0 (not from a button).
+   */
+  char popup_anim_slide = 0;
 
   /** For calling after building a blocks. */
   Vector<std::function<void(const bContext &C, ui::Block &Block)>> post_block_layout_fns;

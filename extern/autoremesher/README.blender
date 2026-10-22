@@ -1,0 +1,9 @@
+Project: AutoRemesher
+URL: https://github.com/huxingyi/autoremesher
+License: SPDX:MIT
+Upstream version: 4a49f82f720f647691c09a7d8a16fa63be208aad (2026-10-07)
+Copyright: Copyright (c) 2020 Jeremy HU. meshoptimizer: Copyright (c) 2016-2026 Arseny Kapoulkine.
+Local modifications: Only the Qt-free core library is included (include/, src/AutoRemesher/,
+  thirdparty/isotropicremesher/, thirdparty/meshoptimizer/src/). The GUI, Qt, bundled Eigen and
+  TBB are left out; Phantom's own Eigen and TBB are used instead.
+  The per-phase timing report is only printed when AUTO_REMESHER_DEBUG is set.

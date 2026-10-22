@@ -44,6 +44,10 @@
 #  include "quadriflow_capi.hpp"
 #endif
 
+#ifdef WITH_AUTOREMESHER
+#  include "autoremesher_capi.hh"
+#endif
+
 namespace blender {
 
 #ifdef WITH_QUADRIFLOW
@@ -125,6 +129,78 @@ static Mesh *remesh_quadriflow(const Mesh *input_mesh,
   return mesh;
 }
 #endif
+
+Mesh *BKE_mesh_remesh_autoremesher(const Mesh *mesh,
+                                   const AutoRemeshSettings &settings,
+                                   bool (*update_cb)(void *, float progress, const char *status),
+                                   void *update_cb_data,
+                                   bool *r_canceled)
+{
+  *r_canceled = false;
+#ifdef WITH_AUTOREMESHER
+  using namespace blender::bke;
+  const Span<float3> input_positions = mesh->vert_positions();
+  const Span<int3> corner_tris = mesh->corner_tris();
+  Array<int3> vert_tris(corner_tris.size());
+  mesh::vert_tris_from_corner_tris(mesh->corner_verts(), corner_tris, vert_tris);
+
+  std::vector<std::array<float, 3>> positions(input_positions.size());
+  for (const int i : input_positions.index_range()) {
+    positions[i] = {input_positions[i].x, input_positions[i].y, input_positions[i].z};
+  }
+  std::vector<std::array<int, 3>> triangles(vert_tris.size());
+  for (const int i : vert_tris.index_range()) {
+    triangles[i] = {vert_tris[i].x, vert_tris[i].y, vert_tris[i].z};
+  }
+
+  autoremesher::Params params;
+  params.target_quads = settings.target_quads;
+  params.edge_scaling = settings.edge_scaling;
+  params.adaptivity = settings.adaptivity;
+  params.anisotropy = settings.anisotropy;
+  params.sharp_edge_degrees = settings.sharp_edge_degrees;
+  params.smooth_normal_degrees = settings.smooth_normal_degrees;
+  params.hard_surface = settings.hard_surface;
+
+  autoremesher::Result result;
+  const autoremesher::Status status = autoremesher::remesh(
+      positions,
+      triangles,
+      params,
+      [&](const float progress, const char *name) {
+        return update_cb ? update_cb(update_cb_data, progress, name) : true;
+      },
+      result);
+  if (status != autoremesher::Status::Success) {
+    *r_canceled = status == autoremesher::Status::Canceled;
+    return nullptr;
+  }
+
+  const int faces_num = int(result.face_sizes.size());
+  Mesh *new_mesh = BKE_mesh_new_nomain(
+      int(result.positions.size()), 0, faces_num, int(result.corner_verts.size()));
+  BKE_mesh_copy_parameters(new_mesh, mesh);
+
+  MutableSpan<float3> new_positions = new_mesh->vert_positions_for_write();
+  for (const int i : new_positions.index_range()) {
+    new_positions[i] = float3(result.positions[i][0], result.positions[i][1], result.positions[i][2]);
+  }
+  MutableSpan<int> face_offsets = new_mesh->face_offsets_for_write();
+  int offset = 0;
+  for (const int i : IndexRange(faces_num)) {
+    face_offsets[i] = offset;
+    offset += result.face_sizes[i];
+  }
+  face_offsets.last() = offset;
+  new_mesh->corner_verts_for_write().copy_from(result.corner_verts);
+
+  mesh_calc_edges(*new_mesh, false, false);
+  return new_mesh;
+#else
+  UNUSED_VARS(mesh, settings, update_cb, update_cb_data);
+  return nullptr;
+#endif
+}
 
 Mesh *BKE_mesh_remesh_quadriflow(const Mesh *mesh,
                                  int target_faces,

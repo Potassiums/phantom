@@ -754,6 +754,16 @@ if(WITH_QUADRIFLOW)
   add_definitions(-DWITH_QUADRIFLOW)
 endif()
 
+if(WITH_AUTOREMESHER AND WITH_TBB)
+  list(APPEND INC
+    ../../../extern/autoremesher
+  )
+  list(APPEND LIB
+    extern_autoremesher
+  )
+  add_definitions(-DWITH_AUTOREMESHER)
+endif()
+
 if(WITH_XR_OPENXR)
   add_definitions(-DWITH_XR_OPENXR)
 endif()

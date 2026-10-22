@@ -390,6 +390,7 @@ option(WITH_HEADLESS "Build without graphical support (renderfarm, server mode o
 mark_as_advanced(WITH_HEADLESS)
 
 option(WITH_QUADRIFLOW "Build with QuadriFlow remesher support" ON)
+option(WITH_AUTOREMESHER "Build with AutoRemesher quad remesher support (Phantom)" ON)
 
 option(WITH_AUDASPACE "Build with Audaspace (base Blender audio library)" ON)
 option(WITH_SYSTEM_AUDASPACE "Build with external Audaspace library installed on the system" OFF)
@@ -1366,6 +1367,7 @@ if(WITH_CYCLES)
 endif()
 
 set_and_warn_dependency(WITH_TBB WITH_CYCLES            OFF)
+set_and_warn_dependency(WITH_TBB WITH_AUTOREMESHER      OFF)
 set_and_warn_dependency(WITH_TBB WITH_USD               OFF)
 set_and_warn_dependency(WITH_TBB WITH_OPENVDB           OFF)
 set_and_warn_dependency(WITH_TBB WITH_MOD_FLUID         OFF)
@@ -2588,6 +2590,7 @@ if(FIRST_RUN)
   info_cfg_option(WITH_POTRACE)
   info_cfg_option(WITH_PUGIXML)
   info_cfg_option(WITH_QUADRIFLOW)
+  info_cfg_option(WITH_AUTOREMESHER)
   info_cfg_option(WITH_TBB)
   info_cfg_option(WITH_USD)
   info_cfg_option(WITH_XR_OPENXR)

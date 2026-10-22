@@ -1267,4 +1267,277 @@ void OBJECT_OT_quadriflow_remesh(wmOperatorType *ot)
 
 /** \} */
 
+/* -------------------------------------------------------------------- */
+/** \name Quad Remesh (Phantom, AutoRemesher)
+ * \{ */
+
+enum class AutoRemeshStatus { Success, Failed, Canceled };
+
+struct AutoRemeshJob {
+  Object *owner;
+  wmJobWorkerStatus *worker_status;
+
+  /** Undo step name. The operator itself is freed before the job finishes. */
+  const char *undo_name;
+  Scene *scene;
+  AutoRemeshSettings settings;
+  bool preserve_attributes;
+  bool smooth_normals;
+
+  /** Copy of the mesh to remesh, so the worker never reads data the main thread may change. */
+  Mesh *input_mesh;
+  /** The worker's result, applied to the object on the main thread when the job ends. */
+  Mesh *result_mesh;
+
+  AutoRemeshStatus status;
+  bool is_nonblocking_job;
+};
+
+static void auto_remesh_free_job(void *customdata)
+{
+  AutoRemeshJob *job = static_cast<AutoRemeshJob *>(customdata);
+  if (job->input_mesh) {
+    BKE_id_free(nullptr, job->input_mesh);
+  }
+  if (job->result_mesh) {
+    BKE_id_free(nullptr, job->result_mesh);
+  }
+  MEM_delete(job);
+}
+
+static bool auto_remesh_update_job(void *customdata, const float progress, const char * /*status*/)
+{
+  AutoRemeshJob *job = static_cast<AutoRemeshJob *>(customdata);
+  if (job->is_nonblocking_job && G.is_break) {
+    return false;
+  }
+  job->worker_status->do_update = true;
+  job->worker_status->progress = progress;
+  return true;
+}
+
+static void auto_remesh_start_job(void *customdata, wmJobWorkerStatus *worker_status)
+{
+  AutoRemeshJob *job = static_cast<AutoRemeshJob *>(customdata);
+  job->worker_status = worker_status;
+  job->status = AutoRemeshStatus::Success;
+
+  if (job->is_nonblocking_job) {
+    G.is_break = false; /* Shared with render, like QuadriFlow. */
+  }
+
+  /* Only the remeshing itself runs here. Swapping the object's mesh and the sculpt undo step
+   * happen in #auto_remesh_end_job on the main thread, which may be drawing the mesh meanwhile. */
+  bool canceled = false;
+  job->result_mesh = BKE_mesh_remesh_autoremesher(
+      job->input_mesh, job->settings, auto_remesh_update_job, job, &canceled);
+
+  worker_status->do_update = true;
+  worker_status->stop = false;
+  if (job->result_mesh == nullptr) {
+    job->status = canceled ? AutoRemeshStatus::Canceled : AutoRemeshStatus::Failed;
+  }
+}
+
+static void auto_remesh_apply(AutoRemeshJob *job)
+{
+  Object *ob = job->owner;
+  Mesh *mesh = id_cast<Mesh *>(ob->data);
+  Mesh *new_mesh = job->result_mesh;
+  job->result_mesh = nullptr; /* Consumed by #BKE_mesh_nomain_to_mesh. */
+
+  if (ob->mode == OB_MODE_SCULPT) {
+    sculpt_paint::undo::geometry_begin_ex(*job->scene, *ob, job->undo_name);
+  }
+  if (job->preserve_attributes) {
+    bke::mesh_remesh_reproject_attributes(*mesh, *new_mesh);
+  }
+  BKE_mesh_nomain_to_mesh(new_mesh, mesh, ob);
+  bke::mesh_smooth_set(*mesh, job->smooth_normals);
+  if (ob->mode == OB_MODE_SCULPT) {
+    sculpt_paint::undo::geometry_end(*ob);
+    BKE_sculptsession_free_pbvh(*ob);
+  }
+  BKE_mesh_batch_cache_dirty_tag(mesh, BKE_MESH_BATCH_DIRTY_ALL);
+  bke::mesh_apply_spatial_organization(*mesh);
+  DEG_id_tag_update(&ob->id, ID_RECALC_GEOMETRY);
+}
+
+static void auto_remesh_end_job(void *customdata)
+{
+  AutoRemeshJob *job = static_cast<AutoRemeshJob *>(customdata);
+  Object *ob = job->owner;
+
+  if (job->is_nonblocking_job) {
+    WM_locked_interface_set(G_MAIN->wm.first(), false);
+  }
+
+  ReportList *reports = job->worker_status->reports;
+  switch (job->status) {
+    case AutoRemeshStatus::Success: {
+      auto_remesh_apply(job);
+      const Mesh *mesh = id_cast<const Mesh *>(ob->data);
+      BKE_reportf(reports, RPT_INFO, "Quad Remesh: %d faces", mesh->faces_num);
+      /* Same soft "settled into place" sound as the voxel remesh. */
+      WM_ui_sound_play(WMUISound::TransformConfirm);
+      break;
+    }
+    case AutoRemeshStatus::Failed:
+      BKE_report(reports, RPT_ERROR, "Quad Remesh: Remeshing failed");
+      WM_ui_sound_play(WMUISound::TransformCancel);
+      break;
+    case AutoRemeshStatus::Canceled:
+      BKE_report(reports, RPT_WARNING, "Quad Remesh: Remeshing canceled");
+      WM_ui_sound_play(WMUISound::TransformCancel);
+      break;
+  }
+}
+
+static wmOperatorStatus auto_remesh_exec(bContext *C, wmOperator *op)
+{
+  AutoRemeshJob *job = MEM_new<AutoRemeshJob>("AutoRemeshJob");
+  job->undo_name = op->type->name;
+  job->owner = CTX_data_active_object(C);
+  job->scene = CTX_data_scene(C);
+  job->input_mesh = BKE_mesh_copy_for_eval(*id_cast<const Mesh *>(job->owner->data));
+  job->result_mesh = nullptr;
+
+  job->settings.target_quads = RNA_int_get(op->ptr, "target_quads");
+  job->settings.edge_scaling = RNA_float_get(op->ptr, "edge_scaling");
+  job->settings.adaptivity = RNA_float_get(op->ptr, "adaptivity");
+  job->settings.anisotropy = RNA_float_get(op->ptr, "anisotropy");
+  job->settings.sharp_edge_degrees = RAD2DEGF(RNA_float_get(op->ptr, "sharp_edge_angle"));
+  job->settings.smooth_normal_degrees = RAD2DEGF(RNA_float_get(op->ptr, "smooth_normal_angle"));
+  job->preserve_attributes = RNA_boolean_get(op->ptr, "preserve_attributes");
+  job->smooth_normals = RNA_boolean_get(op->ptr, "smooth_normals");
+
+  if ((op->flag & OP_IS_INVOKE) == 0) {
+    /* Called directly (e.g. from Python): run blocking. */
+    job->is_nonblocking_job = false;
+    wmJobWorkerStatus worker_status = {};
+    worker_status.reports = op->reports;
+    auto_remesh_start_job(job, &worker_status);
+    const AutoRemeshStatus status = job->status;
+    auto_remesh_end_job(job);
+    auto_remesh_free_job(job);
+    return status == AutoRemeshStatus::Success ? OPERATOR_FINISHED : OPERATOR_CANCELLED;
+  }
+
+  job->is_nonblocking_job = true;
+  wmJob *wm_job = WM_jobs_get(CTX_wm_manager(C),
+                              CTX_wm_window(C),
+                              CTX_data_scene(C),
+                              "Quad Remeshing...",
+                              WM_JOB_PROGRESS,
+                              WM_JOB_TYPE_AUTO_REMESH);
+  WM_jobs_customdata_set(wm_job, job, auto_remesh_free_job);
+  WM_jobs_timer(wm_job, 0.1, NC_GEOM | ND_DATA, NC_GEOM | ND_DATA);
+  WM_jobs_callbacks(wm_job, auto_remesh_start_job, nullptr, nullptr, auto_remesh_end_job);
+  WM_locked_interface_set(CTX_wm_manager(C), true);
+  WM_jobs_start(CTX_wm_manager(C), wm_job);
+  return OPERATOR_FINISHED;
+}
+
+static wmOperatorStatus auto_remesh_invoke(bContext *C, wmOperator *op, const wmEvent *event)
+{
+  if (!RNA_boolean_get(op->ptr, "show_popup")) {
+    /* Run straight away with the given settings, e.g. from the Quad Remesh dropdown. */
+    return auto_remesh_exec(C, op);
+  }
+  return WM_operator_props_popup_confirm_ex(
+      C, op, event, IFACE_("Quad Remesh into Clean Quads"), IFACE_("Remesh"));
+}
+
+void OBJECT_OT_auto_remesh(wmOperatorType *ot)
+{
+  ot->name = "Quad Remesh";
+  ot->description =
+      "Rebuild the mesh as clean, evenly flowing quads with AutoRemesher. Mesh data layers are "
+      "lost unless attributes are preserved";
+  ot->idname = "OBJECT_OT_auto_remesh";
+
+  ot->poll = object_remesh_poll;
+  ot->invoke = auto_remesh_invoke;
+  ot->exec = auto_remesh_exec;
+
+  ot->flag = OPTYPE_REGISTER | OPTYPE_UNDO;
+
+  RNA_def_int(ot->srna,
+              "target_quads",
+              5000,
+              10,
+              INT_MAX,
+              "Target Quads",
+              "Approximate number of quads in the new mesh",
+              100,
+              200000);
+  RNA_def_float(ot->srna,
+                "edge_scaling",
+                1.0f,
+                1.0f,
+                4.0f,
+                "Edge Scaling",
+                "Make the quads larger than the target count asks for",
+                1.0f,
+                4.0f);
+  RNA_def_float_factor(ot->srna,
+                       "adaptivity",
+                       1.0f,
+                       0.0f,
+                       1.0f,
+                       "Adaptivity",
+                       "Use smaller quads in curved areas (0 gives uniform quads)",
+                       0.0f,
+                       1.0f);
+  RNA_def_float_factor(ot->srna,
+                       "anisotropy",
+                       1.0f,
+                       0.0f,
+                       1.0f,
+                       "Anisotropy",
+                       "Stretch quads along flatter directions, such as along tubes and ridges "
+                       "(0 gives square quads)",
+                       0.0f,
+                       1.0f);
+  PropertyRNA *prop = RNA_def_float(ot->srna,
+                                    "sharp_edge_angle",
+                                    DEG2RADF(90.0f),
+                                    DEG2RADF(30.0f),
+                                    DEG2RADF(180.0f),
+                                    "Sharp Edge",
+                                    "Edges sharper than this angle are kept as feature lines",
+                                    DEG2RADF(30.0f),
+                                    DEG2RADF(180.0f));
+  RNA_def_property_subtype(prop, PROP_ANGLE);
+  prop = RNA_def_float(ot->srna,
+                       "smooth_normal_angle",
+                       0.0f,
+                       0.0f,
+                       DEG2RADF(180.0f),
+                       "Smooth Normal",
+                       "Follow the smooth surface instead of the flat faces up to this angle "
+                       "(0 follows the faces exactly)",
+                       0.0f,
+                       DEG2RADF(180.0f));
+  RNA_def_property_subtype(prop, PROP_ANGLE);
+  RNA_def_boolean(ot->srna,
+                  "preserve_attributes",
+                  false,
+                  "Preserve Attributes",
+                  "Reproject attributes onto the new mesh");
+  RNA_def_boolean(ot->srna,
+                  "smooth_normals",
+                  false,
+                  "Smooth Normals",
+                  "Set the output mesh normals to smooth");
+  prop = RNA_def_boolean(ot->srna,
+                         "show_popup",
+                         true,
+                         "Show Popup",
+                         "Ask for the settings before remeshing");
+  RNA_def_property_flag(prop, (PROP_HIDDEN | PROP_SKIP_SAVE));
+}
+
+/** \} */
+
 }  // namespace blender::ed::object

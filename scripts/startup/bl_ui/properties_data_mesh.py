@@ -431,6 +431,7 @@ class DATA_PT_remesh(MeshButtonsPanel, Panel):
             col.operator("object.voxel_remesh", text="Voxel Remesh")
         else:
             col.operator("object.quadriflow_remesh", text="QuadriFlow Remesh")
+            col.operator("object.auto_remesh", text="Quad Remesh")
 
 
 class DATA_PT_customdata(MeshButtonsPanel, Panel):
