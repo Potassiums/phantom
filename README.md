@@ -3,6 +3,8 @@ Phantom's read-me. Keep the feature list in step with CHANGELOG.md.
 See 'release/text/readme.html' for Blender's end user read-me.
 -->
 
+![Phantom: a Blender fork for sculptors](release/datafiles/splash.png)
+
 Phantom
 =======
 
@@ -134,7 +136,8 @@ What Phantom adds to Blender
 
 ### Matcaps
 
-- **54 extra ZBrush-style matcaps** ship with Phantom.
+- **54 extra ZBrush-style matcaps** ship with Phantom, by
+  [Mandarin](https://mandarin.gumroad.com/l/zbrush-style-matcaps-for-blender).
 - **Search** the matcap grid as you type (fuzzy: typos and partial words are fine), or use the
   search button next to the matcap thumbnail.
 - **Favorites:** star matcaps from their right-click menu (gold stars in the grid) and filter the
@@ -195,6 +198,10 @@ Credits
 - [Blender](https://www.blender.org) by the Blender Foundation and its contributors.
 - [AutoRemesher](https://github.com/huxingyi/autoremesher) by Jeremy Hu (MIT), used by Quad
   Remesh.
+- The ZBrush-style matcaps ("ZB ..." in the matcap list) are by **Mandarin**:
+  [ZBrush Style Matcaps for Blender](https://mandarin.gumroad.com/l/zbrush-style-matcaps-for-blender)
+  on Gumroad. They're $2, or free with the code **FREE** that Mandarin provides; if you like them,
+  consider supporting him there.
 
 
 License

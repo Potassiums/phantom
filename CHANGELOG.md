@@ -25,7 +25,8 @@ Built on Blender 5.4 alpha.
 
 ### New: matcaps
 
-- **54 ZBrush-style matcaps** included ("ZB ..." in the matcap list).
+- **54 ZBrush-style matcaps** included ("ZB ..." in the matcap list), by Mandarin:
+  [ZBrush Style Matcaps for Blender](https://mandarin.gumroad.com/l/zbrush-style-matcaps-for-blender).
 - **Search inside the matcap grid:** type straight away to filter it (fuzzy matching); also a
   search button next to the matcap thumbnail.
 - **Favorites:** right-click a matcap > Add to Favorites; favorites get a gold star in the grid,
