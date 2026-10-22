@@ -13,11 +13,22 @@ masking, polygroups and Transpose, a live silhouette preview, quick brushes, a l
 library, a charcoal look with cozy interface sounds, and many smaller quality-of-life changes.
 Everything else in Blender is still there and works as before.
 
-**[Download Phantom 0.2.1](https://github.com/Potassiums/phantom/releases/latest)** (Windows, 64-bit).
+**[Download Phantom 0.2.2](https://github.com/Potassiums/phantom/releases/latest)** (Windows, 64-bit).
 Unzip it anywhere and run `phantom.exe`; nothing needs installing. Phantom keeps its settings in
 `%APPDATA%\Phantom`, apart from any Blender install.
 
 Phantom is in **alpha** and follows Blender's in-development code (currently 5.4): save often.
+
+New in 0.2.2
+------------
+
+- **Polygroups:** face sets are called polygroups throughout the interface, like ZBrush.
+- **Ctrl+D divides** with a Multires modifier (added when there is none).
+- **Mask and polygroup actions bar:** Hide Masked, Unhide, Split Hidden and Extract slide up
+  while you mask; after Ctrl+W it switches to polygroup actions (Isolate, Hide...). Customize
+  either with its **+**.
+- **Garment workspace (early preview):** Marvelous Designer-style patterns, sewing and cloth
+  simulation, from the workspace **+** menu.
 
 New in 0.2.1
 ------------

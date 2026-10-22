@@ -4,7 +4,9 @@ Phantom is a fork of Blender tuned for sculpting. This file lists what Phantom c
 own changes come from the Blender version each release is built on.
 
 
-## Unreleased
+## 0.2.2 alpha (2026-10-22)
+
+Built on Blender 5.4 alpha.
 
 ### For ZBrush users
 
@@ -29,6 +31,21 @@ own changes come from the Blender version each release is built on.
   **Split Hidden**, with Extract, Delete, Fair, Grow, Shrink, New Colors and PolyFrame to add.
   It is customized separately from the mask bar; its **x** puts it away, and masking again
   brings back the mask bar.
+
+### New: Garment workspace (early preview)
+
+A Marvelous Designer-style workspace for making clothes, simulated with Blender's cloth. Add
+it from the workspace **+** menu (Garment). A flat pattern view sits beside the 3D view.
+
+- **Patterns:** Rectangle, Ellipse and Polygon tools (corners and curve points), and Edit
+  Points to drag, add or delete points and switch them between corner and curve.
+- **Sewing:** sew edge segments, Free Sew for part of an edge, and elastic segments.
+- **Arrange:** click points on the avatar (chest, hips, arms, legs) to hang pieces from the
+  shoulders, waist, a shoulder or the crotch; **Add Mannequin** gives a default body.
+- **Fabric:** pins, a fabric per piece (Cotton, Silk, Jersey, Denim, Leather), particle
+  distance and sewing force.
+- **Space** simulates (seams close before gravity eases in). **Make Sculptable** bakes a welded,
+  thickened mesh and switches to the Sculpting workspace.
 
 
 ## 0.2.1 alpha (2026-10-22)
