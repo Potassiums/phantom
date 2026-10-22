@@ -11,13 +11,97 @@ masking, face sets and Transpose, a live silhouette preview, quick brushes, a la
 library, a charcoal look with cozy interface sounds, and many smaller quality-of-life changes.
 Everything else in Blender is still there and works as before.
 
-**[Download the latest release](https://github.com/Potassiums/phantom/releases)** (Windows, 64-bit).
+**[Download Phantom 0.2.0](https://github.com/Potassiums/phantom/releases/latest)** (Windows, 64-bit).
 Unzip it anywhere and run `phantom.exe`; nothing needs installing. Phantom keeps its settings in
 `%APPDATA%\Phantom`, apart from any Blender install.
 
-See [CHANGELOG.md](CHANGELOG.md) for what changed in each release.
-
 Phantom is in **alpha** and follows Blender's in-development code (currently 5.4): save often.
+
+New in 0.2.0
+------------
+
+- **Transpose:** ZBrush's action line for moving, scaling and rotating the unmasked model, plus
+  Move/Rotate/Scale icons (gizmo or Transpose) in the middle of the Sculpt tool header. **W** is
+  Move.
+- **Matcap library tools:** 54 ZBrush-style matcaps, search inside the matcap grid, favorites
+  with gold stars, a default matcap for every project, four quick slots and "new!" badges.
+- **Face sets like ZBrush:** Ctrl+W makes a face set from the mask, Ctrl+Shift-click isolates.
+- **Limited, Maya-style grid**, a pulsing vertex hover in Edit Mode, Halloween edit-mode colors,
+  masks that stay visible with overlays off, and a shorter Properties tab list while sculpting.
+
+See [CHANGELOG.md](CHANGELOG.md) for everything that changed in each release.
+
+
+Controls
+--------
+
+Phantom keeps Blender's controls except where listed here. Keys are for the default keymap.
+
+### Sculpt Mode: masking and face sets
+
+| Control | On the mesh | Off the mesh |
+|---|---|---|
+| **Ctrl-drag** | Paint a mask | Box mask. A box that misses the mesh clears the mask, or voxel-remeshes when nothing is masked |
+| **Ctrl+Alt-drag** | Erase the mask | Box-erase the mask |
+| **Ctrl-click** | Smooth the mask | Invert the mask |
+| **Ctrl+Alt-click** | Sharpen the mask | |
+| **Ctrl+W** | Turn the masked area into a face set and clear the mask | |
+| **Ctrl+Shift-click** | Isolate that face set; on an isolated one, show the others instead | Show everything |
+| **Ctrl+Shift-drag** | Trim with the trim tool selected in the toolbar | |
+| **Ctrl+F** | Show/hide face sets with the wireframe (PolyFrame) | |
+
+### Sculpt Mode: brushes and tools
+
+| Control | Action |
+|---|---|
+| **Shift** (hold) | Smooth (the Brush Asset preview shows the brush that will be used) |
+| **Alt** (hold) | Invert the brush |
+| **X** | Toggle X symmetry |
+| **W** | Move (gizmo or Transpose, as chosen in the tool header) |
+| **C** | With a paint or smear brush: sample the mesh's color. Otherwise Clay Strips, or your quick brush on C |
+| **R** / **Ctrl+R** | Set the remesh voxel size (with a measuring tick sound) / voxel remesh |
+| **Ctrl+Alt+F** | Brush texture angle (Ctrl+F is PolyFrame) |
+| **Right-click** | Brush menu, with **Focal Shift** (hardness) and **Stabilize Stroke** |
+| **Quick brush slots** (sidebar, under Brush Asset) | Click to use, drag brushes in or out, right-click to replace, remove or assign a shortcut; a shortcut takes over its key |
+| **Tool header icons** (middle) | Move, Rotate, Scale, then Gizmo or Transpose |
+| **Remesh / Quad Remesh** (tool header) | Voxel remesh settings / AutoRemesher quad retopology |
+
+### Transpose action line
+
+Pick Move, Rotate or Scale in the tool header, then:
+
+| Control | Action |
+|---|---|
+| **Click-drag on the model** | Draw a new action line; its ends snap to the surface |
+| **Drag an end's outer ring** | Move that end (in the plane of the screen) |
+| **Drag the middle ring or the line** | Move the whole line |
+| **Drag the middle's inner circle** | Move: move the model (**Shift**: along the line). Scale: thicken or thin it across the line. Rotate: twist it around the line |
+| **Drag an end's inner circle** | Move: stretch/shear it. Scale: scale it about the other end. Rotate: rotate it about the other end |
+| **Right-click / Esc** while dragging | Cancel |
+
+Masked areas don't move, symmetry is respected, and **Ctrl+Z** undoes each drag. Masking
+(Ctrl-drag) still works while Transpose is active.
+
+### Matcaps (Solid shading, Matcap lighting)
+
+| Control | Action |
+|---|---|
+| **Click the matcap thumbnail** | Open the matcap grid; **type** to search it (typos are fine) |
+| **Star next to the search** | Show only favorites |
+| **Right-click a matcap** | Set as Default Matcap, Add to/Remove from Favorites, Add to Quick Slot |
+| **Magnifying glass** next to the thumbnail | Search matcaps by name |
+| **Quick Matcaps** (Shading popover) | Click a slot to switch; **+** stores the current matcap; right-click to replace or clear |
+| **Per Object** (Shading popover) | Apply the matcap to the selected objects, or back to the viewport's |
+
+### Viewport and interface
+
+| Control | Action |
+|---|---|
+| **Overlays > Guides > Infinite / Limited** | Blender's floor or a square Maya-style grid (Grid Size, Axis Colors) |
+| **Ghost button** (viewport header, Sculpt Mode) | Show or hide the silhouette thumbnail; drag it to move, its corner to resize, next to the tools to dock |
+| **Asset shelf button** (viewport header, Sculpt Mode) | Show or hide the brush asset shelf |
+| **Hover a vertex** (Edit Mode, vertex select) | The vertex a click would select pulses |
+| **Edit > Preferences > Interface > Sounds** | Turn interface sounds on or off, and set their volume |
 
 
 What Phantom adds to Blender
