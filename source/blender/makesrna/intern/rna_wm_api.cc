@@ -69,7 +69,14 @@ const EnumPropertyItem rna_enum_window_cursor_items[] = {
 
 #ifdef RNA_RUNTIME
 
+#  include "AS_asset_representation.hh"
 #  include "AS_remote_library.hh"
+
+#  include "BKE_preview_image.hh"
+
+#  include "DNA_asset_types.h"
+
+#  include "ED_asset_menu_utils.hh"
 
 #  include "DNA_userdef_types.h"
 
@@ -931,6 +938,31 @@ static void rna_register_node_group_operators(bContext *C)
   ed::geometry::register_node_group_operators(*C);
 }
 
+/* Phantom: preview icon of an asset by reference, e.g. for quick-brush thumbnails. */
+static int rna_WindowManager_phantom_asset_preview_icon(bContext *C,
+                                                        int asset_library_type,
+                                                        const char *asset_library_identifier,
+                                                        const char *relative_asset_identifier)
+{
+  AssetWeakReference weak_ref;
+  weak_ref.asset_library_type = eAssetLibraryType(asset_library_type);
+  weak_ref.asset_library_identifier = (asset_library_identifier && asset_library_identifier[0]) ?
+                                          BLI_strdup(asset_library_identifier) :
+                                          nullptr;
+  weak_ref.relative_asset_identifier = BLI_strdup(relative_asset_identifier);
+
+  /* Returns null while the asset libraries are still loading; callers redraw and retry. */
+  asset_system::AssetRepresentation *asset = const_cast<asset_system::AssetRepresentation *>(
+      ed::asset::find_asset_from_weak_ref(*C, weak_ref, nullptr));
+  if (asset == nullptr) {
+    return 0;
+  }
+  /* Like the asset shelf: the UI loads the preview asynchronously once its icon is drawn. */
+  asset->ensure_previewable(*C);
+  const PreviewImage *preview = asset->get_preview();
+  return preview ? preview->runtime->icon_id : 0;
+}
+
 }  // namespace blender
 
 #else
@@ -1055,6 +1087,26 @@ void RNA_api_wm(StructRNA *srna)
 {
   FunctionRNA *func;
   PropertyRNA *parm;
+
+  /* Phantom. */
+  func = RNA_def_function(
+      srna, "phantom_asset_preview_icon", "rna_WindowManager_phantom_asset_preview_icon");
+  RNA_def_function_flag(func, FUNC_NO_SELF | FUNC_USE_CONTEXT);
+  RNA_def_function_ui_description(
+      func,
+      "Preview icon of an asset, or 0 while asset libraries are loading (redraw to retry)");
+  parm = RNA_def_enum(func,
+                      "asset_library_type",
+                      rna_enum_asset_library_type_items,
+                      ASSET_LIBRARY_LOCAL,
+                      "Library Type",
+                      "");
+  RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
+  RNA_def_string(func, "asset_library_identifier", nullptr, 0, "Library Identifier", "");
+  parm = RNA_def_string(func, "relative_asset_identifier", nullptr, 0, "Asset Identifier", "");
+  RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
+  parm = RNA_def_int(func, "icon", 0, 0, INT_MAX, "Icon", "", 0, INT_MAX);
+  RNA_def_function_return(func, parm);
 
   func = RNA_def_function(srna, "fileselect_add", "WM_event_add_fileselect");
   /* Note that a full description is located at:

@@ -1712,8 +1712,10 @@ static void icon_draw_size(float x,
   else if (di->type == ICON_TYPE_GEOM) {
 #ifdef USE_UI_TOOLBAR_HACK
     /* TODO(@ideasman42): scale icons up for toolbar,
-     * we need a way to detect larger buttons and do this automatic. */
-    {
+     * we need a way to detect larger buttons and do this automatic.
+     * Phantom: only for icon-sized draws. Large draws (preview buttons) already have their
+     * final size, and scaling them (vertically centered only) overflows the button. */
+    if (h <= int(ICON_DEFAULT_HEIGHT * 1.5f * UI_SCALE_FAC)) {
       float scale = float(ICON_DEFAULT_HEIGHT_TOOLBAR) / float(ICON_DEFAULT_HEIGHT);
       y = (y + (h / 2)) - ((h * scale) / 2);
       w *= scale;

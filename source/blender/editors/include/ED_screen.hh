@@ -193,6 +193,11 @@ void ED_region_image_metadata_panel_draw(ImBuf *ibuf, ui::Layout *layout);
 void ED_region_grid_draw(ARegion *region, float zoomx, float zoomy, float x0, float y0);
 float ED_region_blend_alpha(ARegion *region);
 /**
+ * Phantom: how far a sliding (blending) region is shown, 0..1, eased separately from its fade.
+ * 1 when the region isn't animating.
+ */
+float ED_region_blend_slide(ARegion *region);
+/**
  * The region's on-screen rectangle, accounting for its current blend animation slide offset (see
  * #ED_region_blend_alpha). Equal to `region->winrct` when the region isn't currently blending
  * in/out.

@@ -26,6 +26,12 @@ struct Materials {
     roughness = float((encoded_data >> 8u) & 0xFFu) * (1.0f / 255.0f);
     metallic = float(encoded_data & 0xFFu) * (1.0f / 255.0f);
   }
+
+  /** Phantom: per-object matcap layer, packed in the top bits (0 = the viewport's matcap). */
+  int matcap_layer_get(int handle) const
+  {
+    return int((floatBitsToUint(materials_data[handle].w) >> 24u) & 0x3Fu);
+  }
 };
 
 }  // namespace workbench::color

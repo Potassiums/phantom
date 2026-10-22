@@ -132,11 +132,25 @@ class Instance : public DrawEngine {
 
   void end_sync() final
   {
+    /* Phantom: per-object matcaps are known once all objects are synced. */
+    if (scene_state_.lighting_type == eLightingType::MATCAP) {
+      resources_.update_matcap_tx();
+    }
     resources_.material_buf.push_update();
     shadow_ps_.end_sync();
   }
 
   Material get_material(ObjectRef ob_ref, eV3DShadingColorType color_type, int slot = 0)
+  {
+    Material material = get_material_base(ob_ref, color_type, slot);
+    /* Phantom: an object's own matcap layer, in the top bits of the packed data. */
+    if (scene_state_.lighting_type == eLightingType::MATCAP) {
+      material.packed_data |= uint32_t(resources_.object_matcap_layer(*ob_ref.object)) << 24u;
+    }
+    return material;
+  }
+
+  Material get_material_base(ObjectRef ob_ref, eV3DShadingColorType color_type, int slot = 0)
   {
     switch (color_type) {
       case V3D_SHADING_OBJECT_COLOR:

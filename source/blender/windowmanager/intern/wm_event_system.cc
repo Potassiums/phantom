@@ -2684,8 +2684,9 @@ static void wm_operator_modal_ui_sound(const wmOperatorType *ot, const wmOperato
   const char *idname = ot->idname;
   if (strstr(idname, "stroke") || strstr(idname, "select") || STRPREFIX(idname, "PAINT_OT_") ||
       STRPREFIX(idname, "SCULPT_OT_") || STRPREFIX(idname, "SCULPT_CURVES_OT_") ||
-      STRPREFIX(idname, "GREASE_PENCIL_OT_"))
+      STRPREFIX(idname, "GREASE_PENCIL_OT_") || STREQ(idname, "OBJECT_OT_voxel_size_edit"))
   {
+    /* Voxel size edit plays its own soft confirm/cancel (it "finishes" on cancel too). */
     return;
   }
   const bool finished = retval & OPERATOR_FINISHED;

@@ -130,6 +130,23 @@ static void rna_Region_phantom_info_offset_set(PointerRNA *ptr, int value)
   region->runtime->info_offset_y = value;
 }
 
+static float rna_Region_phantom_slide_get(PointerRNA *ptr)
+{
+  return ED_region_blend_slide(static_cast<ARegion *>(ptr->data));
+}
+
+static int rna_Region_phantom_info_offset_x_get(PointerRNA *ptr)
+{
+  const ARegion *region = static_cast<ARegion *>(ptr->data);
+  return region->runtime->info_offset_x;
+}
+
+static void rna_Region_phantom_info_offset_x_set(PointerRNA *ptr, int value)
+{
+  ARegion *region = static_cast<ARegion *>(ptr->data);
+  region->runtime->info_offset_x = value;
+}
+
 static bool rna_Screen_fullscreen_get(PointerRNA *ptr)
 {
   bScreen *screen = static_cast<bScreen *>(ptr->data);
@@ -742,6 +759,27 @@ static void rna_def_region(BlenderRNA *brna)
       "Info Offset",
       "Phantom: push the 3D Viewport's text info down by this many pixels (runtime only), "
       "making room for a panel docked in the top-left corner");
+
+  prop = RNA_def_property(srna, "phantom_slide", PROP_FLOAT, PROP_FACTOR);
+  RNA_def_property_float_funcs(prop, "rna_Region_phantom_slide_get", nullptr, nullptr);
+  RNA_def_property_clear_flag(prop, PROP_EDITABLE);
+  RNA_def_property_ui_text(prop,
+                           "Slide",
+                           "Phantom: how far the region is shown while it slides in or out "
+                           "(1 when not animating)");
+
+  prop = RNA_def_property(srna, "phantom_info_offset_x", PROP_INT, PROP_PIXEL);
+  RNA_def_property_int_funcs(prop,
+                             "rna_Region_phantom_info_offset_x_get",
+                             "rna_Region_phantom_info_offset_x_set",
+                             nullptr);
+  RNA_def_property_range(prop, 0, 100000);
+  RNA_def_property_clear_flag(prop, PROP_ANIMATABLE);
+  RNA_def_property_ui_text(
+      prop,
+      "Info Offset X",
+      "Phantom: push the 3D Viewport's text info right by this many pixels (runtime only), "
+      "making room for a panel docked on the left");
 
   prop = RNA_def_property(srna, "active_panel_category", PROP_ENUM, PROP_NONE);
   RNA_def_property_editable_func(prop, "rna_Region_active_panel_category_editable_get");

@@ -9136,6 +9136,16 @@ class VIEW3D_PT_sculpt_context_menu(Panel):
             slider=True,
         )
 
+        # Phantom: ZBrush-style "Focal Shift" is the brush falloff hardness.
+        layout.prop(brush, "hardness", text="Focal Shift", slider=True)
+
+        # Phantom: stroke stabilizer (lazy mouse).
+        row = layout.row(align=True)
+        row.prop(brush, "use_smooth_stroke", text="", icon='MOD_SMOOTH')
+        sub = row.row(align=True)
+        sub.active = brush.use_smooth_stroke
+        sub.prop(brush, "smooth_stroke_radius", text="Stabilize Stroke", slider=True)
+
         if capabilities.has_auto_smooth:
             layout.prop(brush, "auto_smooth_factor", slider=True)
 

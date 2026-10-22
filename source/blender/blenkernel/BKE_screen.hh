@@ -678,9 +678,13 @@ struct ARegionRuntime {
   /** Last frame of the previous mode's tools, shown while they collapse. */
   gpu::Texture *tool_anim_snapshot = nullptr;
 
-  /** Phantom: push the 3D Viewport's text info (and statistics) down by this many pixels,
-   * to make room for a panel docked in the top-left corner. */
+  /** Phantom: push the 3D Viewport's text info (and statistics) down or right by this many
+   * pixels, to make room for a panel docked on the left. */
+  int info_offset_x = 0;
   int info_offset_y = 0;
+
+  /** Phantom: when a popup region was first shown, for its open animation (0 = not yet). */
+  double popup_anim_start = 0.0;
 
   /** For calling after building a blocks. */
   Vector<std::function<void(const bContext &C, ui::Block &Block)>> post_block_layout_fns;

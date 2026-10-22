@@ -7626,7 +7626,8 @@ struct RegionAlphaInfo {
   eRegion_Flag hidden;
 };
 
-#define TIMEOUT 0.22f
+/* Phantom: slightly longer, so the slide reads as motion. */
+#define TIMEOUT 0.30f
 #define TIMESTEP (1.0f / 60.0f)
 
 float ED_region_blend_alpha(ARegion *region)
@@ -7657,15 +7658,39 @@ float ED_region_blend_alpha(ARegion *region)
   return 1.0f;
 }
 
+float ED_region_blend_slide(ARegion *region)
+{
+  /* check parent too */
+  if (region->runtime->regiontimer == nullptr &&
+      (region->alignment & (RGN_SPLIT_PREV | RGN_ALIGN_HIDE_WITH_PREV)) && region->prev)
+  {
+    region = region->prev;
+  }
+  if (region->runtime->regiontimer == nullptr) {
+    return 1.0f;
+  }
+  const RegionAlphaInfo *rgi = static_cast<RegionAlphaInfo *>(
+      region->runtime->regiontimer->customdata);
+  const float t = float(region->runtime->regiontimer->time_duration) / TIMEOUT;
+  if (rgi->hidden) {
+    /* Sliding out: start gently, then accelerate away (finishing early, like the fade). */
+    const float s = std::clamp(t / (0.9f - TIMESTEP), 0.0f, 1.0f);
+    return 1.0f - s * s * s;
+  }
+  /* Sliding in: cubic ease-out. */
+  const float s = 1.0f - std::clamp(t, 0.0f, 1.0f);
+  return 1.0f - s * s * s;
+}
+
 void ED_region_blend_rect(ARegion *region, rcti *r_rect)
 {
   *r_rect = region->winrct;
-  const float alpha = ED_region_blend_alpha(region);
-  if (alpha >= 1.0f) {
+  const float slide = ED_region_blend_slide(region);
+  if (slide >= 1.0f) {
     return;
   }
-  const float ofs_x = BLI_rcti_size_x(r_rect) * (1.0f - alpha);
-  const float ofs_y = BLI_rcti_size_y(r_rect) * (1.0f - alpha);
+  const float ofs_x = BLI_rcti_size_x(r_rect) * (1.0f - slide);
+  const float ofs_y = BLI_rcti_size_y(r_rect) * (1.0f - slide);
   switch (RGN_ALIGN_ENUM_FROM_MASK(region->alignment)) {
     case RGN_ALIGN_RIGHT:
       r_rect->xmin += ofs_x;

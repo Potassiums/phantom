@@ -307,23 +307,62 @@ class VIEW3D_PT_tools_brush_select(Panel, View3DPaintBrushPanel, BrushSelectPane
 
     @classmethod
     def poll(cls, context):
+        # Phantom: in Sculpt Mode this panel replaces "Active Tool", so it shows for every tool.
+        if context.mode == 'SCULPT' and context.area.type == 'VIEW_3D':
+            return True
         return cls.active_tool_uses_brushes(context) and cls.get_brush_mode(context) is not None
 
     def draw(self, context):
-        # Phantom: in Sculpt Mode this panel replaces "Active Tool", so show the tool on top.
-        if context.mode == 'SCULPT' and context.area.type == 'VIEW_3D':
-            from bl_ui.space_toolsystem_common import ToolSelectPanelHelper
-            space_type, mode = ToolSelectPanelHelper._tool_key_from_context(context)
-            tool_cls = ToolSelectPanelHelper._tool_class_from_space_type(space_type)
-            item, _tool, icon_value = tool_cls._tool_get_active(
-                context, space_type, mode, with_icon=True)
+        if not (context.mode == 'SCULPT' and context.area.type == 'VIEW_3D'):
+            super().draw(context)
+            return
+
+        # Phantom: show what is in use right now, including while Shift (smooth), Ctrl (mask)
+        # or Ctrl-Shift (trim) is held, and tools that don't use brushes.
+        import phantom_quick_brushes
+        from bl_ui.space_toolsystem_common import ToolSelectPanelHelper
+        layout = self.layout
+        space_type, mode = ToolSelectPanelHelper._tool_key_from_context(context)
+        tool_cls = ToolSelectPanelHelper._tool_class_from_space_type(space_type)
+        item, _tool, icon_value = tool_cls._tool_get_active(context, space_type, mode, with_icon=True)
+
+        temporary = phantom_quick_brushes.temporary_display(context)
+        if temporary is not None:
+            label, preview_icon, _is_tool = temporary
+            self._draw_header_line(layout, label, preview_icon)
+            self._draw_preview(layout, context, label, preview_icon)
+            return
+
+        if item is not None:
+            self._draw_header_line(
+                layout, iface_(item.label, i18n_contexts.operator_default), icon_value)
+        if not self.active_tool_uses_brushes(context):
+            # A tool without brushes (e.g. Line Trim): show it in place of the brush.
             if item is not None:
-                self.layout.label(
-                    text="    " + iface_(item.label, i18n_contexts.operator_default),
-                    icon_value=icon_value,
-                    translate=False,
-                )
+                self._draw_preview(
+                    layout, context, iface_(item.label, i18n_contexts.operator_default), icon_value)
+            return
         super().draw(context)
+
+    @staticmethod
+    def _draw_header_line(layout, label, icon_value):
+        layout.label(text="    " + label, icon_value=icon_value, translate=False)
+
+    @staticmethod
+    def _draw_preview(layout, context, label, icon_value):
+        """Same widget and layout as the brush preview, so every state has the same size
+        and tool icons fit inside the frame like brush thumbnails do."""
+        from bl_ui.properties_paint_common import BrushAssetShelf
+        shelf_name = BrushAssetShelf.get_shelf_name_from_context(context)
+        row = layout.row()
+        col = row.column(align=True)
+        if shelf_name:
+            col.template_asset_shelf_popover(shelf_name, name=None, icon='NONE', icon_value=icon_value)
+        name_row = col.row()
+        name_row.enabled = False
+        name_row.label(text=label, translate=False)
+        # Keep the width the brush menu button takes in the normal layout.
+        row.column().label(text="", icon='BLANK1')
 
 
 class VIEW3D_PT_tools_brush_quick(Panel, View3DPaintBrushPanel):
@@ -335,7 +374,8 @@ class VIEW3D_PT_tools_brush_quick(Panel, View3DPaintBrushPanel):
 
     @classmethod
     def poll(cls, context):
-        return context.mode == 'SCULPT' and cls.active_tool_uses_brushes(context)
+        # Shown for every sculpt tool, so a slot can always switch back to a brush.
+        return context.mode == 'SCULPT' and context.area.type == 'VIEW_3D'
 
     def draw(self, context):
         import phantom_quick_brushes
@@ -362,10 +402,10 @@ class VIEW3D_PT_tools_brush_settings(Panel, View3DPaintBrushPanel):
 
         brush_settings(layout.column(), context, brush, popover=self.is_popover)
 
-        # Phantom: Lazy Mouse (stroke stabilizer) right in the main settings while sculpting.
+        # Phantom: stroke stabilizer (lazy mouse) right in the main settings while sculpting.
         if context.mode == 'SCULPT' and hasattr(brush, "use_smooth_stroke"):
             col = layout.column()
-            col.prop(brush, "use_smooth_stroke", text="Lazy Mouse")
+            col.prop(brush, "use_smooth_stroke", text="Stabilize Stroke")
             sub = col.column()
             sub.active = brush.use_smooth_stroke
             sub.prop(brush, "smooth_stroke_radius", text="Radius", slider=True)

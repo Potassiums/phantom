@@ -123,6 +123,8 @@ struct VertOut {
   [[flat]] int object_id;
   [[flat]] float roughness;
   [[flat]] float metallic;
+  /* Phantom: per-object matcap (0 = the viewport's matcap). */
+  [[flat]] int matcap_layer;
 };
 
 struct MeshIn {
@@ -170,6 +172,8 @@ struct MeshIn {
 
   materials.material_data_get(
       custom_id, v_in.ac.rgb, v_out.color, v_out.alpha, v_out.roughness, v_out.metallic);
+
+  v_out.matcap_layer = materials.matcap_layer_get(custom_id);
 }
 
 struct Curves {
@@ -237,6 +241,7 @@ struct Curves {
   float3 vert_col = draw::curves::get_customdata_vec3(ws_pt.curve_id, srt.ac);
   materials.material_data_get(
       custom_id, vert_col, v_out.color, v_out.alpha, v_out.roughness, v_out.metallic);
+  v_out.matcap_layer = materials.matcap_layer_get(custom_id);
 
   /* Hairs have lots of layer and can rapidly become the most prominent surface.
    * So we lower their alpha artificially. */
@@ -299,6 +304,8 @@ struct Curves {
   materials.material_data_get(
       custom_id, float3(1.0f), v_out.color, v_out.alpha, v_out.roughness, v_out.metallic);
 
+  v_out.matcap_layer = materials.matcap_layer_get(custom_id);
+
   v_out.object_id = int(id.resource_id<1>() & 0xFFFFu) + 1;
 }
 
@@ -348,6 +355,8 @@ struct Curves {
   materials.material_data_get(
       custom_id, float3(1.0f), v_out.color, v_out.alpha, v_out.roughness, v_out.metallic);
 
+  v_out.matcap_layer = materials.matcap_layer_get(custom_id);
+
   /* GSplats apply color/alpha on top of the existing workbench material. */
   v_out.color *= shape.get_radiance(gs.id);
   v_out.alpha *= shape.get_opacity(gs.id);
@@ -387,8 +396,9 @@ struct OpaqueOut {
   }
 
   if (srt.lighting_mode == WORKBENCH_LIGHTING_MATCAP) [[static_branch]] {
-    /* For matcaps, save front facing in alpha channel. */
-    frag_out.material.a = float(facing);
+    /* For matcaps, save front facing in alpha channel.
+     * Phantom: plus twice the per-object matcap layer (decoded in the composite pass). */
+    frag_out.material.a = float(facing) + 2.0f * float(v_out.matcap_layer);
   }
 
   if (srt.use_gsplat) [[static_branch]] {
@@ -428,7 +438,7 @@ struct TransparentOut {
 
   float3 shaded_color = float3(0.0f, 1.0f, 1.0f);
   if (srt.lighting_mode == WORKBENCH_LIGHTING_MATCAP) [[static_branch]] {
-    shaded_color = get_matcap_lighting(world, srt.matcap_tx, color, N, I);
+    shaded_color = get_matcap_lighting(world, srt.matcap_tx, v_out.matcap_layer, color, N, I);
   }
   else if (srt.lighting_mode == WORKBENCH_LIGHTING_STUDIO) [[static_branch]] {
     shaded_color = get_world_lighting(world, color, v_out.roughness, v_out.metallic, N, I);

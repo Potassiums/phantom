@@ -17,6 +17,10 @@ from bpy.types import Operator
 import phantom_quick_brushes as quick_brushes
 
 SYNC_INTERVAL = 0.2
+# Retry missing quick-brush icons for this many sync intervals (about 10 seconds).
+ICON_RETRY_LIMIT = 50
+_icon_retries = 0
+_addon_keymaps = []
 
 # Areas whose sidebar Phantom moved: area pointer -> (was shown, previous tab).
 _moved = {}
@@ -133,6 +137,97 @@ class SCULPT_OT_phantom_quick_brush_add(Operator):
         return {'FINISHED'}
 
 
+def _redraw_sidebars(context):
+    for window in context.window_manager.windows:
+        for area in window.screen.areas:
+            if area.type == 'VIEW_3D':
+                for region in area.regions:
+                    if region.type == 'UI':
+                        region.tag_redraw()
+
+
+class SCULPT_OT_phantom_key_watch(Operator):
+    """Track Shift/Ctrl so the Brush Asset panel can show the brush or tool they switch to"""
+    bl_idname = "sculpt.phantom_key_watch"
+    bl_label = "Watch Modifier Keys"
+    bl_options = {'INTERNAL'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == 'SCULPT'
+
+    def invoke(self, context, event):
+        held = quick_brushes.held
+        if held["shift"] != event.shift or held["ctrl"] != event.ctrl:
+            held["shift"] = event.shift
+            held["ctrl"] = event.ctrl
+            _redraw_sidebars(context)
+        # Never consume the event.
+        return {'PASS_THROUGH'}
+
+
+class SCULPT_OT_phantom_trim(Operator):
+    """Trim with the trim tool selected in the tool-bar (box, lasso, line or polyline)"""
+    bl_idname = "sculpt.phantom_trim"
+    bl_label = "Trim"
+    bl_options = {'INTERNAL'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == 'SCULPT'
+
+    def invoke(self, context, event):
+        tool = quick_brushes.selected_trim_tool(context)
+        op_id = quick_brushes.TRIM_OPERATORS[tool.idname if tool else "builtin.box_trim"]
+        category, name = op_id.split(".")
+        operator = getattr(getattr(bpy.ops, category), name)
+        op_props = operator.get_rna_type().properties
+
+        # Use the settings of that trim tool (mode, shape, solver...).
+        kwargs = {}
+        tool_ref = context.workspace.tools.from_space_view3d_mode('SCULPT', create=False)
+        if tool_ref is not None:
+            props = tool_ref.operator_properties(op_id)
+            for prop in props.bl_rna.properties:
+                if prop.is_hidden or prop.is_readonly or prop.type in {'COLLECTION', 'POINTER'}:
+                    continue
+                value = getattr(props, prop.identifier)
+                kwargs[prop.identifier] = tuple(value) if getattr(prop, "is_array", False) else value
+        # Start the gesture right away from this press.
+        if "wait_for_input" in op_props:
+            kwargs["wait_for_input"] = False
+
+        result = operator('INVOKE_DEFAULT', **kwargs)
+        return {'FINISHED'} if result & {'RUNNING_MODAL', 'FINISHED'} else {'CANCELLED'}
+
+
+class SCULPT_OT_phantom_polyframe(Operator):
+    """Show or hide face sets (polygroups) together with the wireframe, like ZBrush's PolyFrame"""
+    bl_idname = "sculpt.phantom_polyframe"
+    bl_label = "PolyFrame"
+    bl_options = {'INTERNAL'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == 'SCULPT' and context.space_data and context.space_data.type == 'VIEW_3D'
+
+    def execute(self, context):
+        overlay = context.space_data.overlay
+        show = not (overlay.show_sculpt_face_sets and overlay.show_wireframes)
+        overlay.show_sculpt_face_sets = show
+        overlay.show_wireframes = show
+        if show:
+            # Every edge, like ZBrush's polyframe.
+            overlay.wireframe_threshold = 1.0
+        return {'FINISHED'}
+
+
+def _draw_header_asset_shelf_toggle(self, context):
+    if context.mode != 'SCULPT':
+        return
+    self.layout.prop(context.space_data, "show_region_asset_shelf", text="", icon='ASSET_MANAGER')
+
+
 def _draw_button_context_menu(self, context):
     """Right-click menu entries for quick-brush slots."""
     props = getattr(context, "button_operator", None)
@@ -221,6 +316,15 @@ def _sync_sidebars():
         if key not in seen:
             del _moved[key]
             _pending_tool_tab.discard(key)
+
+    # Quick-brush icons wait for the asset libraries to load: retry for a while.
+    global _icon_retries
+    if quick_brushes.needs_redraw and _icon_retries < ICON_RETRY_LIMIT:
+        quick_brushes.needs_redraw = False
+        _icon_retries += 1
+        _redraw_sidebars(bpy.context)
+    elif not quick_brushes.needs_redraw:
+        _icon_retries = 0
     return SYNC_INTERVAL
 
 
@@ -229,6 +333,9 @@ classes = (
     SCULPT_OT_phantom_quick_brush_assign,
     SCULPT_OT_phantom_quick_brush_remove,
     SCULPT_OT_phantom_quick_brush_add,
+    SCULPT_OT_phantom_key_watch,
+    SCULPT_OT_phantom_trim,
+    SCULPT_OT_phantom_polyframe,
 )
 
 
@@ -236,13 +343,25 @@ def register():
     for cls in classes:
         bpy.utils.register_class(cls)
     bpy.types.UI_MT_button_context_menu.append(_draw_button_context_menu)
+    bpy.types.VIEW3D_HT_header.append(_draw_header_asset_shelf_toggle)
     if not bpy.app.background:
         bpy.app.timers.register(_sync_sidebars, first_interval=SYNC_INTERVAL, persistent=True)
 
+    kc = bpy.context.window_manager.keyconfigs.addon
+    if kc:
+        km = kc.keymaps.new(name="Sculpt", space_type='EMPTY')
+        for key in ('LEFT_SHIFT', 'RIGHT_SHIFT', 'LEFT_CTRL', 'RIGHT_CTRL', 'MOUSEMOVE'):
+            kmi = km.keymap_items.new(SCULPT_OT_phantom_key_watch.bl_idname, key, 'ANY', any=True)
+            _addon_keymaps.append((km, kmi))
+
 
 def unregister():
+    for km, kmi in _addon_keymaps:
+        km.keymap_items.remove(kmi)
+    _addon_keymaps.clear()
     if bpy.app.timers.is_registered(_sync_sidebars):
         bpy.app.timers.unregister(_sync_sidebars)
+    bpy.types.VIEW3D_HT_header.remove(_draw_header_asset_shelf_toggle)
     bpy.types.UI_MT_button_context_menu.remove(_draw_button_context_menu)
     quick_brushes.unregister()
     for cls in reversed(classes):

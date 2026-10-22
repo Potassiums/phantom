@@ -17,6 +17,7 @@
 #include "DNA_object_types.h"
 #include "DNA_screen_types.h"
 #include "DNA_space_types.h"
+#include "DNA_theme_types.h"
 #include "DNA_userdef_types.h"
 #include "DNA_view3d_types.h"
 #include "DNA_windowmanager_types.h"
@@ -28,6 +29,7 @@
 #include "BLI_math_vector_c.hh"
 #include "BLI_math_vector_types.hh"
 #include "BLI_rect.hh"
+#include "BLI_time.hh"
 #include "BLI_utildefines.hh"
 
 #include "BKE_context.hh"
@@ -867,6 +869,42 @@ gpu::Texture *wm_draw_region_texture(ARegion *region, int view)
   return GPU_offscreen_color_texture(region->runtime->draw_buffer->offscreen);
 }
 
+/** Phantom: duration of the popup open animation, in seconds. */
+static constexpr float POPUP_ANIM_TIME = 0.14f;
+
+/**
+ * Phantom: animate a popup region while it opens: fade in, grow from 94% and settle down
+ * from a few pixels above. Keeps the popup redrawing until the animation ends.
+ */
+static void wm_draw_popup_open_anim(ARegion *region, rcti &rect_geo, float &alpha)
+{
+  const double now = BLI_time_now_seconds();
+  if (region->runtime->popup_anim_start == 0.0) {
+    region->runtime->popup_anim_start = now;
+  }
+  const float t = std::clamp(float(now - region->runtime->popup_anim_start) / POPUP_ANIM_TIME,
+                             0.0f,
+                             1.0f);
+  if (t >= 1.0f) {
+    return;
+  }
+  /* Cubic ease-out. */
+  const float ease = 1.0f - (1.0f - t) * (1.0f - t) * (1.0f - t);
+  alpha *= ease;
+
+  const float scale = 0.94f + 0.06f * ease;
+  const float half_w = BLI_rcti_size_x(&rect_geo) * 0.5f * scale;
+  const float half_h = BLI_rcti_size_y(&rect_geo) * 0.5f * scale;
+  const float center_x = BLI_rcti_cent_x_fl(&rect_geo);
+  const float center_y = BLI_rcti_cent_y_fl(&rect_geo) + (1.0f - ease) * 6.0f * UI_SCALE_FAC;
+  rect_geo.xmin = int(roundf(center_x - half_w));
+  rect_geo.xmax = int(roundf(center_x + half_w));
+  rect_geo.ymin = int(roundf(center_y - half_h));
+  rect_geo.ymax = int(roundf(center_y + half_h));
+
+  ED_region_tag_redraw_no_rebuild(region);
+}
+
 void wm_draw_region_blend(ARegion *region, int view, bool blend)
 {
   if (!region->runtime->draw_buffer) {
@@ -891,6 +929,12 @@ void wm_draw_region_blend(ARegion *region, int view, bool blend)
   if (blend) {
     ED_region_blend_rect(region, &rect_geo);
   }
+
+  /* Phantom: popups (menus, popovers, tooltips) open with a quick fade, grow and settle. */
+  if (blend && region->regiontype == RGN_TYPE_TEMPORARY) {
+    wm_draw_popup_open_anim(region, rect_geo, alpha);
+  }
+
   rect_geo.xmax += 1;
   rect_geo.ymax += 1;
 
@@ -900,17 +944,19 @@ void wm_draw_region_blend(ARegion *region, int view, bool blend)
   rect_tex.xmax = 1.0f + halfx;
   rect_tex.ymax = 1.0f + halfy;
 
+  /* Phantom: the slide (not the fade) decides how much of a sliding region shows. */
+  const float slide = blend ? ED_region_blend_slide(region) : 1.0f;
   if (RGN_ALIGN_ENUM_FROM_MASK(region->alignment) == RGN_ALIGN_RIGHT) {
-    rect_tex.xmax *= alpha;
+    rect_tex.xmax *= slide;
   }
   else if (RGN_ALIGN_ENUM_FROM_MASK(region->alignment) == RGN_ALIGN_LEFT) {
-    rect_tex.xmin += 1.0f - alpha;
+    rect_tex.xmin += 1.0f - slide;
   }
   else if (RGN_ALIGN_ENUM_FROM_MASK(region->alignment) == RGN_ALIGN_TOP) {
-    rect_tex.ymax *= alpha;
+    rect_tex.ymax *= slide;
   }
   else if (RGN_ALIGN_ENUM_FROM_MASK(region->alignment) == RGN_ALIGN_BOTTOM) {
-    rect_tex.ymin += 1.0f - alpha;
+    rect_tex.ymin += 1.0f - slide;
   }
 
   /* Not the same layout as #rctf/#rcti. */

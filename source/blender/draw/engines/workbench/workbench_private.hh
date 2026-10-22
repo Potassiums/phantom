@@ -23,6 +23,10 @@
 #include "GPU_capabilities.hh"
 #include "GPU_ray_tracing.hh"
 
+namespace blender {
+struct StudioLight;
+}
+
 namespace blender::workbench {
 
 using namespace draw;
@@ -252,8 +256,20 @@ class CavityEffect {
 struct SceneResources {
   static const int jitter_tx_size = 64;
 
-  StringRefNull current_matcap = {};
+  /**
+   * Matcaps, two layers each (diffuse, specular): the viewport's matcap first (layer 0), then
+   * Phantom's per-object matcaps (layer `i + 1` for `object_matcaps[i]`).
+   * Bound by reference, since it is rebuilt at the end of sync once all objects are known.
+   */
   Texture matcap_tx = "matcap_tx";
+  StudioLight *matcap_light = nullptr;
+  Vector<std::string> object_matcaps;
+  std::string matcap_key;
+
+  /** Phantom: the matcap layer of an object (0 when it uses the viewport's matcap). */
+  int object_matcap_layer(const Object &object);
+  /** Phantom: (re)build #matcap_tx when the viewport or per-object matcaps changed. */
+  void update_matcap_tx();
 
   TextureFromPool object_id_tx = "wb_object_id_tx";
 

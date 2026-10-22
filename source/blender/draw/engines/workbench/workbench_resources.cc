@@ -8,6 +8,7 @@
 
 #include "../eevee/eevee_lut.hh" /* TODO: find somewhere to share blue noise Table. */
 
+#include "BKE_idprop.hh"
 #include "BKE_studiolight.h"
 
 #include "BLI_math_matrix_c.hh"
@@ -23,35 +24,92 @@
 
 namespace blender::workbench {
 
-static bool get_matcap_tx(Texture &matcap_tx, StudioLight &studio_light)
+/**
+ * Append a matcap's diffuse and specular layers at `size` (resized if needed, since all layers
+ * of the array share one size). A missing specular image becomes a black layer.
+ */
+static void append_matcap_layers(Vector<float> &buffer, StudioLight &studio_light, int2 size)
 {
   BKE_studiolight_ensure_flag(&studio_light,
                               STUDIOLIGHT_MATCAP_DIFFUSE_GPUTEXTURE |
                                   STUDIOLIGHT_MATCAP_SPECULAR_GPUTEXTURE);
-  ImBuf *matcap_diffuse = studio_light.matcap_diffuse.ibuf;
-  ImBuf *matcap_specular = studio_light.matcap_specular.ibuf;
-  if (matcap_diffuse && matcap_diffuse->float_data()) {
-    int layers = 1;
-    const float *buffer = matcap_diffuse->float_data();
-    Vector<float> combined_buffer;
-
-    if (matcap_specular && matcap_specular->float_data()) {
-      int size = matcap_diffuse->x * matcap_diffuse->y * 4;
-      combined_buffer.extend(matcap_diffuse->float_data(), size);
-      combined_buffer.extend(matcap_specular->float_data(), size);
-      buffer = combined_buffer.begin();
-      layers++;
+  const int64_t layer_len = int64_t(size.x) * size.y * 4;
+  for (ImBuf *ibuf : {studio_light.matcap_diffuse.ibuf, studio_light.matcap_specular.ibuf}) {
+    if (ibuf == nullptr || ibuf->float_data() == nullptr) {
+      buffer.append_n_times(0.0f, layer_len);
     }
-
-    matcap_tx = Texture(studio_light.name,
-                        gpu::TextureFormat::SFLOAT_16_16_16_16,
-                        GPU_TEXTURE_USAGE_SHADER_READ,
-                        int2(matcap_diffuse->x, matcap_diffuse->y),
-                        layers,
-                        buffer);
-    return true;
+    else if (ibuf->x == size.x && ibuf->y == size.y) {
+      buffer.extend(ibuf->float_data(), layer_len);
+    }
+    else {
+      ImBuf *scaled = IMB_dupImBuf(ibuf);
+      IMB_scale(scaled, size, IMBScaleFilter::Bilinear, false);
+      buffer.extend(scaled->float_data(), layer_len);
+      IMB_freeImBuf(scaled);
+    }
   }
-  return false;
+}
+
+int SceneResources::object_matcap_layer(const Object &object)
+{
+  const IDProperty *prop = object.id.properties ?
+                               IDP_GetPropertyTypeFromGroup(
+                                   object.id.properties, "phantom_matcap", IDP_STRING) :
+                               nullptr;
+  if (prop == nullptr || IDP_string_get(prop)[0] == '\0') {
+    return 0;
+  }
+  const std::string name = IDP_string_get(prop);
+  int index = object_matcaps.first_index_of_try(name);
+  if (index == -1) {
+    /* Layers are packed in 6 bits, two texture layers each. */
+    if (object_matcaps.size() >= 31) {
+      return 0;
+    }
+    object_matcaps.append(name);
+    index = object_matcaps.size() - 1;
+  }
+  return index + 1;
+}
+
+void SceneResources::update_matcap_tx()
+{
+  StudioLight *global = matcap_light;
+  ImBuf *global_diffuse = global ? (BKE_studiolight_ensure_flag(
+                                        global, STUDIOLIGHT_MATCAP_DIFFUSE_GPUTEXTURE),
+                                    global->matcap_diffuse.ibuf) :
+                                   nullptr;
+  if (global_diffuse == nullptr || global_diffuse->float_data() == nullptr) {
+    if (!matcap_tx.is_valid()) {
+      matcap_tx.ensure_2d_array(
+          gpu::TextureFormat::SFLOAT_16_16_16_16, int2(1), 2, GPU_TEXTURE_USAGE_SHADER_READ);
+    }
+    return;
+  }
+
+  std::string key = global->name;
+  for (const std::string &name : object_matcaps) {
+    key += "|" + name;
+  }
+  if (key == matcap_key && matcap_tx.is_valid()) {
+    return;
+  }
+
+  const int2 size(global_diffuse->x, global_diffuse->y);
+  Vector<float> buffer;
+  append_matcap_layers(buffer, *global, size);
+  for (const std::string &name : object_matcaps) {
+    StudioLight *light = BKE_studiolight_find(name.c_str(), STUDIOLIGHT_TYPE_MATCAP);
+    /* A matcap that no longer exists falls back to the viewport's one. */
+    append_matcap_layers(buffer, light ? *light : *global, size);
+  }
+  matcap_tx = Texture("matcap_tx",
+                      gpu::TextureFormat::SFLOAT_16_16_16_16,
+                      GPU_TEXTURE_USAGE_SHADER_READ,
+                      size,
+                      2 * (1 + object_matcaps.size()),
+                      buffer.data());
+  matcap_key = key;
 }
 
 static float4x4 get_world_shading_rotation_matrix(float studiolight_rot_z)
@@ -126,6 +184,7 @@ void SceneResources::init(const SceneState &scene_state, const DRWContext *ctx)
   world_buf.matcap_orientation = (shading.flag & V3D_SHADING_MATCAP_FLIP_X) != 0;
 
   StudioLight *studio_light = nullptr;
+  matcap_light = nullptr;
   if (U.edit_studio_light && shading.light == V3D_LIGHTING_STUDIO) {
     /* Do not use this for MATCAP.
      * matcap is also stored as StudioLight data but it needs its selected matcap texture loaded
@@ -135,12 +194,9 @@ void SceneResources::init(const SceneState &scene_state, const DRWContext *ctx)
   else {
     if (shading.light == V3D_LIGHTING_MATCAP) {
       studio_light = BKE_studiolight_find(shading.matcap, STUDIOLIGHT_TYPE_MATCAP);
-      if (studio_light && studio_light->name != current_matcap) {
-        if (get_matcap_tx(matcap_tx, *studio_light)) {
-          current_matcap = studio_light->name;
-        }
-      }
     }
+    /* The matcap texture itself is built in #update_matcap_tx at the end of sync. */
+    matcap_light = studio_light;
     /* If matcaps are missing, use this as fallback. */
     if (studio_light == nullptr) {
       studio_light = BKE_studiolight_find(shading.studio_light, STUDIOLIGHT_TYPE_STUDIO);
@@ -148,7 +204,7 @@ void SceneResources::init(const SceneState &scene_state, const DRWContext *ctx)
   }
   if (!matcap_tx.is_valid()) {
     matcap_tx.ensure_2d_array(
-        gpu::TextureFormat::SFLOAT_16_16_16_16, int2(1), 1, GPU_TEXTURE_USAGE_SHADER_READ);
+        gpu::TextureFormat::SFLOAT_16_16_16_16, int2(1), 2, GPU_TEXTURE_USAGE_SHADER_READ);
   }
 
   float4x4 world_shading_rotation = float4x4::identity();

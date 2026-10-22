@@ -171,6 +171,9 @@ static wmOperatorStatus voxel_remesh_exec(bContext *C, wmOperator *op)
   DEG_id_tag_update(&ob->id, ID_RECALC_GEOMETRY);
   WM_event_add_notifier(C, NC_GEOM | ND_DATA, ob->data);
 
+  /* Phantom: same soft "settle" as confirming a grab. */
+  WM_ui_sound_play(WMUISound::TransformConfirm);
+
   return OPERATOR_FINISHED;
 }
 
@@ -213,6 +216,9 @@ struct VoxelSizeEditCustomData {
   float voxel_size;
   float voxel_size_min;
   float voxel_size_max;
+
+  /** Phantom: last measurement step a tick sound was played for. */
+  int sound_step;
 
   float preview_plane[4][3];
 
@@ -370,6 +376,12 @@ static void voxel_size_edit_update_header(wmOperator *op, bContext *C)
   status.item_bool(IFACE_("Precision Mode"), cd->slow_mode, ICON_EVENT_SHIFT);
 }
 
+static int voxel_size_sound_step(const float voxel_size)
+{
+  /* Each step is a 4% change in size, so ticks feel the same at any scale. */
+  return int(std::floor(std::log(voxel_size) / std::log(1.04f)));
+}
+
 static wmOperatorStatus voxel_size_edit_modal(bContext *C, wmOperator *op, const wmEvent *event)
 {
   ARegion *region = CTX_wm_region(C);
@@ -383,6 +395,7 @@ static wmOperatorStatus voxel_size_edit_modal(bContext *C, wmOperator *op, const
   {
     voxel_size_edit_cancel(C, op);
     ED_region_tag_redraw(region);
+    WM_ui_sound_play(WMUISound::TransformCancel);
     return OPERATOR_FINISHED;
   }
 
@@ -397,6 +410,7 @@ static wmOperatorStatus voxel_size_edit_modal(bContext *C, wmOperator *op, const
     ED_region_tag_redraw(region);
     ED_workspace_status_text(C, nullptr);
     WM_event_add_notifier(C, NC_GEOM | ND_DATA, nullptr);
+    WM_ui_sound_play(WMUISound::TransformConfirm);
     return OPERATOR_FINISHED;
   }
 
@@ -429,6 +443,13 @@ static wmOperatorStatus voxel_size_edit_modal(bContext *C, wmOperator *op, const
 
   cd->voxel_size = clamp_f(
       cd->voxel_size, max_ff(cd->voxel_size_min, 0.0001f), cd->voxel_size_max);
+
+  /* Phantom: a soft tick for every equal step of relative size change, like a measuring wheel. */
+  const int sound_step = voxel_size_sound_step(cd->voxel_size);
+  if (sound_step != cd->sound_step) {
+    cd->sound_step = sound_step;
+    WM_ui_sound_play(WMUISound::MeasureTick);
+  }
 
   ED_region_tag_redraw(region);
 
@@ -597,6 +618,8 @@ static wmOperatorStatus voxel_size_edit_invoke(bContext *C, wmOperator *op, cons
   const float pixelsize = ED_view3d_pixel_size_no_ui_scale(rv3d, text_pos_word_space);
   scale_m4_fl(scale_mat, pixelsize * 0.5f);
   mul_m4_m4_post(cd->text_mat, scale_mat);
+
+  cd->sound_step = voxel_size_sound_step(max_ff(cd->voxel_size, 0.0001f));
 
   WM_event_add_modal_handler(C, op);
 

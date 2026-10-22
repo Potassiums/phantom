@@ -2654,8 +2654,10 @@ enum class WMUISound {
   Undo,
   Redo,
   ModeSwitch,
+  /* Measuring steps while adjusting a size interactively (voxel size). */
+  MeasureTick,
 };
-#define WM_UI_SOUND_COUNT (int(WMUISound::ModeSwitch) + 1)
+#define WM_UI_SOUND_COUNT (int(WMUISound::MeasureTick) + 1)
 
 /** Play an interface sound effect, if enabled in the preferences. */
 void WM_ui_sound_play(WMUISound sound, float pitch = 1.0f);

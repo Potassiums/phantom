@@ -129,9 +129,31 @@ def _cache_thumbnail(slot):
         del _previews[path]
 
 
+# Set when an icon couldn't be found yet (asset libraries still loading): redraw later.
+needs_redraw = False
+
+
+def asset_icon(slot):
+    """Preview icon of a brush asset straight from the asset library (as the asset shelf
+    shows it), or 0 while the libraries are still loading."""
+    try:
+        return bpy.types.WindowManager.phantom_asset_preview_icon(
+            asset_library_type=slot["type"],
+            asset_library_identifier=slot["identifier"],
+            relative_asset_identifier=slot["relative"],
+        )
+    except (TypeError, ValueError):
+        return 0
+
+
 def _slot_icon(slot):
-    """The slot's thumbnail icon: cached PNG, else the loaded brush's preview, else 0."""
-    global _previews
+    """The slot's thumbnail icon: the asset's own preview, else the cached PNG,
+    else the loaded brush's preview, else 0."""
+    global _previews, needs_redraw
+    icon = asset_icon(slot)
+    if icon:
+        return icon
+    needs_redraw = True
     path = _thumbnail_path(slot)
     if os.path.exists(path):
         if _previews is None:
@@ -161,7 +183,11 @@ def current_reference(context):
 
 
 def slot_name(slot):
-    return slot["relative"].rsplit("/", 1)[-1]
+    # ".../file.blend/Brush/<name>": names may contain "/" (e.g. "Inflate/Deflate").
+    relative = slot["relative"]
+    if "/Brush/" in relative:
+        return relative.split("/Brush/", 1)[1]
+    return relative.rsplit("/", 1)[-1]
 
 
 def assign(index, slot):
@@ -201,6 +227,66 @@ def unregister():
         import bpy.utils.previews
         bpy.utils.previews.remove(_previews)
         _previews = None
+
+
+# -----------------------------------------------------------------------------
+# What the Brush Asset panel shows while a modifier key is held
+
+# Kept up to date by Phantom's key watcher in Sculpt Mode.
+held = {"shift": False, "ctrl": False}
+
+_ESSENTIALS_SCULPT = "brushes/essentials_brushes-mesh_sculpt.blend/Brush/"
+
+# Trim tools in the tool-bar, and the gesture operator each one runs.
+TRIM_OPERATORS = {
+    "builtin.box_trim": "sculpt.trim_box_gesture",
+    "builtin.lasso_trim": "sculpt.trim_lasso_gesture",
+    "builtin.line_trim": "sculpt.trim_line_gesture",
+    "builtin.polyline_trim": "sculpt.trim_polyline_gesture",
+}
+
+
+def selected_trim_tool(context):
+    """The trim tool picked in the tool-bar's trim group (the active one if it's a trim tool)."""
+    from bl_ui.space_toolsystem_toolbar import VIEW3D_PT_tools_active as toolbar
+    active = context.workspace.tools.from_space_view3d_mode('SCULPT', create=False)
+    for item in toolbar.tools_from_context(context, mode='SCULPT'):
+        if not isinstance(item, tuple) or not item or getattr(item[0], "idname", None) not in TRIM_OPERATORS:
+            continue
+        if active is not None:
+            for tool in item:
+                if tool.idname == active.idname:
+                    return tool
+        index = toolbar._tool_group_active.get(item[0].idname, 0)
+        return item[min(index, len(item) - 1)]
+    return None
+
+
+def tool_icon(tool):
+    from bl_ui.space_toolsystem_common import ToolSelectPanelHelper
+    return ToolSelectPanelHelper._icon_value_from_icon_handle(tool.icon)
+
+
+def temporary_display(context):
+    """(label, icon_value, is_tool) of what a held modifier switches to, or None.
+
+    Shift smooths, Ctrl masks, Ctrl-Shift trims with the selected trim tool.
+    ``is_tool`` tells tool icons (drawn smaller) from brush thumbnails."""
+    if held["ctrl"] and held["shift"]:
+        tool = selected_trim_tool(context)
+        if tool is not None:
+            return tool.label, tool_icon(tool), True
+        return None
+    if held["ctrl"]:
+        name = "Mask"
+    elif held["shift"]:
+        brush = context.tool_settings.sculpt.brush
+        # Paint brushes smooth colors with Blur, the rest of the brushes with Smooth.
+        name = "Blur" if brush is not None and brush.sculpt_brush_type == 'PAINT' else "Smooth"
+    else:
+        return None
+    slot = {"type": 'ESSENTIALS', "identifier": "", "relative": _ESSENTIALS_SCULPT + name}
+    return name, asset_icon(slot), False
 
 
 # -----------------------------------------------------------------------------

@@ -66,6 +66,8 @@ static const char *ui_sound_filename(const WMUISound sound)
       return "redo.wav";
     case WMUISound::ModeSwitch:
       return "mode_switch.wav";
+    case WMUISound::MeasureTick:
+      return "measure_tick.wav";
   }
   return nullptr;
 }
@@ -82,6 +84,7 @@ static double ui_sound_min_interval(const WMUISound sound)
     case WMUISound::TypeDelete:
       return 0.015;
     case WMUISound::SlideTick:
+    case WMUISound::MeasureTick:
       return 0.03;
     default:
       return 0.04;

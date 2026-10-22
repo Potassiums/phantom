@@ -13,14 +13,22 @@
 
 #include <Python.h>
 
+#include "BKE_context.hh"
+
 #include "GPU_framebuffer.hh"
 #include "GPU_state.hh"
+#include "GPU_texture.hh"
+#include "GPU_viewport.hh"
+
+#include "WM_api.hh"
 
 #include "../generic/py_capi_utils.hh"
 #include "../generic/python_utildefines.hh"
+#include "../intern/bpy_capi_utils.hh"
 
 #include "gpu_py.hh"
 #include "gpu_py_framebuffer.hh"
+#include "gpu_py_texture.hh"
 #include "gpu_py_state.hh" /* own include */
 
 /* Docstring Literal types. */
@@ -595,7 +603,53 @@ static PyObject *pygpu_state_active_framebuffer_get(PyObject * /*self*/)
 #  endif
 #endif
 
+PyDoc_STRVAR(
+    /* Wrap. */
+    pygpu_state_phantom_viewport_depth_get_doc,
+    ".. function:: phantom_viewport_depth_get()\n"
+    "\n"
+    "   A copy of the depth buffer of the 3D Viewport region being drawn, or None.\n"
+    "   Only valid in a region draw callback (Phantom: used by the silhouette thumbnail).\n"
+    "\n"
+    "   :return: The depth copy, reused (and refreshed) by every call.\n"
+    "   :rtype: :class:`gpu.types.GPUTexture` | None\n");
+static PyObject *pygpu_state_phantom_viewport_depth_get(PyObject * /*self*/)
+{
+  bContext *C = BPY_context_get();
+  ARegion *region = C ? CTX_wm_region(C) : nullptr;
+  GPUViewport *viewport = region ? WM_draw_region_get_bound_viewport(region) : nullptr;
+  gpu::Texture *depth = viewport ? GPU_viewport_depth_texture(viewport) : nullptr;
+  if (depth == nullptr) {
+    Py_RETURN_NONE;
+  }
+
+  /* Copy rather than share: the depth texture is attached to the frame-buffer being drawn. */
+  static gpu::Texture *depth_copy = nullptr;
+  const int width = GPU_texture_width(depth);
+  const int height = GPU_texture_height(depth);
+  if (depth_copy == nullptr || GPU_texture_width(depth_copy) != width ||
+      GPU_texture_height(depth_copy) != height ||
+      GPU_texture_format(depth_copy) != GPU_texture_format(depth))
+  {
+    GPU_TEXTURE_FREE_SAFE(depth_copy);
+    depth_copy = GPU_texture_create_2d("phantom_viewport_depth",
+                                       width,
+                                       height,
+                                       1,
+                                       GPU_texture_format(depth),
+                                       GPU_TEXTURE_USAGE_SHADER_READ |
+                                           GPU_TEXTURE_USAGE_ATTACHMENT,
+                                       nullptr);
+  }
+  GPU_texture_copy(depth_copy, depth);
+  return BPyGPUTexture_CreatePyObject(depth_copy, true);
+}
+
 static PyMethodDef pygpu_state__tp_methods[] = {
+    {"phantom_viewport_depth_get",
+     reinterpret_cast<PyCFunction>(pygpu_state_phantom_viewport_depth_get),
+     METH_NOARGS,
+     pygpu_state_phantom_viewport_depth_get_doc},
     /* Manage Stack */
     {"blend_set",
      static_cast<PyCFunction>(pygpu_state_blend_set),

@@ -29,7 +29,8 @@ void MeshPass::init_pass(SceneResources &resources, DRWState state, int clip_pla
   is_empty_ = true;
   PassMain::init();
   state_set(state, clip_planes);
-  bind_texture(WB_MATCAP_SLOT, resources.matcap_tx);
+  /* By reference: rebuilt at the end of sync (per-object matcaps). */
+  bind_texture(WB_MATCAP_SLOT, &resources.matcap_tx);
   bind_texture(WB_TEXTURE_SLOT, resources.dummy_texture_tx);
   bind_texture(WB_TILE_ARRAY_SLOT, resources.dummy_tile_array_tx);
   bind_texture(WB_TILE_DATA_SLOT, resources.dummy_tile_data_tx);
@@ -135,7 +136,7 @@ void OpaquePass::sync(const SceneState &scene_state, SceneResources &resources)
                                                          scene_state.draw_shadows));
   deferred_ps_.push_constant("force_shadowing", false);
   deferred_ps_.bind_ubo(WB_WORLD_SLOT, resources.world_buf);
-  deferred_ps_.bind_texture(WB_MATCAP_SLOT, resources.matcap_tx);
+  deferred_ps_.bind_texture(WB_MATCAP_SLOT, &resources.matcap_tx);
   deferred_ps_.bind_texture("normal_tx", &gbuffer_normal_tx);
   deferred_ps_.bind_texture("material_tx", &gbuffer_material_tx);
   deferred_ps_.bind_texture("depth_tx", &resources.depth_tx);

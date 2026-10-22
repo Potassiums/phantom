@@ -225,6 +225,13 @@ def slide_tick():
     return cozy(wood_block(1200, amp=0.8), peak=0.09, cutoff=3500, reverb=0.05)
 
 
+def measure_tick():
+    """Muted little 'tk' of a measuring wheel - same pitch every step, so it reads as a steady count."""
+    s = wood_block(880, amp=0.7)
+    mix_into(s, tone(440, 0.04, amp=0.25, attack=0.001, tau=0.01))  # Soft body under the tick.
+    return cozy(s, peak=0.07, cutoff=2400, reverb=0.06)
+
+
 def knife_cut():
     """Soft paper-scissors 'snip'."""
     a = lowpass(noise_burst(0.025, amp=1.0, tau=0.006, highpass=0.8, seed=31), 5000)
@@ -299,6 +306,7 @@ SOUNDS = {
     "undo.wav": undo,
     "redo.wav": redo,
     "mode_switch.wav": mode_switch,
+    "measure_tick.wav": measure_tick,
 }
 
 

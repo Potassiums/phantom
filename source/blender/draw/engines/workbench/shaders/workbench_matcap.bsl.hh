@@ -42,8 +42,10 @@ float3 get_matcap_lighting([[resource_table]] const workbench::World &world,
   return diffuse * base_color + specular * float(world_data.use_specular);
 }
 
+/* Phantom: `layer` picks a matcap (diffuse at 2 * layer, specular at 2 * layer + 1). */
 float3 get_matcap_lighting([[resource_table]] const workbench::World &world,
                            sampler2DArray matcap,
+                           int layer,
                            float3 base_color,
                            float3 N,
                            float3 I)
@@ -53,8 +55,8 @@ float3 get_matcap_lighting([[resource_table]] const workbench::World &world,
   bool flipped = world_data.matcap_orientation != 0;
   float2 uv = matcap_uv_compute(I, N, flipped);
 
-  float3 diffuse = textureLod(matcap, float3(uv, 0.0f), 0.0f).rgb;
-  float3 specular = textureLod(matcap, float3(uv, 1.0f), 0.0f).rgb;
+  float3 diffuse = textureLod(matcap, float3(uv, float(2 * layer)), 0.0f).rgb;
+  float3 specular = textureLod(matcap, float3(uv, float(2 * layer + 1)), 0.0f).rgb;
 
   return diffuse * base_color + specular * float(world_data.use_specular);
 }

@@ -5377,6 +5377,8 @@ def km_sculpt(params):
          {"properties": [("sharpen", False)]}),
         ("sculpt.phantom_smart_mask_click", {"type": 'LEFTMOUSE', "value": 'CLICK', "ctrl": True, "alt": True},
          {"properties": [("sharpen", True)]}),
+        # Phantom: Ctrl-Shift trims with the trim tool selected in the tool-bar.
+        ("sculpt.phantom_trim", {"type": 'LEFTMOUSE', "value": 'PRESS', "ctrl": True, "shift": True}, None),
         # Phantom: X toggles X-axis symmetry.
         ("wm.context_toggle", {"type": 'X', "value": 'PRESS'},
          {"properties": [("data_path", 'object.data.use_mirror_x')]}),
@@ -5462,7 +5464,12 @@ def km_sculpt(params):
          {"properties": [("scalar", 0.9)]}),
         ("brush.scale_size", {"type": 'RIGHT_BRACKET', "value": 'PRESS', "repeat": True},
          {"properties": [("scalar", 1.0 / 0.9)]}),
-        *_template_paint_radial_control("sculpt", rotation=True),
+        # Phantom: Ctrl-F is PolyFrame (below), so the texture angle moves to Ctrl-Alt-F.
+        *_template_paint_radial_control("sculpt"),
+        ("wm.radial_control", {"type": 'F', "value": 'PRESS', "ctrl": True, "alt": True},
+         radial_control_properties("sculpt", "texture_slot.angle", secondary_prop=None)),
+        # Phantom: Ctrl-F shows/hides face sets (polygroups) with the wireframe, like ZBrush.
+        ("sculpt.phantom_polyframe", {"type": 'F', "value": 'PRESS', "ctrl": True}, None),
         # Stencil
         ("brush.stencil_control", {"type": 'RIGHTMOUSE', "value": 'PRESS'},
          {"properties": [("mode", 'TRANSLATION')]}),

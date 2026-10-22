@@ -5,21 +5,22 @@
 """
 Phantom: floating silhouette thumbnail for Sculpt Mode.
 
-Draws the scene from the current view with every object pure black on white,
-in a small panel anchored to the top-right of the 3D Viewport. Drag the panel
+Shows the 3D Viewport with everything drawn in it pure black on white (read from
+the viewport's depth, so it is live and costs no extra render), in a small panel anchored to the top-right of the 3D Viewport. Drag the panel
 to move it, drag its corner grip to resize it. The grip fades in while the
 cursor is over the panel.
 
 Drag it next to the tool-bar to dock it on the left: it then sits beside the
 tool-bar (and the sidebar, when that is on the left), moving over when they
-open. Docked in the top-left corner, the viewport's text info and statistics
-move down below it.
+open. The viewport's text info and statistics stay visible: below the panel when
+it is docked in the top-left corner, beside it when docked lower over the text.
 
 Whether it is on, its size, position and docking are remembered between sessions
 (stored in ``phantom_silhouette.json`` in the user config directory).
 """
 
 import json
+import math
 import os
 import time
 
@@ -28,7 +29,6 @@ import gpu
 from bpy.props import BoolProperty, IntProperty
 from bpy.types import Operator
 from gpu_extras.batch import batch_for_shader
-from gpu_extras.presets import draw_texture_2d
 
 # Panel geometry is stored in unscaled pixels and multiplied by the UI scale.
 DEFAULT_SETTINGS = {
@@ -59,8 +59,7 @@ GRIP_COLOR = (1.0, 0.54, 0.24)     # Phantom orange.
 
 _settings = dict(DEFAULT_SETTINGS)
 _draw_handle = None
-_offscreen = None
-_drawing = False
+_shader = None
 _addon_keymaps = []
 
 # Hover feedback: the grip fades towards `_hover_target`.
@@ -123,8 +122,6 @@ def _make_accessors(key):
         if _settings[key] == value:
             return
         _settings[key] = value
-        if key == "enabled" and not value:
-            _free_offscreen()
         _schedule_save()
         _redraw_views()
 
@@ -146,10 +143,14 @@ def _docked():
     return _settings["dock"] == "LEFT"
 
 
-def _left_inset(area, region):
-    """Pixels of the region covered by the tool-bar and a left sidebar (overlapping regions)."""
+def _left_inset(area, region, return_sliding=False):
+    """Pixels of the region covered by the tool-bar and a left sidebar (overlapping regions).
+
+    A region sliding in or out (e.g. the sidebar after pressing N) counts with its visible
+    width, so a docked panel moves along with it."""
     space = area.spaces.active
     inset = 0
+    sliding = False
     for other in area.regions:
         if other.type not in {'TOOLS', 'UI'} or other.alignment != 'LEFT' or other.width <= 1:
             continue
@@ -157,8 +158,39 @@ def _left_inset(area, region):
             continue
         if other.type == 'UI' and not space.show_region_ui:
             continue
-        inset = max(inset, other.x + other.width - region.x)
-    return max(0, inset)
+        slide = other.phantom_slide
+        sliding = sliding or slide < 1.0
+        inset = max(inset, other.x + round(other.width * slide) - region.x)
+    inset = max(0, inset)
+    return (inset, sliding) if return_sliding else inset
+
+
+# Docked panels slide (instead of jumping) when the tool-bar or sidebar opens or closes.
+INSET_SLIDE_TIME = 0.06  # Seconds, time constant of the ease.
+_inset_state = {}  # Area pointer -> [shown inset, last update time].
+
+
+def _slide_redraw():
+    _redraw_views()
+    return None
+
+
+def _animated_inset(area, region):
+    target, sliding = _left_inset(area, region, return_sliding=True)
+    now = time.perf_counter()
+    state = _inset_state.get(area.as_pointer())
+    if state is None or sliding:
+        # A sliding region already animates: follow it exactly.
+        _inset_state[area.as_pointer()] = [float(target), now]
+        return target
+    value, last = state
+    value += (target - value) * (1.0 - math.exp(-min(now - last, 0.1) / INSET_SLIDE_TIME))
+    if abs(target - value) < 0.5:
+        value = float(target)
+    elif not bpy.app.timers.is_registered(_slide_redraw):
+        bpy.app.timers.register(_slide_redraw, first_interval=1.0 / 60.0)
+    state[0], state[1] = value, now
+    return round(value)
 
 
 def panel_rect(area, region):
@@ -169,7 +201,7 @@ def panel_rect(area, region):
     w = min(w, region.width - 2)
     h = min(h, region.height - 2)
     if _docked():
-        x = _left_inset(area, region) + round(DOCK_GAP * s)
+        x = _animated_inset(area, region) + round(DOCK_GAP * s)
         y = region.height - round((DOCK_GAP + _settings["dock_top"]) * s) - h
     else:
         x = region.width - round(_settings["margin_x"] * s) - w
@@ -179,43 +211,92 @@ def panel_rect(area, region):
     return x, y, w, h
 
 
-def _info_offset_for(region, rect):
-    """Room the viewport text needs to sit below a panel docked in the top-left corner."""
-    if not (_docked() and _settings["dock_top"] == 0):
-        return 0
-    _x, y, _w, _h = rect
-    return region.height - y + round(DOCK_GAP * _ui_scale())
+# Docked lower than this fraction of the viewport height, the panel is clear of the text.
+TEXT_AREA_FRACTION = 0.45
 
 
-def _set_info_offset(region, offset):
-    if region.phantom_info_offset != offset:
-        region.phantom_info_offset = offset
+def _info_offsets_for(area, region, rect):
+    """(x, y) the viewport text info must move by to stay visible next to a docked panel."""
+    if not _docked():
+        return 0, 0
+    x, y, w, h = rect
+    gap = round(DOCK_GAP * _ui_scale())
+    if _settings["dock_top"] == 0:
+        # In the top-left corner: the text goes below the panel.
+        return 0, region.height - y + gap
+    if y + h > region.height * (1.0 - TEXT_AREA_FRACTION):
+        # Docked lower down but over the text: the text goes to the right of the panel.
+        return x + w + gap - _left_inset(area, region), 0
+    return 0, 0
+
+
+def _set_info_offsets(region, offsets):
+    offset_x, offset_y = offsets
+    if region.phantom_info_offset_x != offset_x or region.phantom_info_offset != offset_y:
+        region.phantom_info_offset_x = offset_x
+        region.phantom_info_offset = offset_y
         # The text is drawn before this callback; redraw once more so it moves now.
         bpy.app.timers.register(lambda: _redraw_views() or None, first_interval=0.0)
 
 
-def _projection_for_panel(rv3d, region, w, h):
-    """Keep the viewport's vertical field of view, adapted to the panel's aspect ratio."""
-    proj = rv3d.window_matrix.copy()
-    fac = (region.width / region.height) / (w / h)
-    proj[0] = proj[0] * fac
-    return proj
+def _silhouette_shader():
+    """Black where the viewport drew geometry (depth < 1), white elsewhere."""
+    global _shader
+    if _shader is None:
+        iface = gpu.types.GPUStageInterfaceInfo("phantom_silhouette_iface")
+        iface.smooth('VEC2', "uv")
+        info = gpu.types.GPUShaderCreateInfo()
+        info.push_constant('MAT4', "ModelViewProjectionMatrix")
+        # Where the viewport image sits inside the panel: origin xy, size zw (panel UVs).
+        info.push_constant('VEC4', "image_rect")
+        info.sampler(0, 'FLOAT_2D', "depth_tx")
+        info.vertex_in(0, 'VEC2', "pos")
+        info.vertex_in(1, 'VEC2', "texco")
+        info.vertex_out(iface)
+        info.fragment_out(0, 'VEC4', "fragColor")
+        info.vertex_source(
+            "void main() {"
+            "  uv = texco;"
+            "  gl_Position = ModelViewProjectionMatrix * vec4(pos, 0.0, 1.0);"
+            "}")
+        info.fragment_source(
+            "void main() {"
+            "  vec2 t = (uv - image_rect.xy) / image_rect.zw;"
+            "  if (any(lessThan(t, vec2(0.0))) || any(greaterThan(t, vec2(1.0)))) {"
+            "    fragColor = vec4(1.0);"
+            "    return;"
+            "  }"
+            "  float depth = texture(depth_tx, t).r;"
+            "  fragColor = (depth < 1.0) ? vec4(0.0, 0.0, 0.0, 1.0) : vec4(1.0);"
+            "}")
+        _shader = gpu.shader.create_from_info(info)
+    return _shader
 
 
-def _ensure_offscreen(w, h):
-    global _offscreen
-    if _offscreen is None or _offscreen.width != w or _offscreen.height != h:
-        if _offscreen is not None:
-            _offscreen.free()
-        _offscreen = gpu.types.GPUOffScreen(w, h)
-    return _offscreen
+def _image_rect(region, w, h):
+    """Fit the whole viewport inside the panel without stretching (white margins)."""
+    view_aspect = region.width / region.height
+    panel_aspect = w / h
+    if view_aspect > panel_aspect:
+        size_y = panel_aspect / view_aspect
+        return (0.0, (1.0 - size_y) / 2.0, 1.0, size_y)
+    size_x = view_aspect / panel_aspect
+    return ((1.0 - size_x) / 2.0, 0.0, size_x, 1.0)
 
 
-def _free_offscreen():
-    global _offscreen
-    if _offscreen is not None:
-        _offscreen.free()
-        _offscreen = None
+def _draw_silhouette(depth, region, x, y, w, h):
+    shader = _silhouette_shader()
+    batch = batch_for_shader(shader, 'TRI_FAN', {
+        "pos": ((x, y), (x + w, y), (x + w, y + h), (x, y + h)),
+        "texco": ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)),
+    })
+    shader.bind()
+    shader.uniform_float(
+        "ModelViewProjectionMatrix",
+        gpu.matrix.get_projection_matrix() @ gpu.matrix.get_model_view_matrix())
+    shader.uniform_float("image_rect", _image_rect(region, w, h))
+    shader.uniform_sampler("depth_tx", depth)
+    batch.draw(shader)
 
 
 def _grip_triangle(x, y, w, g):
@@ -247,46 +328,26 @@ def _draw_frame(x, y, w, h, grip_alpha):
 
 
 def draw_callback():
-    global _drawing
     context = bpy.context
-    # The off-screen render can call region callbacks again; never recurse.
-    if _drawing:
-        return
     region = context.region
     if region is None:
         return
     if not _enabled(context):
-        _set_info_offset(region, 0)
+        _set_info_offsets(region, (0, 0))
         return
-    rv3d = context.region_data
-    space = context.space_data
-    if rv3d is None or region.width < MIN_SIZE or region.height < MIN_SIZE:
+    if region.width < MIN_SIZE or region.height < MIN_SIZE:
         return
 
     x, y, w, h = panel_rect(context.area, region)
-    _set_info_offset(region, _info_offset_for(region, (x, y, w, h)))
-    # Creating an off-screen buffer unbinds the viewport's frame-buffer,
-    # so remember it and draw the panel back into it explicitly.
-    region_fb = gpu.state.active_framebuffer_get()
-    ofs = _ensure_offscreen(w, h)
+    _set_info_offsets(region, _info_offsets_for(context.area, region, (x, y, w, h)))
 
-    _drawing = True
-    try:
-        ofs.draw_view3d(
-            context.scene,
-            context.view_layer,
-            space,
-            region,
-            rv3d.view_matrix,
-            _projection_for_panel(rv3d, region, w, h),
-            silhouette=True,
-        )
-    finally:
-        _drawing = False
-
-    with region_fb.bind():
-        draw_texture_2d(ofs.texture_color, (x, y), w, h)
-        _draw_frame(x, y, w, h, _grip_alpha)
+    # The silhouette is read from the depth of the viewport just drawn, so it always matches
+    # the view exactly, live while sculpting, with no second render.
+    depth = gpu.state.phantom_viewport_depth_get()
+    if depth is None:
+        return
+    _draw_silhouette(depth, region, x, y, w, h)
+    _draw_frame(x, y, w, h, _grip_alpha)
 
 
 # -----------------------------------------------------------------------------
@@ -478,14 +539,13 @@ def unregister():
         km.keymap_items.remove(kmi)
     _addon_keymaps.clear()
 
-    for timer in (_save_settings, _fade_step):
+    for timer in (_save_settings, _fade_step, _slide_redraw):
         if bpy.app.timers.is_registered(timer):
             bpy.app.timers.unregister(timer)
 
     if _draw_handle is not None:
         bpy.types.SpaceView3D.draw_handler_remove(_draw_handle, 'WINDOW')
         _draw_handle = None
-    _free_offscreen()
 
     bpy.types.VIEW3D_HT_header.remove(draw_header_toggle)
     for cls in reversed(classes):

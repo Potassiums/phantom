@@ -79,9 +79,13 @@ struct FragOut {
   float4 color = float4(1.0f);
 
   if (srt.consts.lighting_mode == WORKBENCH_LIGHTING_MATCAP) [[static_branch]] {
-    /* When using matcaps, mat_data.a is the back-face sign. */
-    N = (mat_data.a > 0.0f) ? N : -N;
-    color.rgb = workbench::get_matcap_lighting(srt.world, srt.matcap_tx, base_color, N, V);
+    /* When using matcaps, mat_data.a is the front-facing flag (0 or 1),
+     * Phantom: plus twice the per-object matcap layer. */
+    const int matcap_layer = int(floor(mat_data.a * 0.5f));
+    const bool front_facing = (mat_data.a - 2.0f * float(matcap_layer)) > 0.5f;
+    N = front_facing ? N : -N;
+    color.rgb = workbench::get_matcap_lighting(
+        srt.world, srt.matcap_tx, matcap_layer, base_color, N, V);
   }
   else if (srt.consts.lighting_mode == WORKBENCH_LIGHTING_STUDIO) [[static_branch]] {
     float roughness = 0.0f, metallic = 0.0f;
