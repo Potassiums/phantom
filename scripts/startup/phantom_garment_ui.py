@@ -1287,7 +1287,8 @@ def register():
     bpy.types.TOPBAR_MT_workspace_menu.append(draw_workspace_menu)
     _handles.append((bpy.types.SpaceView3D.draw_handler_add(_draw_view, (), 'WINDOW', 'POST_VIEW'), 'WINDOW'))
     _handles.append((bpy.types.SpaceView3D.draw_handler_add(_draw_labels, (), 'WINDOW', 'POST_PIXEL'), 'WINDOW'))
-    bpy.app.handlers.load_post.append(_on_load)
+    # Not created automatically: switching workspaces at startup closes the splash and flashes
+    # windows. The Garment tab comes from the workspace "+" menu (until it's in startup.blend).
     bpy.app.handlers.frame_change_post.append(_on_frame_change)
     kc = bpy.context.window_manager.keyconfigs.addon
     if kc:
@@ -1295,7 +1296,6 @@ def register():
         _keymaps.append((km, km.keymap_items.new(garment.PHANTOM_OT_garment_simulate.bl_idname, 'SPACE', 'PRESS')))
     if not bpy.app.background:
         bpy.app.timers.register(_watch, first_interval=WATCH_INTERVAL, persistent=True)
-        bpy.app.timers.register(_ensure_workspace, first_interval=0.5)
 
 
 def unregister():
@@ -1305,7 +1305,6 @@ def unregister():
         km.keymap_items.remove(kmi)
     _keymaps.clear()
     bpy.app.handlers.frame_change_post.remove(_on_frame_change)
-    bpy.app.handlers.load_post.remove(_on_load)
     for handle, region in _handles:
         bpy.types.SpaceView3D.draw_handler_remove(handle, region)
     _handles.clear()
