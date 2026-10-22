@@ -6,7 +6,9 @@
 # Configurable Parameters
 
 # Phantom keymap options (see `phantom_keymap.py`), all on unless the keymap preferences say so.
-PHANTOM_OPTIONS = frozenset(("masking", "face_sets", "trim", "symmetry_x", "w_move", "c_sample"))
+PHANTOM_OPTIONS = frozenset((
+    "masking", "face_sets", "trim", "symmetry_x", "w_move", "c_sample", "ctrl_d_divide",
+))
 
 
 class Params:
@@ -3070,10 +3072,12 @@ def km_sculpt(params):
         ("sculpt.face_set_edit", {"type": 'PAGE_DOWN', "value": 'PRESS'},
          {"properties": [("mode", 'SHRINK')]}),
         # Dynamic topology
-        ("sculpt.detail_flood_fill", {"type": 'D', "value": 'PRESS', "ctrl": True}, None),
+        *((("sculpt.detail_flood_fill", {"type": 'D', "value": 'PRESS', "ctrl": True}, None),)
+          if "ctrl_d_divide" not in phantom else ()),
         ("sculpt.dyntopo_detail_size_edit", {"type": 'D', "value": 'PRESS', "shift": True, "ctrl": True}, None),
         # Remesh
-        ("object.voxel_remesh", {"type": 'D', "value": 'PRESS', "ctrl": True}, None),
+        *((("object.voxel_remesh", {"type": 'D', "value": 'PRESS', "ctrl": True}, None),)
+          if "ctrl_d_divide" not in phantom else ()),
         ("object.voxel_size_edit", {"type": 'D', "value": 'PRESS', "shift": True, "ctrl": True}, None),
         # Color
         ("paint.sample_color", {"type": 'I', "value": 'PRESS'}, {"properties": [("merged", False)]}),
@@ -3086,6 +3090,9 @@ def km_sculpt(params):
         # Phantom: with a paint brush, C samples the mesh's color (otherwise it falls through).
         *((("sculpt.phantom_sample_color", {"type": 'C', "value": 'PRESS'}, None),)
           if "c_sample" in phantom else ()),
+        # Phantom: Ctrl-D divides like ZBrush (instead of the Dyntopo/voxel remesh Ctrl-D).
+        *((("sculpt.phantom_divide", {"type": 'D', "value": 'PRESS', "ctrl": True}, None),)
+          if "ctrl_d_divide" in phantom else ()),
         # Brush properties
         ("brush.scale_size", {"type": 'LEFT_BRACKET', "value": 'PRESS', "repeat": True},
          {"properties": [("scalar", 0.9)]}),

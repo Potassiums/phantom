@@ -95,12 +95,13 @@ std::optional<StringRefNull> rna_translate_ui_text(
   }
   /* Also return text if UI labels translation is disabled. */
   if (!text[0] || !translate || !BLT_translate_iface()) {
-    return text;
+    /* Phantom: ZBrush terms, unless the text isn't to be translated. */
+    return translate ? BLT_phantom_terms(text) : text;
   }
 
   /* If a text_ctxt is specified, use it! */
   if (text_ctxt && text_ctxt[0]) {
-    return BLT_pgettext(text_ctxt, text);
+    return BLT_phantom_terms(BLT_pgettext(text_ctxt, text));
   }
 
   /* Else, if an RNA type or property is specified, use its context. */
@@ -119,11 +120,11 @@ std::optional<StringRefNull> rna_translate_ui_text(
   (void)prop;
 #  endif
   if (type) {
-    return BLT_pgettext(RNA_struct_translation_context(type), text);
+    return BLT_phantom_terms(BLT_pgettext(RNA_struct_translation_context(type), text));
   }
 
   /* Else, default context! */
-  return BLT_pgettext(BLT_I18NCONTEXT_DEFAULT, text);
+  return BLT_phantom_terms(BLT_pgettext(BLT_I18NCONTEXT_DEFAULT, text));
 }
 
 static void rna_uiItemTextBox(Layout *layout,
@@ -1293,7 +1294,9 @@ void rna_uiTemplateAssetShelfPopover(Layout *layout,
     icon = icon_value;
   }
 
-  ui::template_asset_shelf_popover(*layout, *C, asset_shelf_id, name ? name : "", icon);
+  /* Phantom: ZBrush terms in the active asset's name ("Face Set Paint" reads "Polygroup Paint"). */
+  ui::template_asset_shelf_popover(
+      *layout, *C, asset_shelf_id, name ? BLT_phantom_terms(name) : "", icon);
 }
 
 PointerRNA rna_uiTemplatePopupConfirm(Layout *layout,

@@ -30,6 +30,7 @@ PHANTOM_OPTIONS = frozenset((
     "symmetry_x",   # X toggles X symmetry.
     "w_move",       # W is Move (gizmo or Transpose).
     "c_sample",     # C samples color with a paint brush.
+    "ctrl_d_divide",  # Ctrl-D divides (multires), like ZBrush.
 ))
 
 
@@ -5575,6 +5576,9 @@ def km_sculpt(params):
         # Phantom: with a paint brush, C samples the mesh's color (otherwise it falls through).
         *((("sculpt.phantom_sample_color", {"type": 'C', "value": 'PRESS'}, None),)
           if "c_sample" in phantom else ()),
+        # Phantom: Ctrl-D divides like ZBrush (adds a multires modifier when there is none).
+        *((("sculpt.phantom_divide", {"type": 'D', "value": 'PRESS', "ctrl": True}, None),)
+          if "ctrl_d_divide" in phantom else ()),
         ("brush.asset_activate", {"type": 'C', "value": 'PRESS'},
          {"properties": [
              ("asset_library_type", 'ESSENTIALS'),

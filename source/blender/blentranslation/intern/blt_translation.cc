@@ -11,7 +11,12 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <optional>
+#include <string>
+#include <unordered_map>
+
+#include "BLI_utildefines.hh"
 
 #include "BLT_translation.hh"
 
@@ -123,6 +128,90 @@ bool BLT_translate_new_dataname()
 #endif
 }
 
+/* -------------------------------------------------------------------- */
+/** \name Phantom: ZBrush Terms
+ * \{ */
+
+static bool is_letter(const char c)
+{
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+}
+
+/** Length of a whole-word "face set" (any case of the initials) at `i`, else 0. */
+static int face_set_at(const StringRef text, const int64_t i)
+{
+  if (text.size() - i < 8 || !ELEM(text[i], 'F', 'f') || (i > 0 && is_letter(text[i - 1]))) {
+    return 0;
+  }
+  if (text.substr(i + 1, 4) != "ace " || !ELEM(text[i + 5], 'S', 's') ||
+      text.substr(i + 6, 2) != "et")
+  {
+    return 0;
+  }
+  /* "Face Sets" keeps its "s"; "face setting" isn't a face set. */
+  int64_t end = i + 8;
+  if (end < text.size() && text[end] == 's') {
+    end++;
+  }
+  return (end < text.size() && is_letter(text[end])) ? 0 : 8;
+}
+
+static std::optional<std::string> phantom_terms_replace(const StringRef text)
+{
+  std::optional<std::string> result;
+  int64_t copied = 0;
+  for (int64_t i = 0; i + 8 <= text.size(); i++) {
+    if (face_set_at(text, i) == 0) {
+      continue;
+    }
+    if (!result) {
+      result.emplace();
+    }
+    result->append(text.data() + copied, size_t(i - copied));
+    result->append(text[i] == 'F' ? "Polygroup" : "polygroup");
+    copied = i + 8;
+    i += 7;
+  }
+  if (result) {
+    result->append(text.data() + copied, size_t(text.size() - copied));
+  }
+  return result;
+}
+
+/** Renamed texts by original, kept until exit so callers can hold on to them. */
+static const std::string *phantom_terms_lookup(const StringRef text)
+{
+  /* Most texts have no "ace " at all: skip the lock and the copy for those. */
+  if (text.find("ace ") == StringRef::not_found) {
+    return nullptr;
+  }
+  static std::mutex mutex;
+  static std::unordered_map<std::string, std::optional<std::string>> cache;
+  std::lock_guard lock(mutex);
+  auto [it, inserted] = cache.try_emplace(std::string(text));
+  if (inserted) {
+    it->second = phantom_terms_replace(text);
+  }
+  return it->second ? &*it->second : nullptr;
+}
+
+const char *BLT_phantom_terms(const char *text)
+{
+  if (text == nullptr) {
+    return text;
+  }
+  const std::string *renamed = phantom_terms_lookup(text);
+  return renamed ? renamed->c_str() : text;
+}
+
+StringRef BLT_phantom_terms(StringRef text)
+{
+  const std::string *renamed = phantom_terms_lookup(text);
+  return renamed ? StringRef(*renamed) : text;
+}
+
+/** \} */
+
 template<typename StringT> StringT translate_do(StringT msgctxt, StringT msgid)
 {
 #ifdef WITH_INTERNATIONAL
@@ -152,14 +241,14 @@ template<typename StringT> StringT translate_do_iface(StringT msgctxt, StringT m
 {
 #ifdef WITH_INTERNATIONAL
   if (BLT_translate_iface()) {
-    return BLT_pgettext(msgctxt, msgid);
+    return BLT_phantom_terms(BLT_pgettext(msgctxt, msgid));
   }
 
-  return msgid;
+  return BLT_phantom_terms(msgid);
 
 #else
   (void)msgctxt;
-  return msgid;
+  return BLT_phantom_terms(msgid);
 #endif
 }
 
@@ -177,14 +266,14 @@ template<typename StringT> StringT translate_do_tooltip(StringT msgctxt, StringT
 {
 #ifdef WITH_INTERNATIONAL
   if (BLT_translate_tooltips()) {
-    return BLT_pgettext(msgctxt, msgid);
+    return BLT_phantom_terms(BLT_pgettext(msgctxt, msgid));
   }
 
-  return msgid;
+  return BLT_phantom_terms(msgid);
 
 #else
   (void)msgctxt;
-  return msgid;
+  return BLT_phantom_terms(msgid);
 #endif
 }
 
@@ -202,14 +291,14 @@ template<typename StringT> StringT translate_do_report(StringT msgctxt, StringT 
 {
 #ifdef WITH_INTERNATIONAL
   if (BLT_translate_reports()) {
-    return BLT_pgettext(msgctxt, msgid);
+    return BLT_phantom_terms(BLT_pgettext(msgctxt, msgid));
   }
 
-  return msgid;
+  return BLT_phantom_terms(msgid);
 
 #else
   (void)msgctxt;
-  return msgid;
+  return BLT_phantom_terms(msgid);
 #endif
 }
 

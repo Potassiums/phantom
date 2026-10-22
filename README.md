@@ -9,7 +9,7 @@ Phantom
 =======
 
 Phantom is a fork of [Blender](https://www.blender.org) tuned for sculpting: ZBrush-style
-masking, face sets and Transpose, a live silhouette preview, quick brushes, a large matcap
+masking, polygroups and Transpose, a live silhouette preview, quick brushes, a large matcap
 library, a charcoal look with cozy interface sounds, and many smaller quality-of-life changes.
 Everything else in Blender is still there and works as before.
 
@@ -36,7 +36,7 @@ New in 0.2.0
   Move.
 - **Matcap library tools:** search inside the matcap grid, favorites
   with gold stars, a default matcap for every project, four quick slots and "new!" badges.
-- **Face sets like ZBrush:** Ctrl+W makes a face set from the mask, Ctrl+Shift-click isolates.
+- **Polygroups like ZBrush:** Ctrl+W makes a polygroup from the mask, Ctrl+Shift-click isolates.
 - **Limited, Maya-style grid**, a pulsing vertex hover in Edit Mode, Halloween edit-mode colors,
   masks that stay visible with overlays off, and a shorter Properties tab list while sculpting.
 
@@ -48,10 +48,10 @@ Controls
 
 Phantom keeps Blender's controls except where listed here. Keys are for the default keymap.
 Each group can be switched back to Blender's keys in Preferences > Keymap > Phantom Sculpting.
-In the Industry Compatible keymap, masking uses Ctrl / Ctrl+Alt, the face sets pie is on Alt+W,
+In the Industry Compatible keymap, masking uses Ctrl / Ctrl+Alt, the polygroups pie is on Alt+W,
 and W, E and R are Move, Rotate and Scale.
 
-### Sculpt Mode: masking and face sets
+### Sculpt Mode: masking and polygroups
 
 | Control | On the mesh | Off the mesh |
 |---|---|---|
@@ -59,10 +59,10 @@ and W, E and R are Move, Rotate and Scale.
 | **Ctrl+Alt-drag** | Erase the mask | Box-erase the mask |
 | **Ctrl-click** | Smooth the mask | Invert the mask |
 | **Ctrl+Alt-click** | Sharpen the mask | |
-| **Ctrl+W** | Turn the masked area into a face set and clear the mask | |
-| **Ctrl+Shift-click** | Isolate that face set; on an isolated one, show the others instead | Show everything |
+| **Ctrl+W** | Turn the masked area into a polygroup and clear the mask | |
+| **Ctrl+Shift-click** | Isolate that polygroup; on an isolated one, show the others instead | Show everything |
 | **Ctrl+Shift-drag** | Trim with the trim tool selected in the toolbar | |
-| **Ctrl+F** | Show/hide face sets with the wireframe (PolyFrame) | |
+| **Ctrl+F** | Show/hide polygroups with the wireframe (PolyFrame) | |
 
 ### Sculpt Mode: brushes and tools
 
@@ -73,6 +73,7 @@ and W, E and R are Move, Rotate and Scale.
 | **X** | Toggle X symmetry |
 | **W** | Move (gizmo or Transpose, as chosen in the tool header) |
 | **C** | With a paint or smear brush: sample the mesh's color. Otherwise Clay Strips, or your quick brush on C |
+| **Ctrl+D** | Divide: subdivide one level with a Multires modifier (added if there is none) |
 | **R** / **Ctrl+R** | Set the remesh voxel size (with a measuring tick sound) / voxel remesh |
 | **Ctrl+Alt+F** | Brush texture angle (Ctrl+F is PolyFrame) |
 | **Right-click** | Brush menu, with **Focal Shift** (hardness) and **Stabilize Stroke** |
@@ -168,9 +169,17 @@ What Phantom adds to Blender
   remesh when empty), Ctrl-Alt-drag to erase, Ctrl-click to smooth (on the mesh) or invert (off
   it), Ctrl-Alt-click to sharpen. Alt inverts the brush.
 - **Masks stay visible** with viewport overlays off.
-- **Face sets:** Ctrl+W turns the masked area into a face set and clears the mask;
-  Ctrl+Shift-click isolates a face set, swaps on an isolated one and shows everything off the
-  mesh; Ctrl+F toggles face sets plus wireframe (PolyFrame).
+- **Polygroups:** Blender's face sets are called polygroups throughout the interface, as in
+  ZBrush. Ctrl+W turns the masked area into a polygroup and clears the mask; Ctrl+Shift-click
+  isolates a polygroup, swaps on an isolated one and shows everything off the mesh; Ctrl+F
+  toggles polygroups plus wireframe (PolyFrame).
+- **Mask actions bar:** with a mask or hidden parts, a bar slides up at the bottom of the
+  viewport: Hide Masked, Unhide, Split Hidden (separates the hidden part into its own object,
+  like ZBrush) and Extract. Its **+** button (or right-click) adds or removes more mask actions,
+  such as Slice, Invert, Smooth and Grow. After Ctrl+W it becomes a **polygroup bar** for the
+  new polygroup (Isolate, Hide, Unhide, Split Hidden, and more to add).
+- **Divide (Ctrl+D):** subdivides one level like ZBrush, adding a Multires modifier first when
+  there is none (also in the Sculpt menu).
 - **Move, Rotate and Scale** (W is Move) with five icons in the middle of the tool header: pick
   the action, and Blender's gizmo or the **Transpose** action line.
 - **Transpose:** ZBrush-style action line. Draw it on the model; drag its rings to place it and

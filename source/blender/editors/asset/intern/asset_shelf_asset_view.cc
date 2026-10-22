@@ -122,7 +122,9 @@ void AssetView::build_items()
     const bool show_names = (shelf_.settings.display_flag & ASSETSHELF_SHOW_NAMES);
     const StringRef identifier = asset.library_relative_identifier();
 
-    AssetViewItem &item = this->add_item<AssetViewItem>(asset, identifier, asset.get_name());
+    /* Phantom: ZBrush terms in names too ("Draw Face Sets" reads "Draw Polygroups"). */
+    AssetViewItem &item = this->add_item<AssetViewItem>(
+        asset, identifier, BLT_phantom_terms(StringRef(asset.get_name())));
     if (!show_names) {
       item.hide_label();
     }
@@ -394,7 +396,13 @@ void AssetViewItem::on_activate(bContext &C)
 bool AssetViewItem::should_be_filtered_visible(const StringRefNull filter_string) const
 {
   const StringRefNull asset_name = asset_.get_name();
-  return fnmatch(filter_string.c_str(), asset_name.c_str(), FNM_CASEFOLD) == 0;
+  if (fnmatch(filter_string.c_str(), asset_name.c_str(), FNM_CASEFOLD) == 0) {
+    return true;
+  }
+  /* Phantom: also find it by the name shown ("polygroup" finds "Draw Face Sets"). */
+  const char *shown_name = BLT_phantom_terms(asset_name.c_str());
+  return shown_name != asset_name.c_str() &&
+         fnmatch(filter_string.c_str(), shown_name, FNM_CASEFOLD) == 0;
 }
 
 std::unique_ptr<ui::AbstractViewItemDragController> AssetViewItem::create_drag_controller() const

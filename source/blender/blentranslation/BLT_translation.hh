@@ -33,6 +33,13 @@ const char *BLT_translate_do(const char *msgctxt, const char *msgid);
 StringRef BLT_translate_do(StringRef msgctxt, StringRef msgid);
 const char *BLT_translate_do_iface(const char *msgctxt, const char *msgid);
 StringRef BLT_translate_do_iface(StringRef msgctxt, StringRef msgid);
+/**
+ * Phantom: ZBrush terms in the interface ("Face Set" reads "Polygroup"). Applied to interface
+ * labels, tooltips and reports; returns the text unchanged when there is nothing to rename.
+ * The returned string lives until exit.
+ */
+const char *BLT_phantom_terms(const char *text);
+StringRef BLT_phantom_terms(StringRef text);
 const char *BLT_translate_do_tooltip(const char *msgctxt, const char *msgid);
 StringRef BLT_translate_do_tooltip(StringRef msgctxt, StringRef msgid);
 const char *BLT_translate_do_report(const char *msgctxt, const char *msgid);

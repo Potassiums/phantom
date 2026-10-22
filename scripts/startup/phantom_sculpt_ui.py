@@ -343,7 +343,65 @@ class SCULPT_OT_phantom_mask_to_face_set(Operator):
         if bpy.ops.sculpt.face_sets_create(mode='MASKED') != {'FINISHED'}:
             return {'CANCELLED'}
         bpy.ops.paint.mask_flood_fill(mode='VALUE', value=0.0)
+        # The new polygroup has the highest number: the polygroup bar works on it.
+        import numpy as np
+        import phantom_mask_bar
+        ob = context.active_object
+        face_sets = ob.data.attributes.get(".sculpt_face_set")
+        if face_sets is not None and len(face_sets.data):
+            values = np.empty(len(face_sets.data), dtype=np.int32)
+            face_sets.data.foreach_get("value", values)
+            phantom_mask_bar.set_current_polygroup(ob, int(values.max()))
         return {'FINISHED'}
+
+
+class SCULPT_OT_phantom_divide(Operator):
+    """Subdivide the mesh one level, like ZBrush's Divide. Adds a Multiresolution modifier """         """first when the object has none"""
+    bl_idname = "sculpt.phantom_divide"
+    bl_label = "Divide"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    mode: bpy.props.EnumProperty(
+        name="Mode",
+        items=(
+            ('CATMULL_CLARK', "Smooth", "Smooth the shape while subdividing"),
+            ('SIMPLE', "Simple", "Subdivide without smoothing the shape"),
+            ('LINEAR', "Linear", "Subdivide without smoothing the shape or the UVs"),
+        ),
+        default='CATMULL_CLARK',
+    )
+
+    @classmethod
+    def poll(cls, context):
+        ob = context.active_object
+        return context.mode == 'SCULPT' and ob is not None and ob.type == 'MESH'
+
+    def execute(self, context):
+        ob = context.active_object
+        if ob.use_dynamic_topology_sculpting:
+            self.report({'WARNING'}, "Turn off Dyntopo to divide")
+            return {'CANCELLED'}
+        multires = next((md for md in ob.modifiers if md.type == 'MULTIRES'), None)
+        if multires is None:
+            if bpy.ops.object.modifier_add(type='MULTIRES') != {'FINISHED'}:
+                return {'CANCELLED'}
+            multires = ob.modifiers[-1]
+            # Multires works on the original mesh, so it goes first in the stack.
+            if len(ob.modifiers) > 1:
+                bpy.ops.object.modifier_move_to_index(modifier=multires.name, index=0)
+        if bpy.ops.object.multires_subdivide(modifier=multires.name, mode=self.mode) != {'FINISHED'}:
+            return {'CANCELLED'}
+        # Sculpt on the new level, like ZBrush.
+        multires.sculpt_levels = multires.total_levels
+        multires.levels = max(multires.levels, multires.total_levels)
+        self.report({'INFO'}, f"Divided to level {multires.total_levels}")
+        return {'FINISHED'}
+
+
+def _draw_sculpt_menu_divide(self, context):
+    layout = self.layout
+    layout.separator()
+    layout.operator(SCULPT_OT_phantom_divide.bl_idname, text="Divide (Multires)")
 
 
 # Brushes that paint color: with one of them active, C samples the mesh's color.
@@ -440,6 +498,7 @@ classes = (
     SCULPT_OT_phantom_polyframe,
     SCULPT_OT_phantom_mask_to_face_set,
     SCULPT_OT_phantom_sample_color,
+    SCULPT_OT_phantom_divide,
 )
 
 
@@ -447,6 +506,7 @@ def register():
     for cls in classes:
         bpy.utils.register_class(cls)
     bpy.types.UI_MT_button_context_menu.append(_draw_button_context_menu)
+    bpy.types.VIEW3D_MT_sculpt.append(_draw_sculpt_menu_divide)
     bpy.types.VIEW3D_HT_header.append(_draw_header_asset_shelf_toggle)
     if not bpy.app.background:
         bpy.app.timers.register(_sync_sidebars, first_interval=SYNC_INTERVAL, persistent=True)
@@ -468,6 +528,7 @@ def unregister():
         if bpy.app.timers.is_registered(timer):
             bpy.app.timers.unregister(timer)
     bpy.types.VIEW3D_HT_header.remove(_draw_header_asset_shelf_toggle)
+    bpy.types.VIEW3D_MT_sculpt.remove(_draw_sculpt_menu_divide)
     bpy.types.UI_MT_button_context_menu.remove(_draw_button_context_menu)
     quick_brushes.unregister()
     for cls in reversed(classes):

@@ -4,6 +4,33 @@ Phantom is a fork of Blender tuned for sculpting. This file lists what Phantom c
 own changes come from the Blender version each release is built on.
 
 
+## Unreleased
+
+### For ZBrush users
+
+- **Face sets are called polygroups** everywhere in the interface: menus, tools, tooltips,
+  brush names, reports and search ("polygroup" finds them). Files, scripts and the Python API
+  still use Blender's names (`face_sets`), so nothing breaks.
+- **Ctrl+D divides** in Sculpt Mode: it subdivides one level with a Multires modifier, adding the
+  modifier (first in the stack) when the object has none, and sculpts on the new level. Undo
+  steps back a level. Also in Sculpt > Divide (Multires). In the Industry Compatible keymap it
+  replaces Ctrl+D voxel remesh / detail flood fill. It's an option in Preferences > Keymap
+  ("Ctrl-D Divides").
+- **Mask actions bar:** while the mesh has a mask or hidden parts, a small bar slides up at the
+  bottom of the viewport with **Hide Masked**, **Unhide**, **Split Hidden** and **Extract**.
+  Split Hidden separates the hidden part into its own object (named "<object> Split"), like
+  ZBrush, and keeps sculpting the visible part; it is also in the Sculpt menu, and one undo puts
+  the mesh back together. Extract is Blender's Mask Extract, with its settings.
+- **Customize the bar:** its **+** button (or right-clicking it) lists more mask actions to add
+  or remove: Slice, Invert, Clear, Smooth, Sharpen, Grow, Shrink, Contrast +/- and To
+  Polygroup. The choice is remembered between sessions.
+- **Polygroup bar:** after Ctrl+W turns the mask into a polygroup, the bar switches to
+  polygroup actions for that polygroup: **Isolate** (again: swap), **Hide**, **Unhide** and
+  **Split Hidden**, with Extract, Delete, Fair, Grow, Shrink, New Colors and PolyFrame to add.
+  It is customized separately from the mask bar; its **x** puts it away, and masking again
+  brings back the mask bar.
+
+
 ## 0.2.1 alpha (2026-10-22)
 
 A hotfix on top of 0.2.0, built on Blender 5.4 alpha.

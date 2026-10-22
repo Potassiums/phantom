@@ -41,13 +41,22 @@ void asset_tooltip(const asset_system::AssetRepresentation &asset,
                    const bool include_name)
 {
   if (include_name) {
-    tooltip_text_field_add(tip, asset.get_name(), {}, ui::TIP_STYLE_HEADER, ui::TIP_LC_MAIN);
+    /* Phantom: ZBrush terms in asset names and descriptions too. */
+    tooltip_text_field_add(tip,
+                           BLT_phantom_terms(StringRef(asset.get_name())),
+                           {},
+                           ui::TIP_STYLE_HEADER,
+                           ui::TIP_LC_MAIN);
     tooltip_text_field_add(tip, {}, {}, ui::TIP_STYLE_SPACER, ui::TIP_LC_NORMAL, false);
   }
 
   const AssetMetaData &meta_data = asset.get_metadata();
   if (meta_data.description) {
-    tooltip_text_field_add(tip, meta_data.description, {}, ui::TIP_STYLE_HEADER, ui::TIP_LC_MAIN);
+    tooltip_text_field_add(tip,
+                           BLT_phantom_terms(meta_data.description),
+                           {},
+                           ui::TIP_STYLE_HEADER,
+                           ui::TIP_LC_MAIN);
   }
 
   if (asset.remote_file_status() == asset_system::RemoteAssetFileStatus::NO_MATCH) {

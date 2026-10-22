@@ -17,9 +17,9 @@ OPTIONS = (
      "Ctrl-drag masks (box off the mesh, clear or remesh over empty space), Ctrl-click smooths or "
      "inverts the mask, Ctrl-Alt erases or sharpens it, and Alt inverts the brush.\n"
      "Off: the keymap's own mask and invert keys"),
-    ("face_sets", "phantom_face_sets", "ZBrush Face Sets",
-     "Ctrl-W turns the masked area into a face set, Ctrl-Shift-click isolates a face set, "
-     "Ctrl-F shows face sets with the wireframe (PolyFrame).\n"
+    ("face_sets", "phantom_face_sets", "ZBrush Polygroups",
+     "Ctrl-W turns the masked area into a polygroup, Ctrl-Shift-click isolates a polygroup, "
+     "Ctrl-F shows polygroups with the wireframe (PolyFrame).\n"
      "Off: the keymap's own Ctrl-W and Ctrl-F"),
     ("trim", "phantom_trim", "Ctrl-Shift Trim",
      "Ctrl-Shift-drag trims with the trim tool selected in the toolbar"),
@@ -31,6 +31,10 @@ OPTIONS = (
      "Transpose action line as chosen in the tool header"),
     ("c_sample", "phantom_c_sample", "C Samples Paint Color",
      "With a paint or smear brush active, C samples the mesh's color"),
+    ("ctrl_d_divide", "phantom_ctrl_d_divide", "Ctrl-D Divides",
+     "Ctrl-D subdivides the mesh with a Multiresolution modifier, adding one if needed, like "
+     "ZBrush's Divide.\n"
+     "Off: the keymap's own Ctrl-D"),
 )
 # Not a keymap item: quick-brush shortcuts switching off other Sculpt shortcuts on their key.
 QUICK_BRUSH_TAKEOVER = "phantom_quick_brush_takeover"
