@@ -635,6 +635,12 @@ const EnumPropertyItem buttons_context_items[] = {
      ICON_SEQ_STRIP_MODIFIER,
      "Strip Modifiers",
      "Strip Modifier Properties"},
+    /* Phantom: last, so the order above still matches `rna_def_space_properties_filter`. */
+    {BCONTEXT_PHANTOM_SCULPT,
+     "PHANTOM_SCULPT",
+     ICON_SCULPTMODE_HLT,
+     "Sculpting",
+     "Sculpting settings (Phantom)"},
     {0, nullptr, 0, nullptr, nullptr},
 };
 
@@ -6370,7 +6376,7 @@ static void rna_def_space_properties_filter(StructRNA *srna)
       "show_properties_material",       "show_properties_texture",
       "show_properties_particles",      "show_properties_physics",
       "show_properties_effects",        "show_properties_strip",
-      "show_properties_strip_modifier",
+      "show_properties_strip_modifier", "show_properties_phantom_sculpt",
   };
 
   for (const int i : IndexRange(BCONTEXT_TOT)) {

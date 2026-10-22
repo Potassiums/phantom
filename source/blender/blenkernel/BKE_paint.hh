@@ -472,6 +472,14 @@ struct SculptSession : NonCopyable, NonMovable {
   float4 prev_pivot_rot = float4(1.0f, 0.0f, 0.0f, 0.0f);
   float3 prev_pivot_scale = {};
 
+  /**
+   * Phantom: when set, the transform uses this object-space matrix (mirrored for the other
+   * symmetry areas) instead of the pivot's position, rotation and scale. Used by Transpose.
+   */
+  std::optional<float4x4> phantom_transform_matrix;
+  /** Phantom: symmetry area the #phantom_transform_matrix was made in. */
+  int phantom_transform_area = 0;
+
   eObjectMode mode_type = OB_MODE_OBJECT;
 
   /**

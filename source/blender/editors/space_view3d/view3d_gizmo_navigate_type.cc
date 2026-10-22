@@ -33,7 +33,10 @@
 #include "DNA_theme_types.h"
 #include "DNA_userdef_types.h"
 
+#include "ED_view3d.hh"
+
 #include "UI_interface.hh"
+#include "UI_interface_c.hh"
 #include "UI_resources.hh"
 
 #include "WM_api.hh"
@@ -61,7 +64,7 @@ namespace blender {
  * from the axis pointing most towards the viewer. Drawn left of the gizmo, since the
  * navigation buttons sit below it.
  */
-static void gizmo_axis_draw_view_name(const wmGizmo *gz)
+static void gizmo_axis_draw_view_name(const bContext *C, const wmGizmo *gz)
 {
   int best_axis = 0;
   float best_depth = 0.0f;
@@ -81,26 +84,32 @@ static void gizmo_axis_draw_view_name(const wmGizmo *gz)
   };
   const char *name = IFACE_(side_names[best_axis][best_depth > 0.0f ? 1 : 0]);
 
+  /* Styled like the viewport's text info (view name, statistics): same font, size, color and
+   * outline, centered on the gizmo by its capital-letter height. */
+  const uiFontStyle *fstyle = UI_FSTYLE_WIDGET;
+  ui::fontstyle_set(fstyle);
+  BLF_default_size(fstyle->points);
+  BLF_set_default();
   const int font_id = BLF_default();
-  BLF_size(font_id, 11.0f * UI_SCALE_FAC);
-  BLF_enable(font_id, BLF_BOLD | BLF_SHADOW);
-  const float shadow_color[4] = {0.0f, 0.0f, 0.0f, 0.85f};
+  float text_color[4], shadow_color[4];
+  ED_view3d_text_colors_get(CTX_data_scene(C), CTX_wm_view3d(C), text_color, shadow_color);
+  BLF_enable(font_id, BLF_SHADOW);
   BLF_shadow(font_id, FontShadowType::Outline, shadow_color);
   BLF_shadow_offset(font_id, 0, 0);
 
-  float width, height;
-  BLF_width_and_height(font_id, name, BLF_DRAW_STR_DUMMY_MAX, &width, &height);
+  const float width = BLF_width(font_id, name, BLF_DRAW_STR_DUMMY_MAX);
+  const float cap_height = BLF_height(font_id, "X", 1);
   const float center_x = gz->matrix_basis[3][0];
   const float center_y = gz->matrix_basis[3][1];
   const float padding = 0.4f * U.widget_unit;
   BLF_position(font_id,
                roundf(center_x - gz->scale_final - padding - width),
-               roundf(center_y - height / 2.0f),
+               roundf(center_y - cap_height / 2.0f),
                0.0f);
-  BLF_color4f(font_id, 1.0f, 1.0f, 1.0f, 0.95f);
+  BLF_color4fv(font_id, text_color);
   BLF_draw(font_id, name, BLF_DRAW_STR_DUMMY_MAX);
 
-  BLF_disable(font_id, BLF_BOLD | BLF_SHADOW);
+  BLF_disable(font_id, BLF_SHADOW);
 }
 
 static void gizmo_axis_draw(const bContext *C, wmGizmo *gz)
@@ -338,7 +347,7 @@ static void gizmo_axis_draw(const bContext *C, wmGizmo *gz)
   BLF_disable(font.id, BLF_BOLD);
   GPU_matrix_pop();
 
-  gizmo_axis_draw_view_name(gz);
+  gizmo_axis_draw_view_name(C, gz);
 }
 
 static int gizmo_axis_test_select(bContext * /*C*/, wmGizmo *gz, const int mval[2])

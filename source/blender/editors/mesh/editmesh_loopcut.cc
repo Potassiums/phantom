@@ -543,7 +543,8 @@ static wmOperatorStatus loopcut_finish(RingSelOpData *lcd, bContext *C, wmOperat
     /* execute */
     ringsel_finish(C, op);
     ringsel_exit(C, op);
-    WM_ui_sound_play(WMUISound::LoopCut);
+    /* Same soft confirm as placing anything else. */
+    WM_ui_sound_play(WMUISound::TransformConfirm);
   }
   else {
     ringcut_cancel(C, op);
@@ -687,6 +688,13 @@ static wmOperatorStatus loopcut_modal(bContext *C, wmOperator *op, const wmEvent
   }
 
   if (cuts != lcd->cuts) {
+    /* Phantom: a soft pop for each loop added or removed, rising with the number of loops. */
+    const int cuts_old = int(lcd->cuts);
+    const int cuts_new = int(clamp_f(cuts, 0, SUBD_CUTS_MAX));
+    if (cuts_new != cuts_old) {
+      WM_ui_sound_play(cuts_new > cuts_old ? WMUISound::LoopAdd : WMUISound::LoopRemove,
+                       1.0f + 0.04f * std::min(cuts_new, 10));
+    }
     /* allow zero so you can backspace and type in a value
      * otherwise 1 as minimum would make more sense */
     lcd->cuts = clamp_f(cuts, 0, SUBD_CUTS_MAX);

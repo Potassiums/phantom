@@ -409,6 +409,8 @@ enum ButtonFlag : int64_t {
   BUT_FORCE_SEMI_MODAL_ACTIVE = int64_t(1) << 33,
   /** On a full Tab auto-complete match, apply the value & keep editing (cursor at the end). */
   BUT_TEXTEDIT_AUTOCOMPLETE_KEEP_ACTIVE = int64_t(1) << 34,
+  /** Phantom: clicking this button inside a menu keeps the menu open (e.g. a filter toggle). */
+  BUT_KEEP_MENU_OPEN = int64_t(1) << 35,
 };
 
 /** #Button.dragflag */
@@ -2728,6 +2730,17 @@ void template_icon_view(Layout *layout,
                         bool show_labels,
                         float icon_scale,
                         float icon_scale_popup);
+/**
+ * Phantom: mark items of #template_icon_view grids as favorites (star, favorites filter) or
+ * new ("new!" badge), by identifier. Each argument is a newline-separated list.
+ */
+void template_icon_view_tags_set(StringRef favorites, StringRef new_items);
+/**
+ * Phantom: an operator button showing a preview icon (e.g. a matcap) filling it, `scale` times
+ * the normal button height. Returns the operator properties to set.
+ */
+PointerRNA template_operator_preview(
+    Layout *layout, StringRefNull opname, int icon_value, float scale, bool depress);
 void template_histogram(Layout *layout, PointerRNA *ptr, StringRefNull propname);
 void template_waveform(Layout *layout, PointerRNA *ptr, StringRefNull propname);
 void template_vectorscope(Layout *layout, PointerRNA *ptr, StringRefNull propname);

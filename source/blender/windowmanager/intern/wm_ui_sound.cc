@@ -68,6 +68,10 @@ static const char *ui_sound_filename(const WMUISound sound)
       return "mode_switch.wav";
     case WMUISound::MeasureTick:
       return "measure_tick.wav";
+    case WMUISound::LoopAdd:
+      return "loop_add.wav";
+    case WMUISound::LoopRemove:
+      return "loop_remove.wav";
   }
   return nullptr;
 }
@@ -85,6 +89,8 @@ static double ui_sound_min_interval(const WMUISound sound)
       return 0.015;
     case WMUISound::SlideTick:
     case WMUISound::MeasureTick:
+    case WMUISound::LoopAdd:
+    case WMUISound::LoopRemove:
       return 0.03;
     default:
       return 0.04;

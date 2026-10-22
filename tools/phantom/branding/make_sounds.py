@@ -232,6 +232,16 @@ def measure_tick():
     return cozy(s, peak=0.07, cutoff=2400, reverb=0.06)
 
 
+def loop_add():
+    """Soft rising "plip" for each loop added while loop cutting."""
+    return cozy(bubble(480, 660, 0.07, tau=0.022), peak=0.11, cutoff=2600, reverb=0.08)
+
+
+def loop_remove():
+    """The same "plip" sinking back, for each loop taken away."""
+    return cozy(bubble(660, 470, 0.07, tau=0.022), peak=0.10, cutoff=2400, reverb=0.08)
+
+
 def knife_cut():
     """Soft paper-scissors 'snip'."""
     a = lowpass(noise_burst(0.025, amp=1.0, tau=0.006, highpass=0.8, seed=31), 5000)
@@ -307,6 +317,8 @@ SOUNDS = {
     "redo.wav": redo,
     "mode_switch.wav": mode_switch,
     "measure_tick.wav": measure_tick,
+    "loop_add.wav": loop_add,
+    "loop_remove.wav": loop_remove,
 }
 
 

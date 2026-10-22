@@ -17,6 +17,8 @@
 #include "BLI_math_vector_types.hh"
 #include "BLI_span.hh"
 
+#include "BLT_translation.hh"
+
 #include "BKE_attribute.hh"
 #include "BKE_brush.hh"
 #include "BKE_context.hh"
@@ -107,6 +109,21 @@ static std::array<float4x4, 8> transform_matrices_init(const SculptSession &ss,
                                                        const TransformDisplacementMode t_mode)
 {
   std::array<float4x4, 8> mats;
+
+  /* Phantom: an explicit matrix (Transpose), mirrored into the other symmetry areas. */
+  if (ss.phantom_transform_matrix) {
+    for (int i = 0; i < PAINT_SYMM_AREAS; i++) {
+      float4x4 mirror = float4x4::identity();
+      for (int axis = 0; axis < 3; axis++) {
+        const int bit = 1 << axis;
+        if ((symm & bit) && ((i ^ ss.phantom_transform_area) & bit)) {
+          mirror[axis][axis] = -1.0f;
+        }
+      }
+      mats[i] = mirror * *ss.phantom_transform_matrix * mirror;
+    }
+    return mats;
+  }
 
   float3 final_pivot_pos, d_t, d_s;
   float d_r[4];
@@ -642,6 +659,117 @@ void end_transform(bContext *C, Object &ob)
   undo::push_end(ob);
   flush_update_done(C, ob, UpdateType::Position);
 }
+
+/* -------------------------------------------------------------------- */
+/** \name Phantom: transform by matrix (Transpose)
+ *
+ * Lets a tool (the Transpose action line, written in Python) drive the sculpt transform with any
+ * matrix: BEGIN starts it (with an undo step), each UPDATE deforms the original positions by the
+ * matrix (mask, hidden and symmetry handled as for the Transform tools), END keeps the result and
+ * CANCEL restores it.
+ * \{ */
+
+enum class PhantomTransformAction { Begin = 0, Update = 1, End = 2, Cancel = 3 };
+
+static wmOperatorStatus phantom_transform_exec(bContext *C, wmOperator *op)
+{
+  Object &ob = *CTX_data_active_object(C);
+  SculptSession &ss = *ob.runtime->sculpt_session;
+  ToolSettings &ts = *CTX_data_tool_settings(C);
+  const PhantomTransformAction action = PhantomTransformAction(RNA_enum_get(op->ptr, "action"));
+
+  switch (action) {
+    case PhantomTransformAction::Begin: {
+      if (ss.filter_cache) {
+        return OPERATOR_CANCELLED;
+      }
+      /* Pivot-only transforms skip the undo step and cache that deforming needs. */
+      ts.transform_flag &= ~SCE_XFORM_SCULPT_PIVOT;
+      const float mval[2] = {0.0f, 0.0f};
+      init_transform(C, ob, mval, IFACE_("Transpose"));
+      ss.filter_cache->transform_displacement_mode = TransformDisplacementMode::Original;
+      return OPERATOR_FINISHED;
+    }
+    case PhantomTransformAction::Update: {
+      if (ss.filter_cache == nullptr) {
+        return OPERATOR_CANCELLED;
+      }
+      float matrix[4][4];
+      RNA_float_get_array(op->ptr, "matrix", &matrix[0][0]);
+      float3 origin;
+      RNA_float_get_array(op->ptr, "origin", origin);
+      ss.phantom_transform_matrix = float4x4(matrix);
+      ss.phantom_transform_area = get_vertex_symm_area(origin);
+
+      const Sculpt &sd = *ts.sculpt;
+      Depsgraph *depsgraph = CTX_data_depsgraph_pointer(C);
+      vert_random_access_ensure(ob);
+      BKE_sculptsession_update_for_edit(depsgraph, &ob, false);
+      sculpt_transform_all_vertices(*depsgraph, sd, ob);
+      ss.phantom_transform_matrix.reset();
+      flush_update_step(C, UpdateType::Position);
+      return OPERATOR_FINISHED;
+    }
+    case PhantomTransformAction::End:
+    case PhantomTransformAction::Cancel: {
+      if (ss.filter_cache == nullptr) {
+        return OPERATOR_CANCELLED;
+      }
+      if (action == PhantomTransformAction::Cancel) {
+        cancel_modal_transform(C, ob);
+      }
+      end_transform(C, ob);
+      return OPERATOR_FINISHED;
+    }
+  }
+  return OPERATOR_CANCELLED;
+}
+
+void SCULPT_OT_phantom_transform(wmOperatorType *ot)
+{
+  ot->name = "Transform by Matrix";
+  ot->idname = "SCULPT_OT_phantom_transform";
+  ot->description = "Deform the unmasked mesh by a matrix (used by the Transpose tool)";
+
+  ot->exec = phantom_transform_exec;
+  ot->poll = sculpt_mode_poll_view3d;
+
+  ot->flag = OPTYPE_INTERNAL;
+
+  static const EnumPropertyItem actions[] = {
+      {int(PhantomTransformAction::Begin), "BEGIN", 0, "Begin", ""},
+      {int(PhantomTransformAction::Update), "UPDATE", 0, "Update", ""},
+      {int(PhantomTransformAction::End), "END", 0, "End", ""},
+      {int(PhantomTransformAction::Cancel), "CANCEL", 0, "Cancel", ""},
+      {0, nullptr, 0, nullptr, nullptr},
+  };
+  RNA_def_enum(ot->srna, "action", actions, int(PhantomTransformAction::Update), "Action", "");
+  static const float identity[16] = {
+      1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 0.0f, 0.0f, 1.0f};
+  RNA_def_float_matrix(ot->srna,
+                       "matrix",
+                       4,
+                       4,
+                       identity,
+                       -FLT_MAX,
+                       FLT_MAX,
+                       "Matrix",
+                       "Object-space transform of the original positions",
+                       -FLT_MAX,
+                       FLT_MAX);
+  RNA_def_float_vector(ot->srna,
+                       "origin",
+                       3,
+                       nullptr,
+                       -FLT_MAX,
+                       FLT_MAX,
+                       "Origin",
+                       "Object-space point on the side the transform was made (for symmetry)",
+                       -FLT_MAX,
+                       FLT_MAX);
+}
+
+/** \} */
 
 enum class PivotPositionMode {
   Origin = 0,

@@ -74,6 +74,17 @@ class VIEW3D_HT_tool_header(Header):
 
         layout.separator_spacer()
 
+        # Phantom: Move/Rotate/Scale and Gizmo/Transpose icons, centered between the tool's
+        # settings and the mode's settings.
+        if context.mode == 'SCULPT':
+            try:
+                import phantom_transpose
+            except ImportError:
+                phantom_transpose = None
+            if phantom_transpose is not None:
+                phantom_transpose.draw_transform_icons(layout, context)
+                layout.separator_spacer()
+
         self.draw_mode_settings(context)
 
     def draw_tool_settings(self, context):
@@ -7208,17 +7219,6 @@ class VIEW3D_PT_overlay_guides(Panel):
         row_el.active = grid_active
         row.prop(overlay, "show_floor", text="Floor", text_ctxt=i18n_contexts.editor_view3d)
 
-        if overlay.show_floor or overlay.show_ortho_grid:
-            sub = col.row(align=True)
-            sub.active = (
-                (overlay.show_floor and not view.region_3d.is_orthographic_side_view) or
-                (overlay.show_ortho_grid and grid_active)
-            )
-            sub.prop(overlay, "grid_scale", text="Scale")
-            sub = sub.row(align=True)
-            sub.active = scene.unit_settings.system == 'NONE'
-            sub.prop(overlay, "grid_subdivisions", text="Subdivisions")
-
         sub = split.column()
         row = sub.row()
         row.label(text="Axes")
@@ -7227,6 +7227,30 @@ class VIEW3D_PT_overlay_guides(Panel):
         subrow.prop(overlay, "show_axis_x", text="X", toggle=True)
         subrow.prop(overlay, "show_axis_y", text="Y", toggle=True)
         subrow.prop(overlay, "show_axis_z", text="Z", toggle=True)
+
+        # Phantom: infinite or limited (Maya-style) grid, then its settings.
+        try:
+            import phantom_viewport
+        except ImportError:
+            phantom_viewport = None
+        grid_limited = phantom_viewport is not None and phantom_viewport.grid_limited()
+        if phantom_viewport is not None:
+            phantom_viewport.draw_grid_mode(col, context)
+
+        if overlay.show_floor or overlay.show_ortho_grid or grid_limited:
+            sub = col.row(align=True)
+            sub.active = (
+                grid_limited or
+                (overlay.show_floor and not view.region_3d.is_orthographic_side_view) or
+                (overlay.show_ortho_grid and grid_active)
+            )
+            sub.prop(overlay, "grid_scale", text="Scale")
+            sub = sub.row(align=True)
+            sub.active = scene.unit_settings.system == 'NONE'
+            sub.prop(overlay, "grid_subdivisions", text="Subdivisions")
+
+        if phantom_viewport is not None:
+            phantom_viewport.draw_grid_options(col, context)
 
         split = col.split()
         sub = split.column()

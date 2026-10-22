@@ -8303,10 +8303,8 @@ void mask_overlay_check(bContext &C, wmOperator &op)
     return;
   }
 
-  if (v3d->flag2 & V3D_HIDE_OVERLAYS) {
-    BKE_report(op.reports, RPT_WARNING, RPT_("Viewport overlays are disabled"));
-  }
-  else {
+  /* Phantom: masks stay visible with overlays off (see the overlay engine), so no warning. */
+  {
     if (!(v3d->overlay.flag & V3D_OVERLAY_SCULPT_SHOW_MASK)) {
       v3d->overlay.flag |= V3D_OVERLAY_SCULPT_SHOW_MASK;
       WM_event_add_notifier(&C, NC_SPACE | ND_SPACE_VIEW3D, nullptr);

@@ -16,9 +16,15 @@ THEME = "release/datafiles/userdef/userdef_default_theme.c"
 PERIWINKLE = "8c8cff"   # selected objects / nodes
 ICE = "bcc8ff"          # active object
 PURPLE = "6870e8"       # UI highlight, purple-ish blue (Blender's 4772b3)
-ORANGE = "ff8a3d"       # edit-mode vertex select, playhead
-ORANGE_EDGE = "ff9b52"
-ORANGE_EDGE_MODE = "ffb36b"
+ORANGE = "ff8a3d"       # playhead
+# Edit-mode selection, Halloween style: pumpkin orange selection, witch-purple active
+# element, slime-green seams and a purple-black unselected cage.
+PUMPKIN = "ff6a00"
+PUMPKIN_EDGE = "ff7f1f"
+PUMPKIN_EDGE_MODE = "ff9a3d"
+WITCH = "b77dff"
+CAGE = "1a0f24"
+SLIME = "7dff3a"
 
 # Straight swaps anywhere in the file (RRGGBB, alpha preserved).
 GLOBAL_SWAPS = {
@@ -37,17 +43,24 @@ SECTION_FIELDS = {
     "space_view3d": {
         "select": PERIWINKLE + "ff",
         "active": ICE + "ff",
-        "vertex_select": ORANGE + "ff",
-        "edge_select": ORANGE_EDGE + "ff",
-        "edge_mode_select": ORANGE_EDGE_MODE + "ff",
-        "face_select": ORANGE + "33",
-        "face_mode_select": ORANGE_EDGE + "33",
-        "gp_vertex_select": ORANGE + "ff",
+        "vertex_select": PUMPKIN + "ff",
+        "edge_select": PUMPKIN_EDGE + "ff",
+        "edge_mode_select": PUMPKIN_EDGE_MODE + "ff",
+        "face_select": PUMPKIN + "38",
+        "face_mode_select": PUMPKIN_EDGE + "38",
+        "editmesh_active": WITCH + "66",
+        "vertex": CAGE + "ff",
+        "edge": CAGE + "ff",
+        "wire_edit": CAGE + "ff",
+        "seam": SLIME + "ff",
+        "sharp": WITCH + "ff",
+        "gp_vertex_select": PUMPKIN + "ff",
     },
     "space_image": {
-        "vertex_select": ORANGE + "ff",
-        "edge_select": ORANGE_EDGE + "ff",
-        "face_select": ORANGE + "33",
+        "vertex_select": PUMPKIN + "ff",
+        "edge_select": PUMPKIN_EDGE + "ff",
+        "face_select": PUMPKIN + "38",
+        "editmesh_active": WITCH + "66",
     },
     "space_outliner": {"selected_object": PERIWINKLE + "ff", "active_object": ICE + "ff"},
     "space_spreadsheet": {"selected_object": PERIWINKLE + "ff", "active_object": ICE + "ff"},

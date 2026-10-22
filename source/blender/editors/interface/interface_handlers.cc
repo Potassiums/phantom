@@ -9862,7 +9862,7 @@ static void button_activate_exit(
   /* if this button is in a menu, this will set the button return
    * value to the button value and the menu return value to ok, the
    * menu return value will be picked up and the menu will close */
-  if (block->handle && !(block->flag & BLOCK_KEEP_OPEN)) {
+  if (block->handle && !(block->flag & BLOCK_KEEP_OPEN) && !(but->flag & BUT_KEEP_MENU_OPEN)) {
     if (!data->cancel || data->escapecancel) {
       PopupBlockHandle *menu;
 

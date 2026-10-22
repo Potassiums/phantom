@@ -629,6 +629,22 @@ static bool buttons_context_linestyle_pinnable(const bContext *C, ViewLayer *vie
 }
 #endif
 
+/** Phantom: whether the active object is in Sculpt Mode (the Properties editor then shows fewer
+ * tabs, and a Sculpting tab). */
+static bool buttons_active_object_sculpting(const bContext *C)
+{
+  wmWindow *window = CTX_wm_window(C);
+  if (window == nullptr) {
+    return false;
+  }
+  const Main *bmain = CTX_data_main(C);
+  const Scene *scene = WM_window_get_active_scene(window);
+  ViewLayer *view_layer = WM_window_get_active_view_layer(window);
+  BKE_view_layer_synced_ensure(*bmain, scene, view_layer);
+  const Object *ob = BKE_view_layer_active_object_get(view_layer);
+  return ob && ob->type == OB_MESH && ob->mode == OB_MODE_SCULPT;
+}
+
 static bool buttons_context_path(
     const bContext *C, SpaceProperties *sbuts, ButsContextPath *path, int mainb, int flag)
 {
@@ -750,6 +766,9 @@ static bool buttons_context_path(
     case BCONTEXT_COMPOSITOR:
       found = buttons_context_path_compositor(path);
       break;
+    case BCONTEXT_PHANTOM_SCULPT:
+      found = buttons_context_path_object(path) && buttons_active_object_sculpting(C);
+      break;
     default:
       found = false;
       break;
@@ -799,6 +818,14 @@ static eSpaceButtons_Context buttons_shading_new_context(const bContext *C, int 
   return BCONTEXT_RENDER;
 }
 
+/** Phantom: the tabs the Properties editor keeps in Sculpt Mode. */
+static constexpr int PHANTOM_SCULPT_TABS = (1 << BCONTEXT_RENDER) | (1 << BCONTEXT_OUTPUT) |
+                                           (1 << BCONTEXT_SCENE) | (1 << BCONTEXT_WORLD) |
+                                           (1 << BCONTEXT_OBJECT) | (1 << BCONTEXT_MODIFIER) |
+                                           (1 << BCONTEXT_DATA) | (1 << BCONTEXT_MATERIAL) |
+                                           (1 << BCONTEXT_TEXTURE) |
+                                           (1 << BCONTEXT_PHANTOM_SCULPT);
+
 void buttons_context_compute(const bContext *C, SpaceProperties *sbuts)
 {
   if (!sbuts->path) {
@@ -838,6 +865,11 @@ void buttons_context_compute(const bContext *C, SpaceProperties *sbuts)
         }
       }
     }
+  }
+
+  /* Phantom: a shorter list of tabs while sculpting. */
+  if (buttons_active_object_sculpting(C)) {
+    flag &= PHANTOM_SCULPT_TABS;
   }
 
   /* always try to use the tab that was explicitly

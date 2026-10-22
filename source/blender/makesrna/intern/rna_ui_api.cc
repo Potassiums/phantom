@@ -533,6 +533,13 @@ static PointerRNA rna_uiItemO(Layout *layout,
   return opptr;
 }
 
+/* Phantom. */
+static PointerRNA rna_uiLayoutOperatorPreview(
+    Layout *layout, const char *opname, int icon_value, float scale, bool depress)
+{
+  return ui::template_operator_preview(layout, opname, icon_value, scale, depress);
+}
+
 static PointerRNA rna_uiItemOMenuHold(Layout *layout,
                                       const char *opname,
                                       const char *name,
@@ -2311,6 +2318,19 @@ void RNA_api_ui_layout(StructRNA *srna)
   RNA_def_function_ui_description(func, "Item. A color ramp widget.");
   api_ui_item_rna_common(func);
   RNA_def_boolean(func, "expand", false, "", "Expand button to show more detail");
+
+  func = RNA_def_function(srna, "phantom_operator_preview", "rna_uiLayoutOperatorPreview");
+  RNA_def_function_ui_description(
+      func, "Phantom: operator button showing a preview icon (such as a matcap) filling it");
+  parm = RNA_def_string(func, "operator", nullptr, 0, "", "Identifier of the operator");
+  RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
+  RNA_def_int(func, "icon_value", 0, 0, INT_MAX, "Icon", "Preview icon to show", 0, INT_MAX);
+  RNA_def_float(func, "scale", 3.0f, 1.0f, 100.0f, "Scale", "Button height, in buttons", 1.0f, 100.0f);
+  RNA_def_boolean(func, "depress", false, "", "Draw pressed in");
+  parm = RNA_def_pointer(
+      func, "properties", "OperatorProperties", "", "Operator properties to fill in");
+  RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED | PARM_RNAPTR);
+  RNA_def_function_return(func, parm);
 
   func = RNA_def_function(srna, "template_icon", "template_icon");
   RNA_def_function_ui_description(func, "Display a large icon");

@@ -6106,6 +6106,11 @@ void draw_button(const bContext *C, ARegion *region, uiStyle *style, Button *but
 
   const float zoom = 1.0f / but->block->aspect;
   wt->state(wt, &state, but->emboss);
+  /* Phantom: a text-only label with a color set draws its text in it (e.g. "new!" badges). The
+   * color is otherwise only used for icons, which these labels don't have. */
+  if (but->type == ButtonType::Label && but->col[3] && !(but->flag & UI_HAS_ICON)) {
+    copy_v4_v4_uchar(wt->wcol.text, but->col);
+  }
   if (wt->custom) {
     wt->custom(but, &wt->wcol, rect, &state, roundboxalign, zoom);
   }

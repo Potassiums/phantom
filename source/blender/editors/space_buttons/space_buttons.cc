@@ -260,6 +260,11 @@ Vector<eSpaceButtons_Context> ED_buttons_tabs_list(const SpaceProperties *sbuts,
 
   add_spacer();
 
+  /* Phantom: sculpting settings, only while sculpting. */
+  add_tab(BCONTEXT_PHANTOM_SCULPT);
+
+  add_spacer();
+
   add_tab(BCONTEXT_STRIP);
   add_tab(BCONTEXT_STRIP_MODIFIER);
 
@@ -311,6 +316,8 @@ static const char *buttons_main_region_context_string(const short mainb)
       return "strip_modifier";
     case BCONTEXT_COMPOSITOR:
       return "compositor";
+    case BCONTEXT_PHANTOM_SCULPT:
+      return "phantom_sculpt";
   }
 
   /* All the cases should be handled. */

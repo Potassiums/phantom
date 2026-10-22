@@ -106,6 +106,10 @@ void Instance::init()
                            V3D_OVERLAY_HIDE_OBJECT_ORIGINS;
       state.overlay.wireframe_threshold = state.v3d->overlay.wireframe_threshold;
       state.overlay.wireframe_opacity = state.v3d->overlay.wireframe_opacity;
+      /* Phantom: sculpt masks stay visible with overlays off (they show what a stroke can
+       * change, so they belong with the model). */
+      state.overlay.flag |= (state.v3d->overlay.flag & V3D_OVERLAY_SCULPT_SHOW_MASK);
+      state.overlay.sculpt_mode_mask_opacity = state.v3d->overlay.sculpt_mode_mask_opacity;
     }
 
     state.do_pose_xray = state.show_bone_selection();

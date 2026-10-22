@@ -97,6 +97,12 @@ const EnumPropertyItem rna_enum_window_cursor_items[] = {
 
 #  include "WM_types.hh"
 
+#  include "BKE_editmesh.hh"
+#  include "BKE_layer.hh"
+#  include "ED_mesh.hh"
+#  include "ED_view3d.hh"
+#  include "bmesh.hh"
+
 namespace blender {
 
 /* Needed since RNA doesn't use `const` in function signatures. */
@@ -963,6 +969,45 @@ static int rna_WindowManager_phantom_asset_preview_icon(bContext *C,
   return preview ? preview->runtime->icon_id : 0;
 }
 
+/**
+ * Phantom: index of the active edit mesh's vertex that a click at `mouse_x, mouse_y` (region
+ * pixels) would select, or -1: the same search, pick distance and occlusion as click-select.
+ */
+static int rna_WindowManager_phantom_edit_vertex_at(bContext *C, int mouse_x, int mouse_y)
+{
+  if (CTX_wm_region_view3d(C) == nullptr || CTX_data_edit_object(C) == nullptr) {
+    return -1;
+  }
+  ViewContext vc = em_setup_viewcontext(C);
+  if (vc.em == nullptr || vc.obedit == nullptr) {
+    return -1;
+  }
+  vc.mval[0] = mouse_x;
+  vc.mval[1] = mouse_y;
+  BKE_view_layer_synced_ensure(*vc.bmain, vc.scene, vc.view_layer);
+  Base *base = BKE_view_layer_base_find(vc.view_layer, vc.obedit);
+  if (base == nullptr) {
+    return -1;
+  }
+  Vector<Base *> bases = {base};
+  float dist = ED_view3d_select_dist_px();
+  uint base_index = 0;
+  BMVert *eve = EDBM_vert_find_nearest_ex(&vc, &dist, false, false, bases, &base_index);
+  if (eve == nullptr) {
+    return -1;
+  }
+  BMesh *bm = BKE_editmesh_from_object(vc.obedit)->bm;
+  BM_mesh_elem_index_ensure(bm, BM_VERT);
+  return BM_elem_index_get(eve);
+}
+
+/* Phantom: favorites and new items of thumbnail grids (newline-separated identifiers). */
+static void rna_WindowManager_phantom_icon_view_tags_set(const char *favorites,
+                                                         const char *new_items)
+{
+  ui::template_icon_view_tags_set(favorites ? favorites : "", new_items ? new_items : "");
+}
+
 }  // namespace blender
 
 #else
@@ -1107,6 +1152,30 @@ void RNA_api_wm(StructRNA *srna)
   RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
   parm = RNA_def_int(func, "icon", 0, 0, INT_MAX, "Icon", "", 0, INT_MAX);
   RNA_def_function_return(func, parm);
+
+  func = RNA_def_function(
+      srna, "phantom_edit_vertex_at", "rna_WindowManager_phantom_edit_vertex_at");
+  RNA_def_function_flag(func, FUNC_NO_SELF | FUNC_USE_CONTEXT);
+  RNA_def_function_ui_description(
+      func,
+      "Index of the active edit mesh's vertex a click at this region position would select, "
+      "or -1 (same distance and occlusion as click-select)");
+  parm = RNA_def_int(func, "mouse_x", 0, INT_MIN, INT_MAX, "Mouse X", "", INT_MIN, INT_MAX);
+  RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
+  parm = RNA_def_int(func, "mouse_y", 0, INT_MIN, INT_MAX, "Mouse Y", "", INT_MIN, INT_MAX);
+  RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
+  parm = RNA_def_int(func, "index", -1, -1, INT_MAX, "Index", "", -1, INT_MAX);
+  RNA_def_function_return(func, parm);
+
+  func = RNA_def_function(
+      srna, "phantom_icon_view_tags_set", "rna_WindowManager_phantom_icon_view_tags_set");
+  RNA_def_function_flag(func, FUNC_NO_SELF);
+  RNA_def_function_ui_description(
+      func,
+      "Mark items of thumbnail grids (e.g. matcaps) as favorites or new, by identifier "
+      "(newline-separated lists)");
+  RNA_def_string(func, "favorites", nullptr, 0, "Favorites", "");
+  RNA_def_string(func, "new_items", nullptr, 0, "New Items", "");
 
   func = RNA_def_function(srna, "fileselect_add", "WM_event_add_fileselect");
   /* Note that a full description is located at:

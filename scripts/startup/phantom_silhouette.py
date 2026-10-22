@@ -242,8 +242,9 @@ def _info_offsets_for(area, region, rect):
     x, y, w, h = rect
     gap = round(DOCK_GAP * _ui_scale())
     if _settings["dock_top"] == 0:
-        # In the top-left corner: the text goes below the panel.
-        return 0, region.height - y + gap
+        # In the top-left corner: the text goes below the panel. The text already starts below
+        # the headers drawn over the viewport, so measure from there.
+        return 0, region.height - _top_inset(area, region) - y + gap
     if y + h > region.height * (1.0 - TEXT_AREA_FRACTION):
         # Docked lower down but over the text: the text goes to the right of the panel.
         return x + w + gap - _left_inset(area, region), 0

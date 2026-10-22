@@ -5382,6 +5382,10 @@ def km_sculpt(params):
         ("sculpt.phantom_trim", {"type": 'LEFTMOUSE', "value": 'CLICK_DRAG', "ctrl": True, "shift": True}, None),
         ("sculpt.face_set_change_visibility", {"type": 'LEFTMOUSE', "value": 'CLICK', "ctrl": True, "shift": True},
          {"properties": [("mode", 'ISOLATE')]}),
+        # Phantom: W is Move (gizmo or Transpose, see the tool header). The 3D View's W (box
+        # select tool) doesn't exist in Sculpt Mode.
+        ("sculpt.phantom_transform_tool", {"type": 'W', "value": 'PRESS'},
+         {"properties": [("mode", 'MOVE')]}),
         # Phantom: X toggles X-axis symmetry.
         ("wm.context_toggle", {"type": 'X', "value": 'PRESS'},
          {"properties": [("data_path", 'object.data.use_mirror_x')]}),

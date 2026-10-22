@@ -1,38 +1,118 @@
 <!--
-Keep this document short & concise,
-linking to external resources instead of including content in-line.
-See 'release/text/readme.html' for the end user read-me.
+Phantom's read-me. Keep the feature list in step with CHANGELOG.md.
+See 'release/text/readme.html' for Blender's end user read-me.
 -->
 
-Blender
+Phantom
 =======
 
-Blender is the free and open source 3D creation suite.
-It supports the entirety of the 3D pipeline—modeling, rigging, animation, simulation, rendering, compositing,
-motion tracking and video editing.
+Phantom is a fork of [Blender](https://www.blender.org) tuned for sculpting: ZBrush-style
+masking, face sets and Transpose, a live silhouette preview, quick brushes, a large matcap
+library, a charcoal look with cozy interface sounds, and many smaller quality-of-life changes.
+Everything else in Blender is still there and works as before.
 
-![Blender screenshot](https://code.blender.org/wp-content/uploads/2018/12/springrg.jpg "Blender screenshot")
+**[Download the latest release](https://github.com/Potassiums/phantom/releases)** (Windows, 64-bit).
+Unzip it anywhere and run `phantom.exe`; nothing needs installing. Phantom keeps its settings in
+`%APPDATA%\Phantom`, apart from any Blender install.
 
-Project Pages
--------------
+See [CHANGELOG.md](CHANGELOG.md) for what changed in each release.
 
-- [Main Website](https://www.blender.org)
-- [Reference Manual](https://docs.blender.org/manual/en/latest/index.html)
-- [User Community](https://www.blender.org/community/)
+Phantom is in **alpha** and follows Blender's in-development code (currently 5.4): save often.
 
-Development
------------
 
-- [Build Instructions](https://developer.blender.org/docs/handbook/building_blender/)
-- [Code Review & Bug Tracker](https://projects.blender.org)
-- [Developer Forum](https://devtalk.blender.org)
-- [Developer Documentation](https://developer.blender.org/docs/)
+What Phantom adds to Blender
+----------------------------
+
+### Look and feel
+
+- **Phantom theme:** charcoal gradients with blue-purple accents, periwinkle selection, the
+  Phantom ghost icon and splash, 3 px object outlines and larger vertices and edges.
+- **Halloween edit-mode colors:** pumpkin-orange selection, witch-purple active element,
+  purple-black unselected cage, slime-green seams.
+- **Cozy interface sounds** (Animal Crossing inspired), with volume and on/off in
+  Preferences > Interface > Sounds: clicks, toggles, menus, soft "pop" confirms and cancels for
+  placing things (grab, rotate, scale, remesh, applying modifiers, loop cuts), undo/redo,
+  typing taps with pitch variation, outliner clicks, loop add/remove and slide ticks, knife
+  snips, mode switching and a measuring tick when resizing the remesh voxel size.
+- **Motion:** tools collapse and cascade in when switching modes; menus and dropdowns slide out
+  from the side they open toward, with submenus sliding out from under their parent; the N
+  sidebar slides in and out.
+- **Navigation gizmo** shows which side you are facing (Front, Right, Top...).
+- **File > New > Sculpting** starts looking straight at the front of the sphere.
+
+### Viewport
+
+- **Limited or infinite grid** (Overlays popover): a square, Maya-style grid around the origin
+  with an adjustable size and optional axis colors, or Blender's infinite floor.
+- **Vertex hover:** in Edit Mode, the vertex a click would select grows a little and pulses.
+- **Per-object matcaps:** give selected objects their own matcap, or send them back to the
+  viewport's.
+
+### Matcaps
+
+- **54 extra ZBrush-style matcaps** ship with Phantom.
+- **Search** the matcap grid as you type (fuzzy: typos and partial words are fine), or use the
+  search button next to the matcap thumbnail.
+- **Favorites:** star matcaps from their right-click menu (gold stars in the grid) and filter the
+  grid to favorites.
+- **Default matcap:** right-click a matcap to use it for every new project.
+- **Quick matcaps:** four slots in the Shading popover for one-click switching.
+- **"new!" badges** on matcaps you add, until you use them.
+
+### Sculpt Mode
+
+- **Silhouette thumbnail:** a live black-on-white view of the scene, docked in the top-left
+  corner with the viewport's aspect ratio. Move, resize and dock it; it follows the sidebar.
+- **ZBrush-style masking:** Ctrl-drag to mask (off the mesh: box mask, or clear the mask / voxel
+  remesh when empty), Ctrl-Alt-drag to erase, Ctrl-click to smooth (on the mesh) or invert (off
+  it), Ctrl-Alt-click to sharpen. Alt inverts the brush.
+- **Masks stay visible** with viewport overlays off.
+- **Face sets:** Ctrl+W turns the masked area into a face set and clears the mask;
+  Ctrl+Shift-click isolates a face set, swaps on an isolated one and shows everything off the
+  mesh; Ctrl+F toggles face sets plus wireframe (PolyFrame).
+- **Move, Rotate and Scale** (W is Move) with five icons in the middle of the tool header: pick
+  the action, and Blender's gizmo or the **Transpose** action line.
+- **Transpose:** ZBrush-style action line. Draw it on the model; drag its rings to place it and
+  its inner circles to move, stretch, scale, thicken or thin, rotate or twist the unmasked model.
+  Masks, symmetry and undo work as expected.
+- **Quad Remesh** (powered by [AutoRemesher](https://github.com/huxingyi/autoremesher))
+  with its own dropdown next to Remesh; settings saved with the file.
+- **Brushes:** the sidebar moves next to the tools with the Brush Asset panel (tool icon and name
+  on top) and four quick-brush slots: drag brushes in or out, right-click to replace, remove or
+  give a shortcut. A quick-brush shortcut takes over its key (for example C instead of Clay
+  Strips).
+- **Brush preview updates live** while holding Shift (smooth), Ctrl (mask) or Ctrl+Shift (trim).
+- **Focal Shift** (brush hardness) slider in the brush's right-click menu; the cursor's inner
+  ring follows it, like ZBrush.
+- **Stabilize Stroke** (lazy mouse) toggle in Brush Settings.
+- **X** toggles X symmetry; **Ctrl+Shift-drag** trims with the selected trim tool.
+- **C** samples the mesh's color while a paint or smear brush is active.
+- **Asset shelf** toggle in the header.
+- **Properties editor** shows only the tabs that matter while sculpting, plus a Sculpting tab
+  (coming soon).
+
+
+Building
+--------
+
+Phantom builds like Blender: see Blender's
+[build instructions](https://developer.blender.org/docs/handbook/building_blender/). On Windows,
+`make.bat ninja` in the repository builds `phantom.exe`. Phantom's branding, theme, sound and
+icon generators are in [tools/phantom/branding](tools/phantom/branding).
+
+
+Credits
+-------
+
+- [Blender](https://www.blender.org) by the Blender Foundation and its contributors.
+- [AutoRemesher](https://github.com/huxingyi/autoremesher) by Jeremy Hu (MIT), used by Quad
+  Remesh.
 
 
 License
 -------
 
-Blender as a whole is licensed under the GNU General Public License, Version 3.
+Phantom, like Blender, is licensed under the GNU General Public License, Version 3.
 Individual files may have a different but compatible license.
 
 See [blender.org/about/license](https://www.blender.org/about/license) for details.
