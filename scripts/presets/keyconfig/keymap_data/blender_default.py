@@ -5377,8 +5377,11 @@ def km_sculpt(params):
          {"properties": [("sharpen", False)]}),
         ("sculpt.phantom_smart_mask_click", {"type": 'LEFTMOUSE', "value": 'CLICK', "ctrl": True, "alt": True},
          {"properties": [("sharpen", True)]}),
-        # Phantom: Ctrl-Shift trims with the trim tool selected in the tool-bar.
-        ("sculpt.phantom_trim", {"type": 'LEFTMOUSE', "value": 'PRESS', "ctrl": True, "shift": True}, None),
+        # Phantom: Ctrl-Shift-drag trims with the trim tool selected in the tool-bar, and
+        # Ctrl-Shift-click isolates face sets like ZBrush (swap when isolated, show all off the mesh).
+        ("sculpt.phantom_trim", {"type": 'LEFTMOUSE', "value": 'CLICK_DRAG', "ctrl": True, "shift": True}, None),
+        ("sculpt.face_set_change_visibility", {"type": 'LEFTMOUSE', "value": 'CLICK', "ctrl": True, "shift": True},
+         {"properties": [("mode", 'ISOLATE')]}),
         # Phantom: X toggles X-axis symmetry.
         ("wm.context_toggle", {"type": 'X', "value": 'PRESS'},
          {"properties": [("data_path", 'object.data.use_mirror_x')]}),
@@ -5426,8 +5429,8 @@ def km_sculpt(params):
          {"properties": [("action", 'GROW')]}),
         ("paint.visibility_filter", {"type": 'PAGE_DOWN', "value": 'PRESS', "repeat": True},
          {"properties": [("action", 'SHRINK')]}),
-        ("sculpt.face_set_edit", {"type": 'W', "value": 'PRESS', "ctrl": True},
-         {"properties": [("mode", 'GROW')]}),
+        # Phantom: Ctrl+W turns the masked area into a face set and clears the mask.
+        ("sculpt.phantom_mask_to_face_set", {"type": 'W', "value": 'PRESS', "ctrl": True}, None),
         ("sculpt.face_set_edit", {"type": 'W', "value": 'PRESS', "ctrl": True, "alt": True},
          {"properties": [("mode", 'SHRINK')]}),
         # Subdivision levels
@@ -5526,6 +5529,8 @@ def km_sculpt(params):
              ("asset_library_type", 'ESSENTIALS'),
              ("relative_asset_identifier", "brushes/essentials_brushes-mesh_sculpt.blend/Brush/Scrape/Fill"),
          ]}),
+        # Phantom: with a paint brush, C samples the mesh's color (otherwise it falls through).
+        ("sculpt.phantom_sample_color", {"type": 'C', "value": 'PRESS'}, None),
         ("brush.asset_activate", {"type": 'C', "value": 'PRESS'},
          {"properties": [
              ("asset_library_type", 'ESSENTIALS'),

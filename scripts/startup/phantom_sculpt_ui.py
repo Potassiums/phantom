@@ -328,6 +328,105 @@ def _sync_sidebars():
     return SYNC_INTERVAL
 
 
+class SCULPT_OT_phantom_mask_to_face_set(Operator):
+    """Turn the masked area into a new face set and clear the mask"""
+    bl_idname = "sculpt.phantom_mask_to_face_set"
+    bl_label = "Mask to Face Set"
+    bl_options = {'REGISTER'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == 'SCULPT'
+
+    def execute(self, context):
+        # Both steps make their own sculpt undo step.
+        if bpy.ops.sculpt.face_sets_create(mode='MASKED') != {'FINISHED'}:
+            return {'CANCELLED'}
+        bpy.ops.paint.mask_flood_fill(mode='VALUE', value=0.0)
+        return {'FINISHED'}
+
+
+# Brushes that paint color: with one of them active, C samples the mesh's color.
+COLOR_BRUSH_TYPES = {'PAINT', 'SMEAR'}
+
+
+class SCULPT_OT_phantom_sample_color(Operator):
+    """Pick the mesh's own color under the cursor for the paint brush"""
+    bl_idname = "sculpt.phantom_sample_color"
+    bl_label = "Sample Mesh Color"
+    bl_options = {'INTERNAL'}
+
+    @classmethod
+    def poll(cls, context):
+        # Failing the poll lets C fall through to its other shortcuts (brushes).
+        if context.mode != 'SCULPT':
+            return False
+        brush = context.tool_settings.sculpt.brush
+        return brush is not None and brush.sculpt_brush_type in COLOR_BRUSH_TYPES
+
+    def invoke(self, context, event):
+        # "merged=False" reads the raw color attribute, not what the viewport shows.
+        result = bpy.ops.paint.sample_color('INVOKE_DEFAULT', merged=False)
+        return {'FINISHED'} if result & {'RUNNING_MODAL', 'FINISHED'} else {'CANCELLED'}
+
+
+# -----------------------------------------------------------------------------
+# Quick-brush shortcuts take over their key
+
+QUICK_BRUSH_OPERATOR = "sculpt.phantom_quick_brush"
+# Never switched off for a quick-brush key: these only act in a narrow case and pass the key on.
+SHORTCUT_KEEP = {QUICK_BRUSH_OPERATOR, "sculpt.phantom_sample_color", "sculpt.phantom_key_watch"}
+SHORTCUT_SYNC_INTERVAL = 1.0
+
+
+def _shortcut_key(kmi):
+    return (kmi.type, kmi.value, kmi.any, kmi.shift, kmi.ctrl, kmi.alt, kmi.oskey, kmi.key_modifier)
+
+
+def _shortcut_id(kmi):
+    """Identify a keymap item across sessions: operator, key and its settings."""
+    props = []
+    if kmi.properties is not None:
+        for prop in kmi.properties.bl_rna.properties:
+            if prop.identifier != "rna_type" and kmi.properties.is_property_set(prop.identifier):
+                props.append(f"{prop.identifier}={getattr(kmi.properties, prop.identifier)!r}")
+    return "|".join((kmi.idname, repr(_shortcut_key(kmi)), *sorted(props)))
+
+
+def _sync_shortcuts():
+    """Switch off Sculpt shortcuts that a quick-brush shortcut uses (C -> Clay Strips, ...),
+    and switch them back on once no quick brush uses that key any more."""
+    wm = bpy.context.window_manager
+    kc = wm.keyconfigs.user if wm else None
+    km = kc.keymaps.get("Sculpt") if kc else None
+    if km is None:
+        return SHORTCUT_SYNC_INTERVAL
+
+    taken = {
+        _shortcut_key(kmi) for kmi in km.keymap_items
+        if kmi.idname == QUICK_BRUSH_OPERATOR and kmi.active
+    }
+    disabled = quick_brushes.disabled_shortcuts()
+    changed = False
+    for kmi in km.keymap_items:
+        if kmi.idname in SHORTCUT_KEEP:
+            continue
+        key = _shortcut_key(kmi)
+        if kmi.active and key in taken:
+            disabled.add(_shortcut_id(kmi))
+            kmi.active = False
+            changed = True
+        elif not kmi.active and key not in taken and disabled:
+            ident = _shortcut_id(kmi)
+            if ident in disabled:
+                disabled.discard(ident)
+                kmi.active = True
+                changed = True
+    if changed:
+        quick_brushes.save_disabled_shortcuts(disabled)
+    return SHORTCUT_SYNC_INTERVAL
+
+
 classes = (
     SCULPT_OT_phantom_quick_brush,
     SCULPT_OT_phantom_quick_brush_assign,
@@ -336,6 +435,8 @@ classes = (
     SCULPT_OT_phantom_key_watch,
     SCULPT_OT_phantom_trim,
     SCULPT_OT_phantom_polyframe,
+    SCULPT_OT_phantom_mask_to_face_set,
+    SCULPT_OT_phantom_sample_color,
 )
 
 
@@ -346,6 +447,7 @@ def register():
     bpy.types.VIEW3D_HT_header.append(_draw_header_asset_shelf_toggle)
     if not bpy.app.background:
         bpy.app.timers.register(_sync_sidebars, first_interval=SYNC_INTERVAL, persistent=True)
+        bpy.app.timers.register(_sync_shortcuts, first_interval=SHORTCUT_SYNC_INTERVAL, persistent=True)
 
     kc = bpy.context.window_manager.keyconfigs.addon
     if kc:
@@ -359,8 +461,9 @@ def unregister():
     for km, kmi in _addon_keymaps:
         km.keymap_items.remove(kmi)
     _addon_keymaps.clear()
-    if bpy.app.timers.is_registered(_sync_sidebars):
-        bpy.app.timers.unregister(_sync_sidebars)
+    for timer in (_sync_sidebars, _sync_shortcuts):
+        if bpy.app.timers.is_registered(timer):
+            bpy.app.timers.unregister(timer)
     bpy.types.VIEW3D_HT_header.remove(_draw_header_asset_shelf_toggle)
     bpy.types.UI_MT_button_context_menu.remove(_draw_button_context_menu)
     quick_brushes.unregister()

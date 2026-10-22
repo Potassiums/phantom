@@ -114,3 +114,4 @@ scripts/modules/_bpy_internal/assets/remote_library/*_openapi.py linguist-genera
 release/datafiles/sounds/*.wav !text !filter !merge !diff
 release/datafiles/splash.png !text !filter !merge !diff
 tools/phantom/branding/phantom_source.webp !text !filter !merge !diff
+release/datafiles/studiolights/matcap/ZB*.exr !text !filter !merge !diff

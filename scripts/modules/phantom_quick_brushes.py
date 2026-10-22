@@ -87,6 +87,41 @@ def _save():
 
 
 # -----------------------------------------------------------------------------
+# Shortcuts switched off because a quick brush uses their key
+
+_disabled_shortcuts = None
+
+
+def _disabled_shortcuts_path():
+    return os.path.join(_config_dir(), "phantom_quick_brush_shortcuts.json")
+
+
+def disabled_shortcuts():
+    """Identifiers of keymap items Phantom switched off for quick-brush shortcuts (a set)."""
+    global _disabled_shortcuts
+    if _disabled_shortcuts is None:
+        try:
+            with open(_disabled_shortcuts_path(), encoding="utf-8") as fh:
+                data = json.load(fh)
+        except (OSError, ValueError):
+            data = []
+        _disabled_shortcuts = {item for item in data if isinstance(item, str)} if isinstance(data, list) else set()
+    return _disabled_shortcuts
+
+
+def save_disabled_shortcuts(items):
+    global _disabled_shortcuts
+    _disabled_shortcuts = set(items)
+    path = _disabled_shortcuts_path()
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as fh:
+            json.dump(sorted(_disabled_shortcuts), fh, indent=2)
+    except OSError as ex:
+        print("Phantom: could not save quick-brush shortcut changes:", ex)
+
+
+# -----------------------------------------------------------------------------
 # Thumbnails
 
 def _thumbnail_path(slot):

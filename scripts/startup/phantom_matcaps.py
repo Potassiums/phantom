@@ -10,7 +10,10 @@ viewport's one. The choice is stored on the object as the ``phantom_matcap`` cus
 (saved with the file) and drawn by the Workbench engine.
 """
 
+import os
+
 import bpy
+from bpy.props import EnumProperty
 from bpy.types import Operator
 
 PROPERTY = "phantom_matcap"
@@ -75,6 +78,49 @@ class OBJECT_OT_phantom_matcap_clear(Operator):
         return {'FINISHED'}
 
 
+# Kept alive here: Blender doesn't hold on to the strings of dynamic enum items.
+_search_items = []
+
+
+def _matcap_search_items(_self, context):
+    """Every matcap by name, without the file extension. (No icons: the matcap previews are
+    only drawable inside the matcap grid itself.)"""
+    _search_items.clear()
+    lights = context.preferences.studio_lights
+    for index, light in enumerate(sorted((l for l in lights if l.type == 'MATCAP'),
+                                         key=lambda l: l.name.lower())):
+        _search_items.append((light.name, os.path.splitext(light.name)[0], "", index))
+    return _search_items
+
+
+class VIEW3D_OT_phantom_matcap_search(Operator):
+    """Search the matcaps by name (typos and partial words are fine)"""
+    bl_idname = "view3d.phantom_matcap_search"
+    bl_label = "Search Matcaps"
+    bl_options = {'REGISTER'}
+    bl_property = "matcap"
+
+    matcap: EnumProperty(name="Matcap", items=_matcap_search_items)
+
+    @classmethod
+    def poll(cls, context):
+        shading = _shading(context)
+        return shading is not None and shading.type == 'SOLID'
+
+    def invoke(self, context, _event):
+        context.window_manager.invoke_search_popup(self)
+        return {'RUNNING_MODAL'}
+
+    def execute(self, context):
+        shading = _shading(context)
+        if shading is None:
+            return {'CANCELLED'}
+        shading.light = 'MATCAP'
+        shading.studio_light = self.matcap
+        _refresh([], context)
+        return {'FINISHED'}
+
+
 def draw_shading_lighting(self, context):
     shading = _shading(context)
     if shading is None or shading.type != 'SOLID' or shading.light != 'MATCAP':
@@ -91,6 +137,7 @@ def draw_shading_lighting(self, context):
 
 
 classes = (
+    VIEW3D_OT_phantom_matcap_search,
     OBJECT_OT_phantom_matcap_apply,
     OBJECT_OT_phantom_matcap_clear,
 )

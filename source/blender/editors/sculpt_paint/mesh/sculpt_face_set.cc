@@ -909,6 +909,8 @@ enum class VisibilityMode {
   Toggle = 0,
   ShowActive = 1,
   HideActive = 2,
+  /** Phantom: ZBrush-style isolate, see #SCULPT_OT_face_set_change_visibility. */
+  Isolate = 3,
 };
 
 static void face_hide_update(const Depsgraph &depsgraph,
@@ -1061,6 +1063,33 @@ static wmOperatorStatus change_visibility_exec(bContext *C, wmOperator *op)
             });
       }
       break;
+    case VisibilityMode::Isolate: {
+      if (!RNA_boolean_get(op->ptr, "over_mesh")) {
+        /* Clicked off the mesh: show everything again. */
+        show_all(depsgraph, object, node_mask);
+      }
+      else if (face_sets.is_empty()) {
+        /* A single face set: nothing to isolate. */
+      }
+      else if (hide_poly.contains(true)) {
+        /* Already isolated: swap, hiding the clicked face set and showing all the others. */
+        face_hide_update(
+            depsgraph, object, node_mask, [&](const Span<int> faces, MutableSpan<bool> hide) {
+              for (const int i : hide.index_range()) {
+                hide[i] = face_sets[faces[i]] == active_face_set;
+              }
+            });
+      }
+      else {
+        face_hide_update(
+            depsgraph, object, node_mask, [&](const Span<int> faces, MutableSpan<bool> hide) {
+              for (const int i : hide.index_range()) {
+                hide[i] = face_sets[faces[i]] != active_face_set;
+              }
+            });
+      }
+      break;
+    }
     case VisibilityMode::HideActive:
       if (face_sets.is_empty()) {
         face_hide_update(
@@ -1083,7 +1112,7 @@ static wmOperatorStatus change_visibility_exec(bContext *C, wmOperator *op)
 
   /* For modes that use the cursor active vertex, update the rotation origin for viewport
    * navigation. */
-  if (ELEM(mode, VisibilityMode::Toggle, VisibilityMode::ShowActive)) {
+  if (ELEM(mode, VisibilityMode::Toggle, VisibilityMode::ShowActive, VisibilityMode::Isolate)) {
     Paint *paint = BKE_paint_get_active_from_context(C);
     bke::PaintRuntime *paint_runtime = paint->runtime;
     if (std::holds_alternative<std::monostate>(ss.active_vert())) {
@@ -1121,7 +1150,8 @@ static wmOperatorStatus change_visibility_invoke(bContext *C, wmOperator *op, co
    * cursor updates. */
   const float mval_fl[2] = {float(event->mval[0]), float(event->mval[1])};
   vert_random_access_ensure(ob);
-  cursor_geometry_info_update(C, mval_fl, false);
+  const bool over_mesh = cursor_geometry_info_update(C, mval_fl, false).has_value();
+  RNA_boolean_set(op->ptr, "over_mesh", over_mesh);
 
   const int active_face_set = active_face_set_get(ob);
   RNA_int_set(op->ptr, "active_face_set", active_face_set);
@@ -1157,6 +1187,12 @@ void SCULPT_OT_face_set_change_visibility(wmOperatorType *ot)
        0,
        "Hide Active Face Set",
        "Hide the active face set"},
+      {int(VisibilityMode::Isolate),
+       "ISOLATE",
+       0,
+       "Isolate Face Set",
+       "Like ZBrush: show only the face set under the cursor; on an isolated face set, hide it "
+       "and show the others instead; off the mesh, show everything"},
       {0, nullptr, 0, nullptr, nullptr},
   };
   RNA_def_enum(ot->srna, "mode", modes, int(VisibilityMode::Toggle), "Mode", "");
@@ -1164,6 +1200,12 @@ void SCULPT_OT_face_set_change_visibility(wmOperatorType *ot)
   PropertyRNA *prop = RNA_def_int(
       ot->srna, "active_face_set", 0, 0, INT_MAX, "Active Face Set", "", 0, INT_MAX);
   RNA_def_property_flag(prop, PROP_SKIP_SAVE);
+  prop = RNA_def_boolean(ot->srna,
+                         "over_mesh",
+                         true,
+                         "Over Mesh",
+                         "Whether the cursor was over the mesh (Isolate shows everything when not)");
+  RNA_def_property_flag(prop, (PROP_SKIP_SAVE | PROP_HIDDEN));
 }
 
 static wmOperatorStatus randomize_colors_exec(bContext *C, wmOperator * /*op*/)
