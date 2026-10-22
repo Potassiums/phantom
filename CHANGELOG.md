@@ -25,8 +25,10 @@ Built on Blender 5.4 alpha.
 
 ### New: matcaps
 
-- **54 ZBrush-style matcaps** included ("ZB ..." in the matcap list), by Mandarin:
-  [ZBrush Style Matcaps for Blender](https://mandarin.gumroad.com/l/zbrush-style-matcaps-for-blender).
+- **ZBrush-style matcaps** pair well with these tools: get Mandarin's
+  [ZBrush Style Matcaps for Blender](https://mandarin.gumroad.com/l/zbrush-style-matcaps-for-blender)
+  ($2, or free with the code FREE) and install them in Preferences > Lights > MatCaps > Install.
+  (The first 0.2.0 download bundled them; they were removed, as they're Mandarin's to share.)
 - **Search inside the matcap grid:** type straight away to filter it (fuzzy matching); also a
   search button next to the matcap thumbnail.
 - **Favorites:** right-click a matcap > Add to Favorites; favorites get a gold star in the grid,

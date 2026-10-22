@@ -1,5 +1,0 @@
-The matcaps named "ZB ..." are "ZBrush Style Matcaps for Blender" by Mandarin:
-https://mandarin.gumroad.com/l/zbrush-style-matcaps-for-blender
-
-They are offered on Gumroad for $2, or for free with the code FREE.
-Phantom ships them re-saved as half-float EXR files.

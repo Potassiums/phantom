@@ -25,7 +25,7 @@ New in 0.2.0
 - **Transpose:** ZBrush's action line for moving, scaling and rotating the unmasked model, plus
   Move/Rotate/Scale icons (gizmo or Transpose) in the middle of the Sculpt tool header. **W** is
   Move.
-- **Matcap library tools:** 54 ZBrush-style matcaps, search inside the matcap grid, favorites
+- **Matcap library tools:** search inside the matcap grid, favorites
   with gold stars, a default matcap for every project, four quick slots and "new!" badges.
 - **Face sets like ZBrush:** Ctrl+W makes a face set from the mask, Ctrl+Shift-click isolates.
 - **Limited, Maya-style grid**, a pulsing vertex hover in Edit Mode, Halloween edit-mode colors,
@@ -136,8 +136,10 @@ What Phantom adds to Blender
 
 ### Matcaps
 
-- **54 extra ZBrush-style matcaps** ship with Phantom, by
-  [Mandarin](https://mandarin.gumroad.com/l/zbrush-style-matcaps-for-blender).
+- **Works with any matcap collection.** For ZBrush-style matcaps, get Mandarin's
+  [ZBrush Style Matcaps for Blender](https://mandarin.gumroad.com/l/zbrush-style-matcaps-for-blender)
+  ($2, or free with the code **FREE**) and install them in Edit > Preferences > Lights >
+  MatCaps > Install; they show up as "new!" in the matcap grid.
 - **Search** the matcap grid as you type (fuzzy: typos and partial words are fine), or use the
   search button next to the matcap thumbnail.
 - **Favorites:** star matcaps from their right-click menu (gold stars in the grid) and filter the
@@ -198,10 +200,9 @@ Credits
 - [Blender](https://www.blender.org) by the Blender Foundation and its contributors.
 - [AutoRemesher](https://github.com/huxingyi/autoremesher) by Jeremy Hu (MIT), used by Quad
   Remesh.
-- The ZBrush-style matcaps ("ZB ..." in the matcap list) are by **Mandarin**:
+- Recommended matcaps (not included): **Mandarin**'s
   [ZBrush Style Matcaps for Blender](https://mandarin.gumroad.com/l/zbrush-style-matcaps-for-blender)
-  on Gumroad. They're $2, or free with the code **FREE** that Mandarin provides; if you like them,
-  consider supporting him there.
+  on Gumroad, $2 or free with the code **FREE**; if you like them, consider supporting him there.
 
 
 License
