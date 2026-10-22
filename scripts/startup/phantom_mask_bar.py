@@ -9,9 +9,12 @@ A small bar slides up at the bottom of the 3D Viewport when there is something t
 
 - **Mask bar**, while the mesh has a mask (or hidden parts). By default:
   Hide Masked, Unhide, Split Hidden (like ZBrush) and Extract.
-- **Polygroup bar**, after turning the mask into a polygroup (Ctrl+W). Its actions work on
-  that polygroup. By default: Isolate (again: swap), Hide, Unhide and Split Hidden.
-  Its "x" puts the bar away; masking again brings back the mask bar.
+- **Polygroup bar**, after turning the mask into a polygroup (Ctrl+W), or isolating a
+  polygroup (Ctrl+Shift-click). Its actions work on that polygroup. By default: Isolate (again: swap), Hide, Unhide and Split Hidden.
+  Its "x" puts the bar away, as does picking another tool or brush; masking again brings back
+  the mask bar.
+
+The bar goes away when the mask is cleared and nothing is hidden.
 
 Each bar is customizable: its "+" button (or right-clicking it) lists more actions to add or
 remove. The choices are remembered between sessions (stored in ``phantom_mask_bar.json`` in
@@ -160,8 +163,15 @@ _settings = {key: list(DEFAULTS[bar]) for bar, key in SETTINGS_KEYS.items()}
 _draw_handle = None
 _addon_keymaps = []
 _audio = {"device": None}
-# The polygroup each object's polygroup bar works on, by object name.
+# The polygroup each object's polygroup bar works on, by object name, with the tool and brush
+# in use then: `(polygroup, tool, brush)`.
 _polygroups = {}
+# Whether the mesh really has a mask / hidden faces, rechecked after each operator or stroke:
+# `(key, (has_mask, has_hidden))`.
+_state_cache = [None, None]
+# The polygroup found isolated (alone visible, or alone hidden) at the last check, by object
+# name: the polygroup bar comes up when this changes.
+_isolated = {}
 
 # Appear/disappear animation: `_alpha` moves towards `_target`.
 _alpha = 0.0
@@ -226,19 +236,88 @@ def _ui_scale():
     return bpy.context.preferences.system.ui_scale
 
 
+def _any_set(attribute, dtype):
+    """Whether any value of a point or face attribute is non-zero."""
+    import numpy as np
+    if attribute is None or not len(attribute.data):
+        return False
+    values = np.empty(len(attribute.data), dtype=dtype)
+    attribute.data.foreach_get("value", values)
+    return bool(values.any())
+
+
 def mask_state(context):
     """(has_mask, has_hidden) for the mesh being sculpted, or None outside Sculpt Mode."""
     ob = context.active_object
     if context.mode != 'SCULPT' or ob is None or ob.type != 'MESH':
         return None
     attributes = ob.data.attributes
-    return attributes.get(".sculpt_mask") is not None, attributes.get(".hide_poly") is not None
+    mask = attributes.get(".sculpt_mask")
+    hide = attributes.get(".hide_poly")
+    if mask is None and hide is None:
+        return False, False
+    # Erasing or clearing a mask can leave it all zero, so look at the values, but only once
+    # per stroke or edit (each one pushes an undo step), not on every redraw.
+    key = (ob.as_pointer(), ob.data.as_pointer(), mask is not None, hide is not None,
+           bpy.types.WindowManager.phantom_undo_push_count())
+    if _state_cache[0] != key:
+        _state_cache[0] = key
+        _state_cache[1] = (_any_set(mask, 'float32'), _any_set(hide, 'bool'))
+        _check_isolated(ob, hide if _state_cache[1][1] else None)
+    return _state_cache[1]
+
+
+def _isolated_polygroup(mesh, hide):
+    """The polygroup that is alone visible, or else alone hidden, or None."""
+    import numpy as np
+    face_sets = mesh.attributes.get(".sculpt_face_set")
+    if hide is None or face_sets is None or len(face_sets.data) != len(hide.data):
+        return None
+    hidden = np.empty(len(hide.data), dtype=bool)
+    hide.data.foreach_get("value", hidden)
+    ids = np.empty(len(face_sets.data), dtype=np.int32)
+    face_sets.data.foreach_get("value", ids)
+    for faces in (ids[~hidden], ids[hidden]):
+        if len(faces) and (faces == faces[0]).all():
+            return int(faces[0])
+    return None
+
+
+def _check_isolated(ob, hide):
+    """Isolating a polygroup (Ctrl+Shift-click, or the polygroup bar) brings up its bar. Only
+    a change does, so a dismissed bar or another tool keeps it away while sculpting on."""
+    polygroup = _isolated_polygroup(ob.data, hide)
+    if polygroup == _isolated.get(ob.name):
+        return
+    _isolated[ob.name] = polygroup
+    if polygroup is not None:
+        set_current_polygroup(ob, polygroup)
+
+
+@bpy.app.handlers.persistent
+def _forget_state(*_args):
+    """Undo and redo change the mask without adding an operator: look again."""
+    _state_cache[0] = None
+
+
+def _tool_and_brush(context):
+    tool = context.workspace.tools.from_space_view3d_mode('SCULPT', create=False)
+    brush = context.tool_settings.sculpt.brush
+    return (tool.idname if tool else ""), (brush.name if brush else "")
 
 
 def current_polygroup(context):
-    """The polygroup the polygroup bar works on for the active object, or None."""
+    """The polygroup the polygroup bar works on for the active object, or None. Picking
+    another tool or brush puts the polygroup bar away."""
     ob = context.active_object
-    return _polygroups.get(ob.name) if ob is not None else None
+    entry = _polygroups.get(ob.name) if ob is not None else None
+    if entry is None:
+        return None
+    polygroup, tool, brush = entry
+    if (tool, brush) != _tool_and_brush(context):
+        del _polygroups[ob.name]
+        return None
+    return polygroup
 
 
 def set_current_polygroup(ob, polygroup):
@@ -246,7 +325,7 @@ def set_current_polygroup(ob, polygroup):
     if polygroup is None:
         _polygroups.pop(ob.name, None)
     else:
-        _polygroups[ob.name] = polygroup
+        _polygroups[ob.name] = (polygroup, *_tool_and_brush(bpy.context))
     _redraw_views()
 
 
@@ -734,6 +813,8 @@ def register():
     for cls in classes:
         bpy.utils.register_class(cls)
     bpy.types.VIEW3D_MT_sculpt.append(_draw_sculpt_menu)
+    bpy.app.handlers.undo_post.append(_forget_state)
+    bpy.app.handlers.redo_post.append(_forget_state)
     _draw_handle = bpy.types.SpaceView3D.draw_handler_add(draw_callback, (), 'WINDOW', 'POST_PIXEL')
 
     kc = bpy.context.window_manager.keyconfigs.addon
@@ -761,6 +842,8 @@ def unregister():
     if bpy.app.timers.is_registered(_fade_step):
         bpy.app.timers.unregister(_fade_step)
     bpy.types.VIEW3D_MT_sculpt.remove(_draw_sculpt_menu)
+    bpy.app.handlers.undo_post.remove(_forget_state)
+    bpy.app.handlers.redo_post.remove(_forget_state)
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
     _unregister_properties()

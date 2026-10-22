@@ -973,6 +973,11 @@ static int rna_WindowManager_phantom_asset_preview_icon(bContext *C,
  * Phantom: index of the active edit mesh's vertex that a click at `mouse_x, mouse_y` (region
  * pixels) would select, or -1: the same search, pick distance and occlusion as click-select.
  */
+static int rna_WindowManager_phantom_undo_push_count()
+{
+  return BKE_undosys_phantom_push_count();
+}
+
 static int rna_WindowManager_phantom_edit_vertex_at(bContext *C, int mouse_x, int mouse_y)
 {
   if (CTX_wm_region_view3d(C) == nullptr || CTX_data_edit_object(C) == nullptr) {
@@ -1151,6 +1156,16 @@ void RNA_api_wm(StructRNA *srna)
   parm = RNA_def_string(func, "relative_asset_identifier", nullptr, 0, "Asset Identifier", "");
   RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
   parm = RNA_def_int(func, "icon", 0, 0, INT_MAX, "Icon", "", 0, INT_MAX);
+  RNA_def_function_return(func, parm);
+
+  func = RNA_def_function(
+      srna, "phantom_undo_push_count", "rna_WindowManager_phantom_undo_push_count");
+  RNA_def_function_flag(func, FUNC_NO_SELF);
+  RNA_def_function_ui_description(
+      func,
+      "How many undo steps were pushed since startup: changes after each stroke or edit, "
+      "including sculpt strokes, which register no operator");
+  parm = RNA_def_int(func, "count", 0, 0, INT_MAX, "Count", "", 0, INT_MAX);
   RNA_def_function_return(func, parm);
 
   func = RNA_def_function(

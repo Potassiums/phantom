@@ -8,6 +8,7 @@
  * Used by ED_undo.hh, internal implementation.
  */
 
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 
@@ -526,12 +527,21 @@ UndoStep *BKE_undosys_step_push_init(UndoStack *ustack, bContext *C, const char 
   return BKE_undosys_step_push_init_with_type(ustack, C, name, ut);
 }
 
+/** Phantom: see #BKE_undosys_phantom_push_count. */
+static std::atomic<int> g_phantom_push_count = 0;
+
+int BKE_undosys_phantom_push_count()
+{
+  return g_phantom_push_count.load();
+}
+
 eUndoPushReturn BKE_undosys_step_push_with_type(UndoStack *ustack,
                                                 bContext *C,
                                                 const char *name,
                                                 const UndoEncodeHints hints,
                                                 const UndoType *ut)
 {
+  g_phantom_push_count++;
   BLI_assert((ut->flags & UNDOTYPE_FLAG_NEED_CONTEXT_FOR_ENCODE) == 0 || C != nullptr);
 
   UNDO_NESTED_ASSERT(false);

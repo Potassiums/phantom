@@ -278,6 +278,11 @@ UndoStep *BKE_undosys_step_push_init(UndoStack *ustack, bContext *C, const char 
  */
 eUndoPushReturn BKE_undosys_step_push_with_type(
     UndoStack *ustack, bContext *C, const char *name, UndoEncodeHints hints, const UndoType *ut);
+/**
+ * Phantom: how many undo steps were pushed since startup (any stack). Lets scripts notice that
+ * something was done, e.g. a sculpt stroke, which registers no operator.
+ */
+int BKE_undosys_phantom_push_count();
 eUndoPushReturn BKE_undosys_step_push(UndoStack *ustack,
                                       bContext *C,
                                       const char *name,
