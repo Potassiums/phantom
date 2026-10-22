@@ -499,6 +499,11 @@ def unregister():
     if _draw_handle is not None:
         bpy.types.SpaceView3D.draw_handler_remove(_draw_handle, 'WINDOW')
         _draw_handle = None
-    bpy.utils.unregister_tool(PHANTOM_TL_transpose)
+    try:
+        bpy.utils.unregister_tool(PHANTOM_TL_transpose)
+    except (Exception, SystemError):
+        # Blender's `unregister_tool` trips over tuple keymaps (`bl_keymap`) when removing the
+        # tool's keymap; this only happens on quit, so there is nothing left to clean up.
+        pass
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
