@@ -30,6 +30,7 @@ import gpu
 from bpy.props import BoolProperty, IntProperty
 from bpy.types import Operator
 from gpu_extras.batch import batch_for_shader
+from gpu_extras.presets import draw_texture_2d
 
 # Panel geometry is stored in unscaled pixels and multiplied by the UI scale.
 DEFAULT_SETTINGS = {
@@ -62,6 +63,8 @@ GRIP_COLOR = (1.0, 0.54, 0.24)     # Phantom orange.
 _settings = dict(DEFAULT_SETTINGS)
 _draw_handle = None
 _shader = None
+_offscreen = None
+_drawing = False
 _addon_keymaps = []
 
 # Hover feedback: the grip fades towards `_hover_target`.
@@ -216,9 +219,18 @@ def panel_rect(area, region):
     """
     s = _ui_scale()
     aspect = _view_aspect(region)
+
+    # panel_rect method that uses fixed aspect ratio
+    # w = max(MIN_SIZE, round(_settings["width"] * s))
+    # w = min(w, region.width - 2, round((region.height - 2) * aspect))
+    # h = max(1, round(w / aspect))
+
+    # panel_rect method that uses free aspect ratio
     w = max(MIN_SIZE, round(_settings["width"] * s))
-    w = min(w, region.width - 2, round((region.height - 2) * aspect))
-    h = max(1, round(w / aspect))
+    h = max(MIN_SIZE, round(_settings["height"] * s))
+    w = min(w, region.width - 2)
+    h = min(h, region.height - 2)
+
     if _docked():
         x = _animated_inset(area, region) + round(DOCK_GAP * s)
         y = (region.height - _top_inset(area, region) -
@@ -259,6 +271,28 @@ def _set_info_offsets(region, offsets):
         # The text is drawn before this callback; redraw once more so it moves now.
         bpy.app.timers.register(lambda: _redraw_views() or None, first_interval=0.0)
 
+def _projection_for_panel(rv3d, region, w, h):
+    """Keep the viewport's vertical field of view, adapted to the panel's aspect ratio."""
+    proj = rv3d.window_matrix.copy()
+    fac = (region.width / region.height) / (w / h)
+    proj[0] = proj[0] * fac
+    return proj
+
+
+def _ensure_offscreen(w, h):
+    global _offscreen
+    if _offscreen is None or _offscreen.width != w or _offscreen.height != h:
+        if _offscreen is not None:
+            _offscreen.free()
+        _offscreen = gpu.types.GPUOffScreen(w, h)
+    return _offscreen
+
+
+def _free_offscreen():
+    global _offscreen
+    if _offscreen is not None:
+        _offscreen.free()
+        _offscreen = None
 
 def _silhouette_shader():
     """Black where the viewport drew geometry (depth < 1), white elsewhere."""
@@ -346,8 +380,7 @@ def _draw_frame(x, y, w, h, grip_alpha):
 
     gpu.state.line_width_set(1.0)
     gpu.state.blend_set('NONE')
-
-
+    
 def draw_callback():
     context = bpy.context
     region = context.region
@@ -369,6 +402,50 @@ def draw_callback():
         return
     _draw_silhouette(depth, region, x, y, w, h)
     _draw_frame(x, y, w, h, _grip_alpha)
+
+def draw_callback_old():
+    global _drawing
+    # The off-screen render can call region callbacks again; never recurse.
+    if _drawing:
+        return
+
+    context = bpy.context
+    region = context.region
+
+    if region is None:
+        return
+    if not _enabled(context):
+        _set_info_offsets(region, (0, 0))
+        return
+    rv3d = context.region_data
+    space = context.space_data
+    if rv3d is None or region.width < MIN_SIZE or region.height < MIN_SIZE:
+        return
+
+    x, y, w, h = panel_rect(context.area, region)
+    _set_info_offsets(region, _info_offsets_for(context.area, region, (x, y, w, h)))
+    # Creating an off-screen buffer unbinds the viewport's frame-buffer,
+    # so remember it and draw the panel back into it explicitly.
+    region_fb = gpu.state.active_framebuffer_get()
+    ofs = _ensure_offscreen(w, h)
+
+    _drawing = True
+    try:
+        ofs.draw_view3d(
+            context.scene,
+            context.view_layer,
+            space,
+            region,
+            rv3d.view_matrix,
+            _projection_for_panel(rv3d, region, w, h),
+            silhouette=True,
+        )
+    finally:
+        _drawing = False
+
+    with region_fb.bind():
+        draw_texture_2d(ofs.texture_color, (x, y), w, h)
+        _draw_frame(x, y, w, h, _grip_alpha)
 
 
 # -----------------------------------------------------------------------------
@@ -452,11 +529,9 @@ class VIEW3D_OT_phantom_silhouette_drag(Operator):
         s = _ui_scale()
         _x, _y, w, h = self.start_rect
         # Floating panels grow from the lower-left grip, docked ones from the lower-right.
-        # The aspect ratio is locked, so follow whichever direction the grip moved further.
-        from_x = w + dx if _docked() else w - dx
-        from_y = (h - dy) * _view_aspect(context.region)
-        new_w = from_x if abs(from_x - w) >= abs(from_y - w) else from_y
+        new_w = w + dx if _docked() else w - dx
         _settings["width"] = round(max(MIN_SIZE, new_w) / s)
+        _settings["height"] = round(max(MIN_SIZE, h - dy) / s)
 
     def _move(self, context, dx, dy):
         s = _ui_scale()
@@ -544,7 +619,7 @@ def register():
         bpy.utils.register_class(cls)
 
     bpy.types.VIEW3D_HT_header.append(draw_header_toggle)
-    _draw_handle = bpy.types.SpaceView3D.draw_handler_add(draw_callback, (), 'WINDOW', 'POST_PIXEL')
+    _draw_handle = bpy.types.SpaceView3D.draw_handler_add(draw_callback_old, (), 'WINDOW', 'POST_PIXEL')
 
     kc = bpy.context.window_manager.keyconfigs.addon
     if kc:
