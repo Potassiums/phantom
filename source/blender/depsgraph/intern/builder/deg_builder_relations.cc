@@ -3258,6 +3258,16 @@ void DepsgraphRelationBuilder::build_material(Material *material, ID *owner)
 
 void DepsgraphRelationBuilder::build_materials(ID *owner, Material **materials, int num_materials)
 {
+  /* Phantom: see #DepsgraphNodeBuilder::build_materials. */
+  if (materials == nullptr) {
+    if (num_materials > 0) {
+      fprintf(stderr,
+              "Phantom: %s has %d material slots but no material array\n",
+              owner ? owner->name : "?",
+              num_materials);
+    }
+    return;
+  }
   for (int i = 0; i < num_materials; i++) {
     if (materials[i] == nullptr) {
       continue;

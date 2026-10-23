@@ -1,0 +1,2 @@
+# Phantom: stored in git, not LFS (GitHub refuses LFS uploads to public forks).
+startup.blend -filter binary

@@ -69,3 +69,8 @@ c676fe02-8d25-49a1-b672-11aee0918221:Hair/Read:Hair-Read
 f8291c19-ec70-4a53-82d5-40b68a0c3a86:Shading:Shading
 2571be08-e20a-48a8-80c8-26171509f863:Shading/Utilities:Shading-Utilities
 9cd554d5-1d8f-43dd-a2ab-41635557769b:Shading/Utilities/Vector:Shading-Utilities-Vector
+261b6650-a954-42d6-9be7-02727d3eb9ef:Human Base Meshes:Human Base Meshes
+f7165ac8-14a4-4c82-9c7f-e69a649f50ef:Human Base Meshes/Planar:Human Base Meshes-Planar
+e558097f-1706-4bf3-9e11-f40395a8e195:Human Base Meshes/Primitives:Human Base Meshes-Primitives
+fe53c157-b313-482f-b7a3-69e260232e6f:Human Base Meshes/Realistic:Human Base Meshes-Realistic
+bda36abe-4601-40ae-acf5-38b5d6df5324:Human Base Meshes/Stylized:Human Base Meshes-Stylized

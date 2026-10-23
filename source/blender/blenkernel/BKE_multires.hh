@@ -22,11 +22,19 @@ struct MultiresModifierData;
 struct Object;
 struct ReportList;
 struct Scene;
+struct SculptSession;
 struct SubdivCCG;
 namespace bke::subdiv {
 struct Settings;
+struct Subdiv;
 struct ToMeshSettings;
 }  // namespace bke::subdiv
+
+/** Runtime data of the Multires modifier (#ModifierData.runtime). */
+struct MultiresRuntimeData {
+  /* Cached subdivision surface descriptor, with topology and settings. */
+  bke::subdiv::Subdiv *subdiv;
+};
 
 enum MultiresModifiedFlags {
   /* indicates the grids have been sculpted on, so MDisps
@@ -46,6 +54,13 @@ void multires_set_tot_level(Object *ob, MultiresModifierData *mmd, int lvl);
 void multires_mark_as_modified(Depsgraph *depsgraph, Object *object, MultiresModifiedFlags flags);
 
 void multires_flush_sculpt_updates(Object *object);
+/**
+ * Phantom: when leaving Sculpt Mode, give the subdivision descriptor the sculpt grids took over
+ * back to the Multires modifier, instead of letting it be freed with them. Building it again (its
+ * OpenSubdiv evaluator, in particular) made leaving Sculpt Mode on a dense Multires mesh lag.
+ * The topology doesn't change while sculpting, so the modifier can keep using it.
+ */
+void multires_reclaim_sculpt_subdiv(const Object &object_eval, SculptSession &sculpt_session);
 void multires_force_sculpt_rebuild(Object *object);
 void multires_force_external_reload(Object *object);
 

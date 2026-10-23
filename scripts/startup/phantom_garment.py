@@ -140,8 +140,9 @@ def play_sound(name, pitch=1.0):
     view = bpy.context.preferences.view
     if not getattr(view, "use_ui_sounds", False) or view.ui_sound_volume <= 0:
         return
-    path = bpy.utils.system_resource('DATAFILES', path=os.path.join("sounds", name + ".wav"))
-    if not path or not os.path.exists(path):
+    # ``system_resource`` only finds folders, so join the file onto the sounds folder.
+    path = os.path.join(bpy.utils.system_resource('DATAFILES', path="sounds"), name + ".wav")
+    if not os.path.exists(path):
         return
     try:
         import aud
@@ -182,6 +183,9 @@ def _avatar_poll(_self, ob):
 class PhantomGarmentPoint(PropertyGroup):
     co: FloatVectorProperty(size=2, unit='LENGTH')
     curve: BoolProperty(description="A curve point (the outline bends smoothly through it), not a corner")
+    # A curve point's own handle (its Bezier arm towards the next point), when it has one.
+    handle: FloatVectorProperty(size=2)
+    has_handle: BoolProperty()
 
 
 class PhantomGarmentPin(PropertyGroup):
@@ -194,6 +198,9 @@ class PhantomGarmentPiece(PropertyGroup):
     is_piece: BoolProperty(name="Pattern Piece", default=False)
     points: CollectionProperty(type=PhantomGarmentPoint)
     pins: CollectionProperty(type=PhantomGarmentPin)
+    offset: FloatVectorProperty(
+        name="Offset", size=2, unit='LENGTH', update=_request_rebuild,
+        description="How far the piece is moved from its arrangement point: around the body, and up")
     arrangement: EnumProperty(
         name="Arrangement", description="Where the piece starts on the avatar",
         items=ARRANGEMENT_ITEMS, default='NONE', update=_request_rebuild,
@@ -255,6 +262,15 @@ class PhantomGarmentSettings(PropertyGroup):
                     "too strong and they jump (0 for no limit)",
         default=20.0, min=0.0, max=1000.0, update=_request_rebuild,
     )
+    solver: EnumProperty(
+        name="Solver", description="What simulates the cloth",
+        items=(
+            ('GPU', "GPU (Newton)", "NVIDIA Newton on the graphics card: live, and you can drag the cloth while "
+             "it simulates (needs an NVIDIA GPU and the GPU cloth add-on)"),
+            ('BLENDER', "Blender Cloth", "Blender's cloth simulation, played on the timeline (works everywhere)"),
+        ),
+        default='GPU', update=_request_rebuild,
+    )
     seams: CollectionProperty(type=PhantomGarmentSeam)
     elastics: CollectionProperty(type=PhantomGarmentElastic)
 
@@ -297,7 +313,15 @@ def _assign_material(mesh, mat):
 
 def piece_points(ob):
     """The piece's outline as [(x, y, curve)] in its own coordinates."""
-    return [(p.co[0], p.co[1], p.curve) for p in ob.phantom_garment.points]
+    return [(p.co[0], p.co[1], (p.handle[0], p.handle[1]) if p.curve and p.has_handle else p.curve)
+            for p in ob.phantom_garment.points]
+
+
+def parse_curve(curve):
+    """A point's curve flag or handle, from JSON."""
+    if isinstance(curve, (list, tuple)):
+        return (float(curve[0]), float(curve[1]))
+    return bool(curve)
 
 
 def set_piece_points(ob, points):
@@ -308,7 +332,11 @@ def set_piece_points(ob, points):
         coll.add()
     for item, (x, y, curve) in zip(coll, points):
         item.co = (x, y)
-        item.curve = curve
+        handle = pattern.handle_of(curve)
+        item.curve = bool(curve)
+        item.has_handle = handle is not None
+        if handle is not None:
+            item.handle = handle
 
 
 def regenerate_piece(ob, scene):
@@ -644,9 +672,16 @@ def avatar_frame(avatar):
                 radius = float(np.median(widths)) if widths else 0.05
                 # Sleeves start at the shoulder.
                 frame["ARM_" + side_name] = _Slot(middle, axis, front, radius, radius, 0.45 * axis.length)
-            # Leg: below the hips, on this side, measured by rays from a guess at its middle.
+            # Leg: below the hips, on this side, measured by rays from its middle (the middle of
+            # this side's vertices at that height; hands hanging further out don't count).
             zl = zmin + 0.28 * height
-            guess = Vector((cx + side * hip_width * 0.5, hip_center.y, zl))
+            band = co[np.abs(co[:, 2] - zl) < max(0.01, 0.01 * height)]
+            out = side * (band[:, 0] - cx)
+            leg = band[(out > 0.0) & (out < hip_width * 1.4)]
+            if len(leg) >= 8:
+                guess = Vector((0.5 * (leg[:, 0].min() + leg[:, 0].max()), 0.5 * (leg[:, 1].min() + leg[:, 1].max()), zl))
+            else:
+                guess = Vector((cx + side * hip_width * 0.5, hip_center.y, zl))
             right, left = reach(guess, (1, 0, 0), 0.3), reach(guess, (-1, 0, 0), 0.3)
             ahead, behind = reach(guess, (0, -1, 0), 0.3), reach(guess, (0, 1, 0), 0.3)
             if min(right, left, ahead, behind) > 0.0:
@@ -678,12 +713,14 @@ def _ellipse_angle(u, ra, rb):
     return np.sign(u) * np.interp(np.abs(u), arc, t)
 
 
-def wrap_piece(points, slot):
-    """Wrap a piece (flat world points, N x 3) around an arrangement slot. Returns N x 3."""
-    lo, hi = points.min(axis=0), points.max(axis=0)
+def wrap_piece(points, slot, offset=(0.0, 0.0), bounds=None):
+    """Wrap a piece (flat world points, N x 3) around an arrangement slot, moved by ``offset``
+    (around the body, up). ``bounds`` (lo, hi): the piece's, when ``points`` are only some of its
+    points. Returns N x 3."""
+    lo, hi = bounds if bounds is not None else (points.min(axis=0), points.max(axis=0))
     middle = 0.5 * (lo + hi)
-    u = points[:, 0] - middle[0]
-    v = points[:, 1] - (middle[1] if slot.top is None else hi[1] - slot.top)
+    u = points[:, 0] - middle[0] + offset[0]
+    v = points[:, 1] - (middle[1] if slot.top is None else hi[1] - slot.top) + offset[1]
     ra = slot.ra + ARRANGE_CLEARANCE
     rb = slot.rb + ARRANGE_CLEARANCE
     t = _ellipse_angle(u, ra, rb)
@@ -713,15 +750,15 @@ def _sew_pairs(seq_a, seq_b, flat):
 def garment_signature(scene):
     """Everything the Garment object is built from; a change means it has to be rebuilt."""
     settings = scene.phantom_garment
-    parts = [settings.avatar.name if settings.avatar else "",
+    parts = [settings.solver, settings.avatar.name if settings.avatar else "",
              tuple(round(x, 4) for row in settings.avatar.matrix_world for x in row) if settings.avatar else (),
              round(settings.particle_distance, 5), round(settings.skin_offset, 5),
              round(settings.sewing_force, 3)]
     for ob in pattern_pieces(scene):
         props = ob.phantom_garment
         mat = ob.matrix_world.to_3x3()
-        parts.append((ob.name, props.arrangement, props.fabric, len(ob.data.vertices),
-                      tuple(round(x, 4) for p in props.points for x in (p.co[0], p.co[1], p.curve)),
+        parts.append((ob.name, props.arrangement, props.fabric, len(ob.data.vertices), tuple(props.offset),
+                      tuple(round(x, 4) for p in props.points for x in (p.co[0], p.co[1], p.curve, p.has_handle, *p.handle)),
                       tuple(round(x, 4) for p in props.pins for x in (*p.lo, *p.hi)),
                       tuple(round(x, 4) for row in mat for x in row)))
     for seam in valid_seams(scene):
@@ -731,11 +768,21 @@ def garment_signature(scene):
     return repr(parts)
 
 
+def newton_active(scene):
+    """True when the garment is simulated with NVIDIA Newton (chosen, and installed)."""
+    if scene.phantom_garment.solver != 'GPU':
+        return False
+    import phantom_garment_newton
+    return phantom_garment_newton.available()
+
+
 def garment_needs_build(scene):
     return _built["signature"] != garment_signature(scene) or bpy.data.objects.get(GARMENT_OBJECT) is None
 
 
 def remove_garment():
+    import phantom_garment_newton
+    phantom_garment_newton.discard()
     ob = bpy.data.objects.get(GARMENT_OBJECT)
     if ob is not None:
         mesh = ob.data
@@ -753,58 +800,79 @@ def _weights(group, values, lo, hi):
             group.add(indices, min(1.0, weight), 'REPLACE')
 
 
-def build_garment(scene):
-    """(Re)build the Garment cloth object from the placed pieces and their seams.
+class GarmentData:
+    """What a garment is made of, ready for a simulator: the placed pieces as one mesh."""
 
-    Returns (object or None, message).
-    """
+    def __init__(self):
+        self.placed = []          # Pattern piece objects, in order.
+        self.fabrics = []         # Fabric keys used, in FABRICS order (material slots).
+        self.offsets = {}         # Piece -> index of its first vertex.
+        self.verts3d = None       # N x 3: wrapped around the avatar.
+        self.flat = None          # N x 3: the flat pattern (Z = 0), the rest shape.
+        self.faces = []           # Vertex index lists.
+        self.materials = []       # Per face: index into fabrics.
+        self.by_fabric = {}       # Fabric -> vertex indices.
+        self.area = {}            # Fabric -> pattern area (m2).
+        self.pins = []            # Pinned vertex indices.
+        self.sew = []             # (i, j) vertex pairs to sew together.
+        self.shrink = {}          # Vertex index -> how much its elastic segment pulls in (0-1).
+        self.elastic = []         # (vertex indices along an elastic segment, ratio).
+
+
+def collect_garment(scene):
+    """The placed pieces, seams, pins and elastics as one mesh. Returns (GarmentData or None,
+    message)."""
     settings = scene.phantom_garment
     avatar = settings.avatar
     spacing = settings.particle_distance
-    _built["signature"] = garment_signature(scene)
     frame = avatar_frame(avatar) if avatar else {}
     placed = [ob for ob in pattern_pieces(scene) if ob.phantom_garment.arrangement in frame]
     if avatar is None or not placed:
-        remove_garment()
         return None, "Choose an avatar first" if avatar is None else "Place a pattern piece on the avatar first"
 
-    fabrics = sorted({ob.phantom_garment.fabric for ob in placed}, key=list(FABRICS).index)
-    verts3d, flat, faces, materials, offsets, pins = [], [], [], [], {}, []
-    by_fabric = {fabric: [] for fabric in fabrics}
+    data = GarmentData()
+    data.placed = placed
+    data.fabrics = sorted({ob.phantom_garment.fabric for ob in placed}, key=list(FABRICS).index)
+    data.by_fabric = {fabric: [] for fabric in data.fabrics}
+    data.area = {fabric: 0.0 for fabric in data.fabrics}
+    verts3d, flat = [], []
     total = 0
-    area = {fabric: 0.0 for fabric in fabrics}
     for ob in placed:
         props = ob.phantom_garment
         points = piece_world_points(ob)
-        offsets[ob] = total
-        verts3d.append(wrap_piece(points, frame[props.arrangement]))
+        data.offsets[ob] = total
+        verts3d.append(wrap_piece(points, frame[props.arrangement], props.offset))
         flat.append(np.column_stack((points[:, 0], points[:, 1], np.zeros(len(points)))))
-        faces += [[total + i for i in poly.vertices] for poly in ob.data.polygons]
-        materials += [fabrics.index(props.fabric)] * len(ob.data.polygons)
-        by_fabric[props.fabric] += range(total, total + len(points))
-        area[props.fabric] += sum(poly.area for poly in ob.data.polygons) * abs(ob.matrix_world.to_3x3().determinant())
-        pins += [total + int(i) for i in np.nonzero(pinned_vertices(ob))[0]]
+        data.faces += [[total + i for i in poly.vertices] for poly in ob.data.polygons]
+        data.materials += [data.fabrics.index(props.fabric)] * len(ob.data.polygons)
+        data.by_fabric[props.fabric] += range(total, total + len(points))
+        data.area[props.fabric] += (sum(poly.area for poly in ob.data.polygons) *
+                                    abs(ob.matrix_world.to_3x3().determinant()))
+        data.pins += [total + int(i) for i in np.nonzero(pinned_vertices(ob))[0]]
         total += len(points)
-    verts3d = np.concatenate(verts3d)
-    flat = np.concatenate(flat)
+    data.verts3d = np.concatenate(verts3d)
+    data.flat = np.concatenate(flat)
 
-    edges = []
     for seam in valid_seams(scene):
         sides = seam_sides(seam)
-        if any(side[0] not in offsets for side in sides):
+        if any(side[0] not in data.offsets for side in sides):
             continue
-        seqs = [[offsets[ob] + i for i in side_vertices(ob, segment, start, end, spacing)]
+        seqs = [[data.offsets[ob] + i for i in side_vertices(ob, segment, start, end, spacing)]
                 for ob, segment, start, end in sides]
         if all(len(seq) >= 2 for seq in seqs):
-            edges += _sew_pairs(seqs[0], seqs[1], flat)
+            data.sew += _sew_pairs(seqs[0], seqs[1], data.flat)
 
-    mesh = bpy.data.meshes.new(GARMENT_OBJECT)
-    mesh.from_pydata(verts3d.tolist(), edges, faces)
-    for fabric in fabrics:
-        mesh.materials.append(fabric_material(fabric))
-    mesh.polygons.foreach_set("material_index", materials)
-    mesh.update()
-    mesh.shade_smooth()
+    for elastic in valid_elastics(scene):
+        if elastic.piece in data.offsets:
+            indices = [data.offsets[elastic.piece] + i for i in piece_segments(elastic.piece)[elastic.segment]]
+            data.elastic.append((indices, elastic.ratio))
+            for index in indices:
+                data.shrink[index] = max(data.shrink.get(index, 0.0), 1.0 - elastic.ratio)
+    return data, ""
+
+
+def garment_object(scene, mesh):
+    """Put ``mesh`` on the Garment object (made if needed), cleared of modifiers and groups."""
     # Keep the same object and swap its mesh: deleting and adding an object on every change is
     # needless churn for the depsgraph and the view layer.
     ob = bpy.data.objects.get(GARMENT_OBJECT)
@@ -813,6 +881,8 @@ def build_garment(scene):
     else:
         ob.modifiers.clear()
         ob.vertex_groups.clear()
+        if ob.data.shape_keys is not None:
+            ob.shape_key_clear()
         old = ob.data
         ob.data = mesh
         if old.users == 0:
@@ -826,6 +896,46 @@ def build_garment(scene):
         ob.hide_set(False)
     except RuntimeError:
         pass
+    return ob
+
+
+def garment_mesh(data, sewing_edges=True):
+    """A new mesh of the garment, wrapped around the avatar."""
+    mesh = bpy.data.meshes.new(GARMENT_OBJECT)
+    mesh.from_pydata(data.verts3d.tolist(), data.sew if sewing_edges else [], data.faces)
+    for fabric in data.fabrics:
+        mesh.materials.append(fabric_material(fabric))
+    mesh.polygons.foreach_set("material_index", data.materials)
+    mesh.update()
+    mesh.shade_smooth()
+    return mesh
+
+
+def build_garment(scene):
+    """(Re)build the Garment cloth object from the placed pieces and their seams.
+
+    Returns (object or None, message).
+    """
+    settings = scene.phantom_garment
+    avatar = settings.avatar
+    _built["signature"] = garment_signature(scene)
+    data, message = collect_garment(scene)
+    import phantom_garment_newton
+    phantom_garment_newton.stop()
+    if data is None:
+        remove_garment()
+        return None, message
+    if newton_active(scene):
+        ob, message = phantom_garment_newton.build(scene, data)
+        if ob is not None:
+            return ob, message
+        # The GPU cloth couldn't be built: fall back to Blender's cloth.
+    phantom_garment_newton.discard()
+
+    fabrics, by_fabric, area, pins, shrink = data.fabrics, data.by_fabric, data.area, data.pins, data.shrink
+    spacing = settings.particle_distance
+    flat = data.flat
+    ob = garment_object(scene, garment_mesh(data))
 
     ob.shape_key_add(name="Basis", from_mix=False)
     key = ob.shape_key_add(name=FLAT_KEY, from_mix=False)
@@ -835,12 +945,6 @@ def build_garment(scene):
     pin_group = ob.vertex_groups.new(name="Pins")
     if pins:
         pin_group.add(pins, 1.0, 'REPLACE')
-    shrink = {}
-    for elastic in valid_elastics(scene):
-        if elastic.piece in offsets:
-            for i in piece_segments(elastic.piece)[elastic.segment]:
-                index = offsets[elastic.piece] + i
-                shrink[index] = max(shrink.get(index, 0.0), 1.0 - elastic.ratio)
     shrink_max = max(shrink.values(), default=0.0)
     if shrink_max > 0.0:
         group = ob.vertex_groups.new(name="Elastic")
@@ -1001,6 +1105,62 @@ def add_mannequin(context):
     return ob
 
 
+# The bodies to dress, besides the mannequin: Phantom's sculpting base meshes.
+AVATAR_BASE_MESHES = (
+    'BODY_FEMALE_REALISTIC', 'BODY_MALE_REALISTIC', 'HEAD_SCULPT', 'BODY_FEMALE_STYLIZED_1',
+    'BODY_FEMALE_STYLIZED', 'BODY_MALE_STYLIZED', 'HEAD_STYLIZED',
+)
+
+
+_avatar_enum = []
+
+
+def _avatar_items(_self, _context):
+    # Kept in a module list: Blender needs the strings to outlive the call.
+    if not _avatar_enum:
+        import phantom_start_assets as assets
+        _avatar_enum.append(('MANNEQUIN', "Mannequin", "A simple, light mannequin"))
+        for key in AVATAR_BASE_MESHES:
+            name = assets.ALL[key][1]
+            _avatar_enum.append((key, name, "Dress the %s base mesh" % name))
+    return _avatar_enum
+
+
+def clear_avatars(scene):
+    """Remove the avatars we added before (everything in the Avatar collection)."""
+    coll = bpy.data.collections.get(AVATAR_COLLECTION)
+    if coll is None:
+        return
+    for ob in list(coll.all_objects):
+        bpy.data.objects.remove(ob)
+    for child in list(coll.children_recursive):
+        bpy.data.collections.remove(child)
+
+
+def add_avatar(context, choice):
+    """Replace the avatar with the mannequin or one of the base meshes. Returns the new avatar."""
+    scene = context.scene
+    clear_avatars(scene)
+    if choice == 'MANNEQUIN':
+        return add_mannequin(context)
+    import phantom_start_assets as assets
+    appended = assets.append_base_mesh(context, choice, ensure_collection(scene, AVATAR_COLLECTION),
+                                       strip_drivers=True)
+    if appended is None:
+        return None
+    target, added, _block = appended
+    for ob in added:
+        # The collisions and silhouette only need the body's shape, not its sculpting detail.
+        for mod in ob.modifiers:
+            if mod.type == 'MULTIRES':
+                mod.levels = min(mod.levels, 1)
+            elif mod.type == 'SUBSURF':
+                mod.levels = min(mod.levels, 1)
+        ob.select_set(False)
+    scene.phantom_garment.avatar = target
+    return target
+
+
 # -----------------------------------------------------------------------------
 # Make Sculptable
 
@@ -1075,7 +1235,7 @@ class PHANTOM_OT_garment_add_polygon(Operator):
 
     def execute(self, context):
         try:
-            points = [(float(x), float(y), bool(c)) for x, y, c in json.loads(self.points)]
+            points = [(float(x), float(y), parse_curve(c)) for x, y, c in json.loads(self.points)]
         except (ValueError, TypeError):
             return {'CANCELLED'}
         if len(points) < 3 or abs(pattern.signed_area(points)) < 1e-4:
@@ -1101,7 +1261,7 @@ class PHANTOM_OT_garment_set_points(Operator):
         ob = bpy.data.objects.get(self.piece)
         if ob is None:
             return {'CANCELLED'}
-        points = [(float(x), float(y), bool(c)) for x, y, c in json.loads(self.points)]
+        points = [(float(x), float(y), parse_curve(c)) for x, y, c in json.loads(self.points)]
         if len(points) < 3:
             self.report({'WARNING'}, "A piece needs at least three points")
             play_sound("error")
@@ -1109,7 +1269,7 @@ class PHANTOM_OT_garment_set_points(Operator):
         set_piece_points(ob, points)
         regenerate_piece(ob, context.scene)
         if self.old_points:
-            old = [(float(x), float(y), bool(c)) for x, y, c in json.loads(self.old_points)]
+            old = [(float(x), float(y), parse_curve(c)) for x, y, c in json.loads(self.old_points)]
             remap_after_reshape(context.scene, ob, old)
         return {'FINISHED'}
 
@@ -1303,6 +1463,7 @@ class PHANTOM_OT_garment_arrange(Operator):
             return {'CANCELLED'}
         for ob in pieces:
             ob.phantom_garment.arrangement = self.slot
+            ob.phantom_garment.offset = (0.0, 0.0)
         play_sound("transform_confirm")
         return {'FINISHED'}
 
@@ -1315,6 +1476,64 @@ class PHANTOM_OT_garment_add_mannequin(Operator):
 
     def execute(self, context):
         add_mannequin(context)
+        play_sound("loop_add")
+        return {'FINISHED'}
+
+
+MIRRORED_SLOTS = {
+    'ARM_LEFT': 'ARM_RIGHT', 'ARM_RIGHT': 'ARM_LEFT',
+    'LEG_LEFT_FRONT': 'LEG_RIGHT_FRONT', 'LEG_RIGHT_FRONT': 'LEG_LEFT_FRONT',
+    'LEG_LEFT_BACK': 'LEG_RIGHT_BACK', 'LEG_RIGHT_BACK': 'LEG_LEFT_BACK',
+}
+
+
+class PHANTOM_OT_garment_mirror_copy(Operator):
+    """Add a mirrored copy of the selected pieces beside them (a left sleeve from a right one, say)"""
+    bl_idname = "phantom.garment_mirror_copy"
+    bl_label = "Mirror Copy"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    @classmethod
+    def poll(cls, context):
+        return any(ob.phantom_garment.is_piece for ob in context.selected_objects)
+
+    def execute(self, context):
+        pieces = [ob for ob in context.selected_objects if ob.phantom_garment.is_piece]
+        copies = []
+        for ob in pieces:
+            points = [(-x, y, pattern.mirror_curve(c)) for x, y, c in reversed(piece_points(ob))]
+            world = to_world(ob, np.array([(x, y, 0.0) for x, y, _c in points]))
+            xs = world[:, 0]
+            # Beside the original, with a little gap.
+            shift = (xs.max() - xs.min()) + 0.05
+            name = ob.name.rsplit(" ", 1)[0] if ob.name.rsplit(" ", 1)[-1].isdigit() else ob.name
+            copy = add_piece(context, [(float(p[0]) + shift, float(p[1]), c) for p, (_x, _y, c) in zip(world, points)],
+                             name=name)
+            copy.phantom_garment.fabric = ob.phantom_garment.fabric
+            copy.phantom_garment.arrangement = MIRRORED_SLOTS.get(ob.phantom_garment.arrangement,
+                                                                  ob.phantom_garment.arrangement)
+            copies.append(copy)
+        for ob in copies:
+            ob.select_set(True)
+        play_sound("loop_add")
+        return {'FINISHED'}
+
+
+class PHANTOM_OT_garment_add_avatar(Operator):
+    """Dress a mannequin or one of the base meshes, replacing the avatar added before"""
+    bl_idname = "phantom.garment_add_avatar"
+    bl_label = "Add Avatar"
+    bl_options = {'REGISTER', 'UNDO'}
+    bl_property = "choice"
+
+    choice: EnumProperty(name="Avatar", items=_avatar_items)
+
+    def execute(self, context):
+        if context.object is not None and context.object.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        if add_avatar(context, self.choice) is None:
+            self.report({'WARNING'}, "Couldn't find that base mesh")
+            return {'CANCELLED'}
         play_sound("loop_add")
         return {'FINISHED'}
 
@@ -1336,6 +1555,22 @@ class PHANTOM_OT_garment_simulate(Operator):
 
     def execute(self, context):
         scene = context.scene
+        if newton_active(scene):
+            import phantom_garment_newton as gpu_cloth
+            if gpu_cloth.running():
+                gpu_cloth.stop()
+                play_sound("toggle_off")
+                return {'FINISHED'}
+            if garment_needs_build(scene) or gpu_cloth.simulation() is None:
+                ob, message = build_garment(scene)
+                if ob is None:
+                    self.report({'WARNING'}, message)
+                    play_sound("error")
+                    # Handled: don't let Space go on to play the timeline.
+                    return {'FINISHED'}
+            gpu_cloth.start()
+            play_sound("toggle_on")
+            return {'FINISHED'}
         if _playing(context):
             bpy.ops.screen.animation_cancel(restore_frame=False)
             play_sound("toggle_off")
@@ -1345,7 +1580,7 @@ class PHANTOM_OT_garment_simulate(Operator):
             if ob is None:
                 self.report({'WARNING'}, message)
                 play_sound("error")
-                return {'CANCELLED'}
+                return {'FINISHED'}
         elif scene.frame_current >= SIM_FRAMES:
             scene.frame_set(1)
         bpy.ops.screen.animation_play()
@@ -1367,6 +1602,12 @@ class PHANTOM_OT_garment_reset(Operator):
         return {'FINISHED'}
 
 
+def simulating(context):
+    """True while the garment is simulating (Newton running, or Blender cloth playing)."""
+    import phantom_garment_newton as gpu_cloth
+    return gpu_cloth.running() or _playing(context)
+
+
 class PHANTOM_OT_garment_make_sculptable(Operator):
     """Bake the garment as it is now into a closed mesh, and sculpt it"""
     bl_idname = "phantom.garment_make_sculptable"
@@ -1384,6 +1625,8 @@ class PHANTOM_OT_garment_make_sculptable(Operator):
         return bpy.data.objects.get(GARMENT_OBJECT) is not None
 
     def execute(self, context):
+        import phantom_garment_newton as gpu_cloth
+        gpu_cloth.stop()
         if _playing(context):
             bpy.ops.screen.animation_cancel(restore_frame=False)
         ob = bake_garment(context, self.thickness)
@@ -1415,6 +1658,8 @@ classes = (
     PHANTOM_OT_garment_fabric_to_all,
     PHANTOM_OT_garment_arrange,
     PHANTOM_OT_garment_add_mannequin,
+    PHANTOM_OT_garment_add_avatar,
+    PHANTOM_OT_garment_mirror_copy,
     PHANTOM_OT_garment_simulate,
     PHANTOM_OT_garment_reset,
     PHANTOM_OT_garment_make_sculptable,

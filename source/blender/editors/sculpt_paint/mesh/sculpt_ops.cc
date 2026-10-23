@@ -42,6 +42,7 @@
 #include "BKE_subdiv_ccg.hh"
 
 #include "DEG_depsgraph.hh"
+#include "DEG_depsgraph_query.hh"
 
 #include "IMB_colormanagement.hh"
 
@@ -441,6 +442,11 @@ void object_sculpt_mode_exit(Main &bmain, Depsgraph &depsgraph, Scene &scene, Ob
 
     /* Store so we know to re-enable when entering sculpt mode. */
     mesh->flag |= ME_SCULPT_DYNAMIC_TOPOLOGY;
+  }
+
+  /* Phantom: keep Multires' subdivision descriptor, so object mode doesn't rebuild it. */
+  if (ob.runtime->sculpt_session != nullptr) {
+    multires_reclaim_sculpt_subdiv(*DEG_get_evaluated(&depsgraph, &ob), *ob.runtime->sculpt_session);
   }
 
   DEG_id_tag_update(&ob.id, ID_RECALC_GEOMETRY);

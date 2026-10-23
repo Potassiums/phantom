@@ -647,8 +647,8 @@ struct View3DShading {
 
 /** 3D Viewport Overlay settings. */
 struct View3DOverlay {
-  eView3DOverlay_Flag flag = V3D_OVERLAY_VIEWER_ATTRIBUTE | V3D_OVERLAY_SCULPT_SHOW_MASK |
-                             V3D_OVERLAY_SCULPT_SHOW_FACE_SETS;
+  /* Phantom: face sets (polygroups) are hidden until shown, e.g. with Ctrl+F (PolyFrame). */
+  eView3DOverlay_Flag flag = V3D_OVERLAY_VIEWER_ATTRIBUTE | V3D_OVERLAY_SCULPT_SHOW_MASK;
 
   /** Edit mode settings. */
   eView3DOverlay_EditFlag edit_flag = V3D_OVERLAY_EDIT_FACES | V3D_OVERLAY_EDIT_SEAMS |

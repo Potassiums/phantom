@@ -7,7 +7,7 @@ from bpy.app.handlers import persistent
 
 
 def view_front():
-    """Phantom: start every 3D view looking straight at the front of the sphere."""
+    """Phantom: start every 3D view looking straight at the front of the sphere, polygroups hidden."""
     from math import radians
     from mathutils import Euler, Vector
 
@@ -19,6 +19,8 @@ def view_front():
             region_3d = area.spaces.active.region_3d
             region_3d.view_rotation = front
             region_3d.view_location = Vector((0.0, 0.0, 0.0))
+            # Polygroups are hidden until shown (Ctrl+F).
+            area.spaces.active.overlay.show_sculpt_face_sets = False
 
 
 @persistent

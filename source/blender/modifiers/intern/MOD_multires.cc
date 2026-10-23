@@ -44,11 +44,6 @@
 
 namespace blender {
 
-struct MultiresRuntimeData {
-  /* Cached subdivision surface descriptor, with topology and settings. */
-  bke::subdiv::Subdiv *subdiv;
-};
-
 static void init_data(ModifierData *md)
 {
   MultiresModifierData *mmd = reinterpret_cast<MultiresModifierData *>(md);

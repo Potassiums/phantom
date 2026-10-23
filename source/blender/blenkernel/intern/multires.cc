@@ -274,6 +274,31 @@ void multires_mark_as_modified(Depsgraph *depsgraph,
   multires_ccg_mark_as_modified(subdiv_ccg, flags);
 }
 
+void multires_reclaim_sculpt_subdiv(const Object &object_eval, SculptSession &sculpt_session)
+{
+  SubdivCCG *subdiv_ccg = sculpt_session.subdiv_ccg;
+  const MultiresModifierData *mmd = sculpt_session.multires_modifier;
+  if (subdiv_ccg == nullptr || subdiv_ccg->subdiv == nullptr || mmd == nullptr) {
+    return;
+  }
+  /* The session may point at the original modifier, while the descriptor is cached on the
+   * evaluated one: find it by its persistent ID. A modifier removed while sculpting isn't found. */
+  const ModifierData *md_eval = nullptr;
+  for (const ModifierData &md : object_eval.modifiers) {
+    if (md.type == eModifierType_Multires && md.persistent_uid == mmd->modifier.persistent_uid) {
+      md_eval = &md;
+      break;
+    }
+  }
+  MultiresRuntimeData *runtime_data = md_eval ? static_cast<MultiresRuntimeData *>(md_eval->runtime) :
+                                                nullptr;
+  if (runtime_data == nullptr || runtime_data->subdiv != nullptr) {
+    return;
+  }
+  runtime_data->subdiv = subdiv_ccg->subdiv;
+  subdiv_ccg->subdiv = nullptr;
+}
+
 void multires_flush_sculpt_updates(Object *object)
 {
   if (object == nullptr || object->runtime->sculpt_session == nullptr) {

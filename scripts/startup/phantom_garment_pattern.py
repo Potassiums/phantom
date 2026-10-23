@@ -11,6 +11,12 @@ there. Points with ``curve`` True shape the segment between two corners: the seg
 (centripetal Catmull-Rom) curve through them. With no corners at all, the outline is one closed,
 smooth segment (an ellipse, say).
 
+A curve point can also carry a *handle*: ``curve`` is then the handle ``(hx, hy)`` (still true)
+instead of True. The handle is the Bezier arm towards the next point (the arm towards the previous
+one is its opposite), so it sets the curve's direction and how far it keeps it. A segment with a
+handle on any of its points is drawn as Bezier spans; points without one get the handle the smooth
+curve would have had.
+
 ``build_piece`` meshes an outline into evenly sized triangles about ``spacing`` apart: the outline
 is resampled at that spacing, the inside is filled with a triangular lattice, and a constrained
 Delaunay triangulation joins them.
@@ -46,6 +52,82 @@ def _centripetal(p0, p1, p2, p3, n):
     return out
 
 
+def _bezier(p0, c0, c1, p1, n):
+    """``n`` points of the cubic Bezier span from ``p0`` to ``p1`` (excluding ``p1``)."""
+    t = np.linspace(0.0, 1.0, n, endpoint=False)[:, None]
+    u = 1.0 - t
+    return list(u ** 3 * p0 + 3.0 * u * u * t * c0 + 3.0 * u * t * t * c1 + t ** 3 * p1)
+
+
+def handle_of(curve):
+    """The handle (x, y) a point carries, or None."""
+    return curve if isinstance(curve, (tuple, list)) else None
+
+
+def mirror_curve(curve):
+    """A point's curve flag or handle for its mirror image across a vertical line, the outline
+    running the other way round."""
+    handle = handle_of(curve)
+    return (float(handle[0]), -float(handle[1])) if handle is not None else curve
+
+
+def auto_handles(pts, closed):
+    """The handles the smooth curve has at each of ``pts`` (a chain, or a loop if ``closed``)."""
+    n = len(pts)
+    if closed:
+        prev, nxt = np.roll(pts, 1, axis=0), np.roll(pts, -1, axis=0)
+    else:
+        # Mirrored end points, like the curve itself: it leaves each end towards its neighbour.
+        prev = np.vstack((2.0 * pts[:1] - pts[1:2], pts[:-1]))
+        nxt = np.vstack((pts[1:], 2.0 * pts[-1:] - pts[-2:-1]))
+    return (nxt - prev) / 6.0 if n > 1 else np.zeros_like(pts)
+
+
+def _handled_spans(q, handles, closed, samples):
+    """Bezier spans through chain (or loop) ``q`` with the given handles (None: automatic)."""
+    auto = auto_handles(q, closed)
+    arms = np.array([h if h is not None else a for h, a in zip(handles, auto)], dtype=np.float64)
+    count = len(q) if closed else len(q) - 1
+    poly = []
+    for j in range(count):
+        k = (j + 1) % len(q)
+        poly += _bezier(q[j], q[j] + arms[j], q[k] - arms[k], q[k], samples)
+    return poly
+
+
+def point_arms(points):
+    """Each point's handle arm (towards the next point): its own handle, or the one the smooth
+    curve gives it; None for corners and points on straight segments."""
+    n = len(points)
+    arms = [None] * n
+    if n < 2:
+        return arms
+    pts = np.array([(p[0], p[1]) for p in points], dtype=np.float64)
+    corners = corner_indices(points)
+    chains = []
+    if not corners:
+        chains.append((list(range(n)), True))
+    else:
+        for k, c in enumerate(corners):
+            nxt = corners[(k + 1) % len(corners)]
+            chain = [c]
+            i = (c + 1) % n
+            while True:
+                chain.append(i)
+                if i == nxt:
+                    break
+                i = (i + 1) % n
+            if len(chain) > 2:
+                chains.append((chain, False))
+    for chain, closed in chains:
+        auto = auto_handles(pts[chain], closed)
+        for j, i in enumerate(chain):
+            if points[i][2]:
+                handle = handle_of(points[i][2])
+                arms[i] = np.array(handle, dtype=np.float64) if handle is not None else auto[j]
+    return arms
+
+
 def corner_indices(points):
     return [i for i, p in enumerate(points) if not p[2]]
 
@@ -57,11 +139,15 @@ def outline_segments(points, samples=CURVE_SAMPLES):
     if n < 2:
         return []
     pts = np.array([(p[0], p[1]) for p in points], dtype=np.float64)
+    handles = [handle_of(p[2]) for p in points]
     corners = corner_indices(points)
     if not corners:
-        loop = []
-        for i in range(n):
-            loop += _centripetal(pts[i - 1], pts[i], pts[(i + 1) % n], pts[(i + 2) % n], samples)
+        if any(h is not None for h in handles):
+            loop = _handled_spans(pts, [np.array(h) if h is not None else None for h in handles], True, samples)
+        else:
+            loop = []
+            for i in range(n):
+                loop += _centripetal(pts[i - 1], pts[i], pts[(i + 1) % n], pts[(i + 2) % n], samples)
         loop.append(pts[0])
         return [np.array(loop)]
     segments = []
@@ -77,6 +163,12 @@ def outline_segments(points, samples=CURVE_SAMPLES):
         q = pts[chain]
         if len(q) == 2:
             segments.append(q.copy())
+            continue
+        chain_handles = [handles[i] for i in chain]
+        if any(h is not None for h in chain_handles):
+            poly = _handled_spans(q, [np.array(h) if h is not None else None for h in chain_handles], False, samples)
+            poly.append(q[-1])
+            segments.append(np.array(poly))
             continue
         # Phantom end points mirror the neighbours, so the curve leaves each corner towards the
         # first curve point.

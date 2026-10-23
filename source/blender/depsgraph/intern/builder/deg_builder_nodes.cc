@@ -2177,6 +2177,11 @@ void DepsgraphNodeBuilder::build_material(Material *material)
 
 void DepsgraphNodeBuilder::build_materials(Material **materials, int num_materials)
 {
+  /* Phantom: a material count without its array has been seen in the wild (crashing here);
+   * there is nothing to build then. */
+  if (materials == nullptr) {
+    return;
+  }
   for (int i = 0; i < num_materials; i++) {
     if (materials[i] == nullptr) {
       continue;
