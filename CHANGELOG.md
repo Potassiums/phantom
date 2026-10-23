@@ -4,6 +4,18 @@ Phantom is a fork of Blender tuned for sculpting. This file lists what Phantom c
 own changes come from the Blender version each release is built on.
 
 
+## 0.3.2 alpha (2026-10-23)
+
+Built on Blender 5.4 alpha, on top of 0.3.1. A hotfix to help track down crashes some users
+see when they start sculpting.
+
+- **One crash report with everything:** if Phantom crashes, its crash report now ends with the
+  Python code that was running (from Python's crash tracer), so one file has both the C++ and
+  the Python side. The crash dialog has a new **Save Report to Desktop** button that saves that
+  file to your desktop with the date in its name, ready to send. (The Python log is also kept on
+  its own as `phantom_python_crash.txt` in the temporary folder.)
+
+
 ## 0.3.1 alpha (2026-10-23)
 
 Built on Blender 5.4 alpha, on top of 0.3.0.
