@@ -9,6 +9,7 @@
 #ifndef WITH_PYTHON_MODULE
 
 #  include <cerrno>
+#  include <cstring>
 #  include <cstdlib>
 #  include <mutex>
 
@@ -84,6 +85,42 @@ static void sig_handle_blender_esc(int sig)
   }
 }
 
+/**
+ * Phantom: append the latest session of Phantom's Python crash log (`phantom_python_crash.txt`,
+ * written by Python's `faulthandler`, see `phantom_diagnostics.py`) so one report holds both the
+ * C++ backtrace and the Python code that was running. `faulthandler` writes before this handler
+ * runs. Uses a static buffer: the heap may be broken when crashing.
+ */
+static void crashlog_append_phantom_python(FILE *fp)
+{
+  char filepath[FILE_MAX];
+  BLI_path_join(filepath, sizeof(filepath), BKE_tempdir_base(), "phantom_python_crash.txt");
+  FILE *log = BLI_fopen(filepath, "rb");
+  if (log == nullptr) {
+    return;
+  }
+  static char buffer[1024 * 1024];
+  /* Only the end of a large log: the latest session is at the end. */
+  if (fseek(log, 0, SEEK_END) == 0) {
+    const long size = ftell(log);
+    fseek(log, size > long(sizeof(buffer) - 1) ? size - long(sizeof(buffer) - 1) : 0, SEEK_SET);
+  }
+  const size_t len = fread(buffer, 1, sizeof(buffer) - 1, log);
+  fclose(log);
+  buffer[len] = '\0';
+
+  /* Start at the last session header. */
+  const char *header = "# Phantom session";
+  const char *start = nullptr;
+  for (const char *found = strstr(buffer, header); found; found = strstr(found + 1, header)) {
+    start = found;
+  }
+  fputs("\n# Phantom Python crash log (", fp);
+  fputs(filepath, fp);
+  fputs(")\n", fp);
+  fputs(start ? start : buffer, fp);
+}
+
 static void crashlog_file_generate(const char *filepath, const void *os_info)
 {
   /* Might be called after WM/Main exit, so needs to be careful about nullptr-checking before
@@ -136,6 +173,7 @@ static void crashlog_file_generate(const char *filepath, const void *os_info)
   /* Generate python back-trace if Python is currently active. */
   BPY_python_backtrace(fp);
 #  endif
+  crashlog_append_phantom_python(fp);
   if (fp != stderr) {
     fclose(fp);
   }

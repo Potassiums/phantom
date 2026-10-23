@@ -12,6 +12,7 @@
 
 #include <dbghelp.h>
 #include <shellapi.h>
+#include <shlobj.h>
 #include <shlwapi.h>
 #include <tlhelp32.h>
 
@@ -612,13 +613,17 @@ void BLI_windows_exception_show_dialog(const char *filepath_crashlog,
       L"A problem has caused the program to stop functioning correctly. If you know the steps to "
       L"reproduce this issue, please submit a bug report.\n"
       "\n"
-      L"The crash log can be found at:\n" +
-      std::wstring(filepath_crashlog_utf16);
+      L"The crash log (with Phantom's Python crash log) can be found at:\n" +
+      std::wstring(filepath_crashlog_utf16) +
+      L"\n\nSave Report to Desktop puts a copy on your desktop, ready to send.";
 
   TASKDIALOGCONFIG config = {0};
+  /* Phantom: save the crash report (C++ and Python, in one file) to the desktop. */
+  constexpr int ID_SAVE_TO_DESKTOP = 1001;
   const TASKDIALOG_BUTTON buttons[] = {{IDRETRY, L"Restart"},
                                        {IDOK, L"Report a Bug"},
                                        {IDHELP, L"View Crash Log"},
+                                       {ID_SAVE_TO_DESKTOP, L"Save Report to Desktop"},
                                        {IDCLOSE, L"Close"}};
 
   config.cbSize = sizeof(config);
@@ -672,6 +677,31 @@ void BLI_windows_exception_show_dialog(const char *filepath_crashlog,
               nullptr, L"open", executable_path, parameters.c_str(), nullptr, SW_SHOWNORMAL);
         }
         return S_OK;
+      }
+      case ID_SAVE_TO_DESKTOP: {
+        /* Copy the crash log to the desktop with a dated name, and show it in Explorer. */
+        PWSTR desktop = nullptr;
+        if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_Desktop, 0, nullptr, &desktop))) {
+          SYSTEMTIME time;
+          GetLocalTime(&time);
+          wchar_t name[96];
+          swprintf(name,
+                   ARRAYSIZE(name),
+                   L"Phantom crash report %04d-%02d-%02d %02d%02d%02d.txt",
+                   time.wYear,
+                   time.wMonth,
+                   time.wDay,
+                   time.wHour,
+                   time.wMinute,
+                   time.wSecond);
+          const std::wstring target = std::wstring(desktop) + L"\\" + name;
+          CoTaskMemFree(desktop);
+          if (CopyFileW(data_ptr->filepath_crashlog_utf16, target.c_str(), FALSE)) {
+            const std::wstring select = L"/select,\"" + target + L"\"";
+            ShellExecuteW(nullptr, L"open", L"explorer.exe", select.c_str(), nullptr, SW_SHOWNORMAL);
+          }
+        }
+        return S_FALSE;
       }
       case IDHELP:
         /* Open the crash log. */
