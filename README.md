@@ -1,4 +1,4 @@
-<!--
+<img width="1999" height="1060" alt="image" src="https://github.com/user-attachments/assets/490ad9d9-0982-47ae-9aed-209d15751491" /><!--
 Phantom's read-me. Keep the feature list in step with CHANGELOG.md.
 See 'release/text/readme.html' for Blender's end user read-me.
 -->
@@ -70,6 +70,7 @@ Credits
 - [Blender](https://www.blender.org) by the Blender Foundation and its contributors.
 - [AutoRemesher](https://github.com/huxingyi/autoremesher) by Jeremy Hu (MIT), used by Quad
   Remesh.
+- [Nvidia Newton Physics](https://github.com/newton-physics/newton) for cloth simulation
 - Recommended matcaps (not included): **Mandarin**'s
   [ZBrush Style Matcaps for Blender](https://mandarin.gumroad.com/l/zbrush-style-matcaps-for-blender)
   on Gumroad, $2 or free with the code **FREE**; if you like them, consider supporting him there.
