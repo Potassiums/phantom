@@ -4,6 +4,57 @@ Phantom is a fork of Blender tuned for sculpting. This file lists what Phantom c
 own changes come from the Blender version each release is built on.
 
 
+## 0.3.0 alpha (2026-10-23)
+
+Built on Blender 5.4 alpha, on top of 0.2.3.
+
+### Sculpting
+
+- **Start with a base mesh:** new files start with an empty scene. Switching to a sculpting
+  workspace with nothing to sculpt opens a picker with thumbnails (double-click to choose): a
+  quad sphere, Female, Male, Head, Stylized Female 1 (new, made for Phantom), Stylized Female 2,
+  Male Stylized, Head Stylized, and more of Blender's free human base meshes (CC0, bundled). It
+  frames the model from the front and starts sculpting. Also in Add > Base Mesh... and the Asset
+  Browser's Essentials library.
+- **Polygroups are hidden by default;** Ctrl+F shows them with the wireframe, and again hides both.
+- **X symmetry toggles without a hitch** (about 390 ms to 18 ms on a dense model).
+- **Leaving Sculpt Mode on Multires models is faster** (about 440 ms to 155 ms on the realistic
+  bodies): the subdivision built for sculpting is reused instead of rebuilt.
+- Fixed a crash when Blender rebuilt its scene graph with an object whose material list was
+  missing.
+
+### Garment workspace (experimental)
+
+The Garment workspace is **experimental and buggy**: expect rough edges and crashes, and save
+often.
+
+- **Live GPU cloth** with NVIDIA Newton (Style3D solver) and Warp: the sidebar's Install GPU Cloth
+  button downloads them (not bundled; NVIDIA GPU needed). Seams are welded, the step runs as a
+  CUDA graph. Blender's cloth stays as the fallback.
+- **Drag brush:** grab the cloth in the 3D view and pull it while it simulates ([ ] for size).
+- **Avatar choices:** Add / Change Avatar offers the mannequin and the bundled bodies and heads.
+  The pattern view shows the avatar's front silhouette, at full size, to draft against.
+- **Snapping:** points land on other points (also the polygon's own and box corners), line up with
+  them (smart guides), snap to the center line, or keep 15 degree steps with Shift; the length and
+  angle show by the cursor. Alt turns snapping off.
+- **Mirror mode** (M, or the header button): a piece drawn on one side of the center line gets a
+  twin on the other; started on the line it's half a piece, finished when it comes back; a piece
+  drawn along the line joins its mirror image with no seam down the middle. Edit Points moves the
+  matching point too, and a ghost cursor shows where the mirrored point goes. **Mirror Copy** in
+  the Piece panel adds a flipped copy (a left sleeve from a right one).
+- **Curve handles:** in Edit Points, curve points have Bezier-style handles to bend the curve; R
+  makes a point smooth again.
+- **Sewing preview:** the 3D view shows each seam softly glowing on both pieces with threads
+  joining the points that meet, and previews the seam being made before it's added.
+- **Move Pieces:** drag pieces in the 3D view, around the avatar or on the board in front of it.
+- New pieces show in the 3D view, standing in front of the avatar, until they're placed.
+- The tools have their own names in tooltips and menus, and the Polygon tool previews curve points
+  live while Ctrl is held.
+- Undo works for every tool's edits (Ctrl+Z used to skip over them).
+- Fixed: the avatar flickering in and out with the bundled bodies; missing leg placement points
+  on the realistic male; driver warnings from the stylized bodies.
+
+
 ## 0.2.3 alpha (2026-10-22)
 
 Built on Blender 5.4 alpha, on top of 0.2.2.

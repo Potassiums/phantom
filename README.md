@@ -7,19 +7,22 @@ Phantom is a fork of [Blender](https://www.blender.org) tuned for sculpting: ZBr
 masking, polygroups and Transpose, a live silhouette preview, quick brushes, a charcoal look with cozy interface sounds, and many smaller quality-of-life changes.
 Everything else in Blender is still there and works as before.
 
-**[Download Phantom 0.2.3](https://github.com/Potassiums/phantom/releases/latest)** (Windows, 64-bit).
+**[Download Phantom 0.3.0](https://github.com/Potassiums/phantom/releases/latest)** (Windows, 64-bit).
 Unzip it anywhere and run `phantom.exe`; nothing needs installing. Phantom keeps its settings in
 `%APPDATA%\Phantom`, apart from any Blender install.
 
 Phantom is in **alpha** and follows Blender's in-development code (currently 5.4): save often.
 
 ## Features
+- **Start with a base mesh:** new files start empty; Sculpting asks what to start with: a quad
+  sphere or one of Blender's free human base meshes (bodies, heads and more), bundled.
 - **actions bar:** When masking or isolating polygroups a new contextual bar appears relating to masks or polygroups giving
   users the ability to quickly hide, extract, or split
 - **Polygroups:** face sets are called polygroups throughout the interface, like ZBrush.
 - **Zbrush style hotkeys** Sculpting mode now sports Zbrush style hotkeys for masking, polygroups, and more.
-- **Garment workspace (early preview):** Marvelous Designer-style patterns, sewing and cloth
-  simulation, from the workspace **+** menu.
+- **Garment workspace (experimental, very buggy):** Marvelous Designer-style patterns, sewing and
+  cloth simulation (live on the GPU with NVIDIA Newton), from the workspace **+** menu. Expect
+  bugs and crashes, and save often.
 - **Transpose:** ZBrush's action line for moving, scaling and rotating the unmasked model, plus
   Move/Rotate/Scale icons (gizmo or Transpose) in the middle of the Sculpt tool header.
 - **Matcap library tools:** search inside the matcap grid, favorites
@@ -41,7 +44,6 @@ Phantom is in **alpha** and follows Blender's in-development code (currently 5.4
   on top) and four quick-brush slots: drag brushes in or out, right-click to replace, remove or
   give a shortcut. A quick-brush shortcut takes over its key (for example C instead of Clay
   Strips).
-- **Garment Tools:** New Experimental Cloth maker very buggy
 
 Building
 --------
@@ -62,7 +64,11 @@ Credits
 - [Blender](https://www.blender.org) by the Blender Foundation and its contributors.
 - [AutoRemesher](https://github.com/huxingyi/autoremesher) by Jeremy Hu (MIT), used by Quad
   Remesh.
-- [Nvidia Newton Physics](https://github.com/newton-physics/newton) for cloth simulation
+- [Human Base Meshes](https://www.blender.org/download/demo-files/#assets) (CC0) by Blender
+  Studio, bundled as starting meshes.
+- [Nvidia Newton Physics](https://github.com/newton-physics/newton) and
+  [NVIDIA Warp](https://github.com/NVIDIA/warp) (Apache-2.0) for cloth simulation (not bundled:
+  downloaded from the Garment sidebar).
 - Recommended [ZBrush Style Matcaps for Blender](https://mandarin.gumroad.com/l/zbrush-style-matcaps-for-blender)
   free with the code **FREE**.
 
