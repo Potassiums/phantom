@@ -22,7 +22,7 @@ Phantom is in **alpha** and follows Blender's in-development code (currently 5.4
 - **actions bar:** When masking or isolating polygroups a new contextual bar appears relating to masks or polygroups giving
   users the ability to quickly hide, extract, or split
 - **Polygroups:** face sets are called polygroups throughout the interface, like ZBrush.
-- **Zbeush style hotkeys** Sculpting mode now sports Zbrush style hotkeys for masking, polygroups, and more.
+- **Zbrush style hotkeys** Sculpting mode now sports Zbrush style hotkeys for masking, polygroups, and more.
 - **Garment workspace (early preview):** Marvelous Designer-style patterns, sewing and cloth
   simulation, from the workspace **+** menu.
 - **Transpose:** ZBrush's action line for moving, scaling and rotating the unmasked model, plus
