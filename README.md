@@ -1,7 +1,3 @@
-Phantom's read-me. Keep the feature list in step with CHANGELOG.md.
-See 'release/text/readme.html' for Blender's end user read-me.
--->
-
 ![Phantom: a Blender fork for sculptors](release/datafiles/splash.png)
 
 Phantom
