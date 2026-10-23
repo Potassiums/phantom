@@ -1,4 +1,3 @@
-<img width="1999" height="1060" alt="image" src="https://github.com/user-attachments/assets/490ad9d9-0982-47ae-9aed-209d15751491" /><!--
 Phantom's read-me. Keep the feature list in step with CHANGELOG.md.
 See 'release/text/readme.html' for Blender's end user read-me.
 -->
