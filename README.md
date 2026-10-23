@@ -7,7 +7,7 @@ Phantom is a fork of [Blender](https://www.blender.org) tuned for sculpting: ZBr
 masking, polygroups and Transpose, a live silhouette preview, quick brushes, a charcoal look with cozy interface sounds, and many smaller quality-of-life changes.
 Everything else in Blender is still there and works as before.
 
-**[Download Phantom 0.3.0](https://github.com/Potassiums/phantom/releases/latest)** (Windows, 64-bit).
+**[Download Phantom 0.3.1](https://github.com/Potassiums/phantom/releases/latest)** (Windows, 64-bit).
 Unzip it anywhere and run `phantom.exe`; nothing needs installing. Phantom keeps its settings in
 `%APPDATA%\Phantom`, apart from any Blender install.
 
@@ -21,8 +21,8 @@ Phantom is in **alpha** and follows Blender's in-development code (currently 5.4
 - **Polygroups:** face sets are called polygroups throughout the interface, like ZBrush.
 - **Zbrush style hotkeys** Sculpting mode now sports Zbrush style hotkeys for masking, polygroups, and more.
 - **Garment workspace (experimental, very buggy):** Marvelous Designer-style patterns, sewing and
-  cloth simulation (live on the GPU with NVIDIA Newton), from the workspace **+** menu. Expect
-  bugs and crashes, and save often.
+  cloth simulation (live on the GPU with NVIDIA Newton), with its own **Garment Mode** (Pin and
+  Drag tools) and a Garment tab in the Properties editor. Expect bugs and crashes, and save often.
 - **Transpose:** ZBrush's action line for moving, scaling and rotating the unmasked model, plus
   Move/Rotate/Scale icons (gizmo or Transpose) in the middle of the Sculpt tool header.
 - **Matcap library tools:** search inside the matcap grid, favorites

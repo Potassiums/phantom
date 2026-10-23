@@ -4,6 +4,33 @@ Phantom is a fork of Blender tuned for sculpting. This file lists what Phantom c
 own changes come from the Blender version each release is built on.
 
 
+## 0.3.1 alpha (2026-10-23)
+
+Built on Blender 5.4 alpha, on top of 0.3.0.
+
+- **The actions bar works with Multires and Dyntopo:** it reads the mask and hidden faces where
+  sculpting keeps them (the Multires grids or the Dyntopo mesh), so it appears when you mask a
+  Multires object again. It's also quicker to check on plain meshes.
+- **Base mesh picker:** a search field along the top (just type to filter, Esc clears), **Open...**
+  for a .blend from disk and **Import...** (OBJ, FBX, STL, PLY, glTF...; the imported mesh is
+  framed and sculpted like a base mesh). Bottom left, **Show at startup** opens the picker when
+  Phantom starts and for every new file; bottom right, **Start Sculpting** accepts the selection.
+  The window keeps its size while you search: the meshes that don't match fade away, and the rest
+  slide into place.
+- **Garment Mode** (experimental): a new mode in the mode menu, with its own shirt icon. It's
+  Object Mode with the garment tools: **Pin** (click the cloth to pin it, right-click to unpin)
+  and **Drag** (pull the GPU cloth while it simulates) join Object Mode's tools in the toolbar.
+  The Garment workspace switches to it on entering, and back to Object Mode on leaving.
+- **Garment tab in the Properties editor** (shirt icon, in the Garment workspace): the solver
+  (GPU (Newton) or Blender Cloth), Simulate, Reset and Make Sculptable, then **Fabric** (fabric,
+  sewing force, the new **Cloth Resolution** and skin offset), **Elastic** and **Seams** (the
+  seam list, to flip or remove seams).
+- **A tidier Garment sidebar:** only Avatar (with the Drag brush size) and Piece. The duplicate
+  tool buttons and the simulation settings are gone; the pattern view's header has Mirror and the
+  **avatar silhouette** toggle (a figure icon) side by side, and the 3D view's header a toggle for
+  the sewing preview.
+
+
 ## 0.3.0 alpha (2026-10-23)
 
 Built on Blender 5.4 alpha, on top of 0.2.3.
