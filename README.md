@@ -49,6 +49,7 @@ Phantom is in **alpha** and follows Blender's in-development code (currently 5.4
   on top) and four quick-brush slots: drag brushes in or out, right-click to replace, remove or
   give a shortcut. A quick-brush shortcut takes over its key (for example C instead of Clay
   Strips).
+- **Garment Tools:** New Experimental Cloth maker very buggy
 
 Building
 --------
