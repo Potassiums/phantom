@@ -24,15 +24,12 @@ Phantom is in **alpha** and follows Blender's in-development code (currently 5.4
   Move/Rotate/Scale icons (gizmo or Transpose) in the middle of the Sculpt tool header.
 - **Matcap library tools:** search inside the matcap grid, favorites
   with gold stars, a default matcap for every project, four quick slots and "new!" badges.
-- **Polygroups like ZBrush:** Ctrl+W makes a polygroup from the mask, Ctrl+Shift-click isolates.
 - **Silhouette thumbnail:** a live black-on-white view of the scene, docked in the top-left
   corner with the viewport's aspect ratio. Move, resize and dock it; it follows the sidebar.
 - **ZBrush-style masking:** Ctrl-drag to mask (off the mesh: box mask, or clear the mask / voxel
   remesh when empty), Ctrl-Alt-drag to erase, Ctrl-click to smooth (on the mesh) or invert (off
   it), Ctrl-Alt-click to sharpen. Alt inverts the brush.
 - **Masks stay visible** with viewport overlays off.
-- **Polygroups:** Blender's face sets are called polygroups throughout the interface, as in
-  ZBrush. Ctrl+W turns the masked area into a polygroup and clears the mask; Ctrl+Shift-click
   isolates a polygroup, swaps on an isolated one and shows everything off the mesh; Ctrl+F
   toggles polygroups plus wireframe (PolyFrame).
 - **Transpose:** ZBrush-style action line. Draw it on the model; drag its rings to place it and
