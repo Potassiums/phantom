@@ -2853,6 +2853,8 @@ enum eScene_Flag : int {
   SCE_KEYS_NO_SELONLY = 1 << 4,
   SCE_READFILE_LIBLINK_NEED_SETSCENE_CHECK = 1 << 5,
   SCE_CUSTOM_SIMULATION_RANGE = 1 << 6,
+  /** Phantom: Garment Mode, Object Mode with the garment tools (see #CTX_MODE_GARMENT). */
+  SCE_PHANTOM_GARMENT_MODE = 1 << 7,
 };
 ENUM_OPERATORS(eScene_Flag)
 

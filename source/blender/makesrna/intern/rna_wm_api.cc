@@ -103,6 +103,14 @@ const EnumPropertyItem rna_enum_window_cursor_items[] = {
 #  include "ED_view3d.hh"
 #  include "bmesh.hh"
 
+#  include "BKE_attribute.hh"
+#  include "BKE_object_types.hh"
+#  include "BKE_paint.hh"
+#  include "BKE_subdiv_ccg.hh"
+#  include "BLI_bit_span_ops.hh"
+#  include "DNA_mesh_types.h"
+#  include "DNA_object_types.h"
+
 namespace blender {
 
 /* Needed since RNA doesn't use `const` in function signatures. */
@@ -973,6 +981,74 @@ static int rna_WindowManager_phantom_asset_preview_icon(bContext *C,
  * Phantom: index of the active edit mesh's vertex that a click at `mouse_x, mouse_y` (region
  * pixels) would select, or -1: the same search, pick distance and occlusion as click-select.
  */
+/** Flags for #rna_WindowManager_phantom_sculpt_mask_state. */
+enum {
+  PHANTOM_SCULPT_HAS_MASK = 1 << 0,
+  PHANTOM_SCULPT_HAS_HIDDEN = 1 << 1,
+};
+
+static int rna_WindowManager_phantom_sculpt_mask_state(bContext *C)
+{
+  Object *ob = CTX_data_active_object(C);
+  if (ob == nullptr || ob->type != OB_MESH || !(ob->mode & OB_MODE_SCULPT)) {
+    return 0;
+  }
+  int flags = 0;
+  const SculptSession *ss = ob->runtime->sculpt_session;
+  if (ss && ss->bm) {
+    /* Dyntopo: the mask and hidden faces are in the BMesh. */
+    BMesh &bm = *ss->bm;
+    const int mask_offset = CustomData_get_offset_named(&bm.vdata, CD_PROP_FLOAT, ".sculpt_mask");
+    BMIter iter;
+    BMVert *vert;
+    if (mask_offset != -1) {
+      BM_ITER_MESH (vert, &iter, &bm, BM_VERTS_OF_MESH) {
+        if (BM_ELEM_CD_GET_FLOAT(vert, mask_offset) != 0.0f) {
+          flags |= PHANTOM_SCULPT_HAS_MASK;
+          break;
+        }
+      }
+    }
+    BMFace *face;
+    BM_ITER_MESH (face, &iter, &bm, BM_FACES_OF_MESH) {
+      if (BM_elem_flag_test(face, BM_ELEM_HIDDEN)) {
+        flags |= PHANTOM_SCULPT_HAS_HIDDEN;
+        break;
+      }
+    }
+    return flags;
+  }
+  if (ss && ss->subdiv_ccg) {
+    /* Multires: the mask and hidden faces are on the subdivided grids, not the base mesh. */
+    const SubdivCCG &subdiv_ccg = *ss->subdiv_ccg;
+    const Span<float> masks = subdiv_ccg.masks;
+    if (std::any_of(masks.begin(), masks.end(), [](const float m) { return m != 0.0f; })) {
+      flags |= PHANTOM_SCULPT_HAS_MASK;
+    }
+    if (!subdiv_ccg.grid_hidden.is_empty() &&
+        bits::any_bit_set(subdiv_ccg.grid_hidden.all_bits()))
+    {
+      flags |= PHANTOM_SCULPT_HAS_HIDDEN;
+    }
+    return flags;
+  }
+  const Mesh &mesh = *id_cast<const Mesh *>(ob->data);
+  const bke::AttributeAccessor attributes = mesh.attributes();
+  if (const VArray mask = *attributes.lookup<float>(".sculpt_mask", bke::AttrDomain::Point)) {
+    const VArraySpan<float> values(mask);
+    if (std::any_of(values.begin(), values.end(), [](const float m) { return m != 0.0f; })) {
+      flags |= PHANTOM_SCULPT_HAS_MASK;
+    }
+  }
+  if (const VArray hide = *attributes.lookup<bool>(".hide_poly", bke::AttrDomain::Face)) {
+    const VArraySpan<bool> values(hide);
+    if (std::any_of(values.begin(), values.end(), [](const bool h) { return h; })) {
+      flags |= PHANTOM_SCULPT_HAS_HIDDEN;
+    }
+  }
+  return flags;
+}
+
 static int rna_WindowManager_phantom_undo_push_count()
 {
   return BKE_undosys_phantom_push_count();
@@ -1156,6 +1232,16 @@ void RNA_api_wm(StructRNA *srna)
   parm = RNA_def_string(func, "relative_asset_identifier", nullptr, 0, "Asset Identifier", "");
   RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
   parm = RNA_def_int(func, "icon", 0, 0, INT_MAX, "Icon", "", 0, INT_MAX);
+  RNA_def_function_return(func, parm);
+
+  func = RNA_def_function(
+      srna, "phantom_sculpt_mask_state", "rna_WindowManager_phantom_sculpt_mask_state");
+  RNA_def_function_flag(func, FUNC_NO_SELF | FUNC_USE_CONTEXT);
+  RNA_def_function_ui_description(
+      func,
+      "Whether the active object being sculpted has a mask (bit 1) and hidden faces (bit 2), "
+      "read where sculpting keeps them: the mesh, the Multires grids or the Dyntopo BMesh");
+  parm = RNA_def_int(func, "flags", 0, 0, INT_MAX, "Flags", "", 0, INT_MAX);
   RNA_def_function_return(func, parm);
 
   func = RNA_def_function(

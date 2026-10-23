@@ -117,6 +117,8 @@ enum eSpaceButtons_Context : short {
   BCONTEXT_COMPOSITOR = 20,
   /** Phantom: sculpting settings, shown in Sculpt Mode. */
   BCONTEXT_PHANTOM_SCULPT = 21,
+  /** Phantom: garment simulation settings, shown in the Garment workspace. */
+  BCONTEXT_PHANTOM_GARMENT = 22,
 
   /* Keep last. */
   BCONTEXT_TOT,

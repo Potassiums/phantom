@@ -38,7 +38,7 @@ def object_ensure_material(obj, mat_name):
 class ObjectModeOperator:
     @classmethod
     def poll(cls, context):
-        return context.mode == 'OBJECT'
+        return context.mode in {'OBJECT', 'GARMENT'}
 
 
 class QuickFur(ObjectModeOperator, Operator):

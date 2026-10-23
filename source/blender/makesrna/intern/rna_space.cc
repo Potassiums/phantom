@@ -641,6 +641,11 @@ const EnumPropertyItem buttons_context_items[] = {
      ICON_SCULPTMODE_HLT,
      "Sculpting",
      "Sculpting settings (Phantom)"},
+    {BCONTEXT_PHANTOM_GARMENT,
+     "PHANTOM_GARMENT",
+     ICON_PHANTOM_GARMENT,
+     "Garment",
+     "Garment simulation settings (Phantom)"},
     {0, nullptr, 0, nullptr, nullptr},
 };
 
@@ -6377,6 +6382,7 @@ static void rna_def_space_properties_filter(StructRNA *srna)
       "show_properties_particles",      "show_properties_physics",
       "show_properties_effects",        "show_properties_strip",
       "show_properties_strip_modifier", "show_properties_phantom_sculpt",
+      "show_properties_phantom_garment",
   };
 
   for (const int i : IndexRange(BCONTEXT_TOT)) {

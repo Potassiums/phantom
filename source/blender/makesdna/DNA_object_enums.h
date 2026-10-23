@@ -30,6 +30,11 @@ enum eObjectMode : int {
   OB_MODE_WEIGHT_GREASE_PENCIL = 1 << 10,
   OB_MODE_VERTEX_GREASE_PENCIL = 1 << 11,
   OB_MODE_SCULPT_CURVES = 1 << 12,
+  /**
+   * Phantom: Garment Mode in #OBJECT_OT_mode_set. Never stored in #Object.mode: the object stays
+   * in Object Mode and the scene's #SCE_PHANTOM_GARMENT_MODE flag turns on the garment tools.
+   */
+  OB_MODE_PHANTOM_GARMENT = 1 << 14,
 };
 ENUM_OPERATORS(eObjectMode)
 

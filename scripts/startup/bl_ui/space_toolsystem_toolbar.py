@@ -3948,6 +3948,12 @@ class VIEW3D_PT_tools_active(ToolSelectPanelHelper, Panel):
             None,
             _tools_pose,
         ],
+        # Phantom: Garment Mode has Object Mode's tools; the Garment workspace adds Pin and Drag.
+        'GARMENT': [
+            *_tools_default,
+            None,
+            _tools_view3d_add,
+        ],
         'POSE': [
             *_tools_default,
             None,

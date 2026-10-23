@@ -381,7 +381,7 @@ class AlignObjects(Operator):
 
     @classmethod
     def poll(cls, context):
-        return context.mode == 'OBJECT'
+        return context.mode in {'OBJECT', 'GARMENT'}
 
     def execute(self, context):
         align_axis = self.align_axis

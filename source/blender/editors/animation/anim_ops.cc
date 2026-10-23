@@ -1817,7 +1817,7 @@ static wmOperatorStatus rotation_mode_convert_exec(bContext *C, wmOperator *op)
 
 static bool rotation_mode_convert_poll(bContext *C)
 {
-  return ELEM(CTX_data_mode_enum(C), CTX_MODE_OBJECT, CTX_MODE_POSE);
+  return ELEM(CTX_data_mode_enum(C), CTX_MODE_OBJECT, CTX_MODE_GARMENT, CTX_MODE_POSE);
 }
 
 static void ANIM_OT_rotation_mode_convert(wmOperatorType *ot)

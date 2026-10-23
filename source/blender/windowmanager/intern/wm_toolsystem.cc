@@ -762,6 +762,8 @@ int WM_toolsystem_mode_from_spacetype(
       else {
         mode = CTX_MODE_OBJECT;
       }
+      /* Phantom: the garment tools in Garment Mode. */
+      mode = CTX_data_mode_phantom_garment(scene, eContextObjectMode(mode));
       break;
     }
     case SPACE_IMAGE: {

@@ -66,7 +66,7 @@ import gpu
 import numpy as np
 from bpy.app.handlers import persistent
 from bpy.props import BoolProperty, EnumProperty, IntProperty
-from bpy.types import Operator, Panel
+from bpy.types import Operator, Panel, WorkSpaceTool
 from bpy_extras import view3d_utils
 from gpu_extras.batch import batch_for_shader
 from mathutils import Quaternion, Vector
@@ -185,6 +185,8 @@ _handles = []
 _creating = {"value": False}
 # Sidebars already switched to the Garment tab (so the user's later choice of tab sticks).
 _tabbed = set()
+# The workspace each window showed, to notice switches into and out of the Garment workspace.
+_mode_workspace = {}
 
 
 # -----------------------------------------------------------------------------
@@ -1466,12 +1468,7 @@ class _GarmentTool:
 
     # Drag: pull the simulating cloth (GPU cloth only).
     def _release_grab(self):
-        if _state["grab"] is not None:
-            import phantom_garment_newton as gpu_cloth
-            sim = gpu_cloth.simulation()
-            if sim is not None:
-                sim.release_drag()
-            _state["grab"] = None
+        _release_cloth()
 
     def _drag(self, context, event, region, rv3d, pattern_view, mx, my):
         import phantom_garment_newton as gpu_cloth
@@ -1487,45 +1484,16 @@ class _GarmentTool:
             return {'RUNNING_MODAL'}
         if event.type == 'MOUSEMOVE':
             _state["mouse"] = (mx, my, region.as_pointer())
-            grab = _state["grab"]
-            if grab is not None:
-                target = view3d_utils.region_2d_to_location_3d(grab["region"], grab["rv3d"], (mx, my), grab["anchor"])
-                sim = gpu_cloth.simulation()
-                if sim is not None:
-                    sim.set_drag(delta=tuple(target - grab["anchor"]))
+            _move_cloth(mx, my)
             _redraw(context.window)
-            return {'RUNNING_MODAL'} if grab is not None else {'PASS_THROUGH'}
+            return {'RUNNING_MODAL'} if _state["grab"] is not None else {'PASS_THROUGH'}
         if event.type == 'LEFTMOUSE' and event.value == 'PRESS':
-            scene = context.scene
-            if not garment.newton_active(scene):
-                self.report({'WARNING'}, "Dragging the cloth needs GPU cloth (Simulation panel)")
+            grabbed, message = _grab_cloth(context, region, rv3d, mx, my)
+            if message:
+                self.report({'WARNING'}, message)
                 garment.play_sound("error")
                 return {'RUNNING_MODAL'}
-            if gpu_cloth.simulation() is None or garment.garment_needs_build(scene):
-                garment.build_garment(scene)
-            sim = gpu_cloth.simulation()
-            if sim is None:
-                return {'RUNNING_MODAL'}
-            positions = sim.positions()
-            pixels = _project(region, rv3d, positions)
-            radius = wm.phantom_garment_drag_radius * _ui_scale()
-            dist = np.hypot(pixels[:, 0] - mx, pixels[:, 1] - my)
-            under = dist < radius
-            if not under.any():
-                return {'PASS_THROUGH'}
-            # Only the side of the cloth facing the view.
-            view = np.array(rv3d.view_matrix)
-            depth = -(positions @ view[2, :3] + view[2, 3])
-            nearest = depth[under].min()
-            chosen = under & (depth < nearest + DRAG_DEPTH)
-            weights = np.where(chosen, (1.0 - (dist / radius) ** 2) ** 2, 0.0)
-            anchor = Vector((positions[chosen] * weights[chosen, None]).sum(axis=0) / weights[chosen].sum())
-            sim.set_drag(weights=weights, grab=positions, delta=(0.0, 0.0, 0.0))
-            _state["grab"] = {"anchor": anchor, "region": region, "rv3d": rv3d}
-            if not gpu_cloth.running():
-                gpu_cloth.start()
-            garment.play_sound("grab_start")
-            return {'RUNNING_MODAL'}
+            return {'RUNNING_MODAL'} if grabbed else {'PASS_THROUGH'}
         if event.type == 'LEFTMOUSE' and event.value == 'RELEASE' and _state["grab"] is not None:
             self._release_grab()
             garment.play_sound("transform_confirm")
@@ -1552,6 +1520,244 @@ class _GarmentTool:
             _redraw(context.window)
             return {'RUNNING_MODAL'}
         return {'PASS_THROUGH'}
+
+
+def _grab_cloth(context, region, rv3d, mx, my):
+    """Grab the GPU cloth under the mouse (the drag brush). Returns (grabbed, problem or "")."""
+    import phantom_garment_newton as gpu_cloth
+    scene = context.scene
+    if not garment.newton_active(scene):
+        return False, "Dragging the cloth needs GPU cloth (Properties > Garment)"
+    if gpu_cloth.simulation() is None or garment.garment_needs_build(scene):
+        garment.build_garment(scene)
+    sim = gpu_cloth.simulation()
+    if sim is None:
+        return False, ""
+    positions = sim.positions()
+    pixels = _project(region, rv3d, positions)
+    radius = context.window_manager.phantom_garment_drag_radius * _ui_scale()
+    dist = np.hypot(pixels[:, 0] - mx, pixels[:, 1] - my)
+    under = dist < radius
+    if not under.any():
+        return False, ""
+    # Only the side of the cloth facing the view.
+    view = np.array(rv3d.view_matrix)
+    depth = -(positions @ view[2, :3] + view[2, 3])
+    nearest = depth[under].min()
+    chosen = under & (depth < nearest + DRAG_DEPTH)
+    weights = np.where(chosen, (1.0 - (dist / radius) ** 2) ** 2, 0.0)
+    anchor = Vector((positions[chosen] * weights[chosen, None]).sum(axis=0) / weights[chosen].sum())
+    sim.set_drag(weights=weights, grab=positions, delta=(0.0, 0.0, 0.0))
+    _state["grab"] = {"anchor": anchor, "region": region, "rv3d": rv3d}
+    if not gpu_cloth.running():
+        gpu_cloth.start()
+    garment.play_sound("grab_start")
+    return True, ""
+
+
+def _move_cloth(mx, my):
+    """Pull the grabbed cloth towards the mouse."""
+    import phantom_garment_newton as gpu_cloth
+    grab = _state["grab"]
+    if grab is None:
+        return
+    target = view3d_utils.region_2d_to_location_3d(grab["region"], grab["rv3d"], (mx, my), grab["anchor"])
+    sim = gpu_cloth.simulation()
+    if sim is not None:
+        sim.set_drag(delta=tuple(target - grab["anchor"]))
+
+
+def _release_cloth():
+    if _state["grab"] is not None:
+        import phantom_garment_newton as gpu_cloth
+        sim = gpu_cloth.simulation()
+        if sim is not None:
+            sim.release_drag()
+        _state["grab"] = None
+
+
+# -----------------------------------------------------------------------------
+# Garment Mode: Pin and Drag in the 3D view's toolbar
+
+PIN_TOOL = "phantom.garment_pin"
+DRAG_TOOL = "phantom.garment_drag"
+# Unscaled pixels: how close to the cloth a Pin click has to be.
+PIN_PICK_DISTANCE = 24
+
+
+def _cloth_points(context):
+    """Where the cloth is in the 3D view, for picking: [(piece, local vertex indices, N x 3)].
+
+    The simulated garment where it's built, else the pieces as they stand (wrapped around the
+    avatar, or on the board in front of it).
+    """
+    scene = context.scene
+    out = []
+    covered = set()
+    ob = bpy.data.objects.get(garment.GARMENT_OBJECT)
+    sources = garment._built["sources"]
+    if ob is not None and ob.visible_get() and sources:
+        mesh = ob.evaluated_get(context.evaluated_depsgraph_get()).data
+        co = np.empty(len(mesh.vertices) * 3)
+        mesh.vertices.foreach_get("co", co)
+        co = garment.to_world(ob, co.reshape(-1, 3))
+        particle_of = garment._built["particle_of"]
+        for name, start, count in sources:
+            piece = bpy.data.objects.get(name)
+            if piece is None:
+                continue
+            index = np.arange(start, start + count)
+            if particle_of is not None:
+                if index[-1] >= len(particle_of):
+                    continue
+                index = particle_of[index]
+            if index.max() >= len(co):
+                continue
+            out.append((piece, np.arange(count), co[index]))
+            covered.add(name)
+    for piece in garment.pattern_pieces(scene):
+        if piece.name in covered or piece.hide_get():
+            continue
+        verts = garment.piece_world_points(piece)
+        if len(verts):
+            out.append((piece, np.arange(len(verts)), _piece_3d(scene, piece, verts)))
+    return out
+
+
+class PHANTOM_OT_garment_pin_cloth(Operator):
+    """Pin the cloth under the mouse in place (right-click: unpin)"""
+    bl_idname = "phantom.garment_pin_cloth"
+    bl_label = "Pin Cloth"
+    bl_options = {'INTERNAL'}
+
+    unpin: BoolProperty(options={'SKIP_SAVE'})
+
+    def invoke(self, context, event):
+        region, rv3d = context.region, context.region_data
+        if region is None or rv3d is None or region.type != 'WINDOW':
+            return {'PASS_THROUGH'}
+        mx, my = event.mouse_region_x, event.mouse_region_y
+        best, best_dist = None, PIN_PICK_DISTANCE * _ui_scale()
+        for piece, local, points in _cloth_points(context):
+            pixels = _project(region, rv3d, points)
+            dist = np.hypot(pixels[:, 0] - mx, pixels[:, 1] - my)
+            i = int(dist.argmin())
+            if dist[i] < best_dist:
+                best, best_dist = (piece, int(local[i])), dist[i]
+        if best is None:
+            return {'PASS_THROUGH'}
+        piece, index = best
+        board = garment.piece_world_points(piece)[index]
+        if self.unpin:
+            bpy.ops.phantom.garment_remove_pins('EXEC_DEFAULT', True, at=board[:2], use_at=True)
+            garment.play_sound("loop_remove")
+        else:
+            half = context.scene.phantom_garment.particle_distance * 1.5
+            bpy.ops.phantom.garment_add_pin('EXEC_DEFAULT', True, lo=(board[0] - half, board[1] - half),
+                                            hi=(board[0] + half, board[1] + half))
+        _redraw()
+        return {'FINISHED'}
+
+
+class PHANTOM_OT_garment_drag_cloth(Operator):
+    """Grab the cloth and pull it while it simulates (GPU cloth)"""
+    bl_idname = "phantom.garment_drag_cloth"
+    bl_label = "Drag Cloth"
+    bl_options = {'INTERNAL'}
+
+    def invoke(self, context, event):
+        region, rv3d = context.region, context.region_data
+        if region is None or rv3d is None or region.type != 'WINDOW':
+            return {'PASS_THROUGH'}
+        grabbed, message = _grab_cloth(context, region, rv3d, event.mouse_region_x, event.mouse_region_y)
+        if message:
+            self.report({'WARNING'}, message)
+            garment.play_sound("error")
+            return {'CANCELLED'}
+        if not grabbed:
+            return {'PASS_THROUGH'}
+        self.region = region
+        context.window_manager.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
+
+    def modal(self, context, event):
+        if event.type == 'MOUSEMOVE':
+            _move_cloth(event.mouse_x - self.region.x, event.mouse_y - self.region.y)
+            _redraw(context.window)
+            return {'RUNNING_MODAL'}
+        if (event.type == 'LEFTMOUSE' and event.value == 'RELEASE') or event.type in {'ESC', 'RIGHTMOUSE'}:
+            _release_cloth()
+            garment.play_sound("transform_confirm")
+            return {'FINISHED'}
+        return {'RUNNING_MODAL'}
+
+
+def _tool_circle(context, xy, radius, color):
+    region = context.region
+    if region is None:
+        return
+    x, y = xy[0] - region.x, xy[1] - region.y
+    circle = [(x + radius * math.cos(a), y + radius * math.sin(a), 0.0) for a in np.linspace(0.0, 2.0 * math.pi, 49)]
+    gpu.state.blend_set('ALPHA')
+    _polyline(circle, color, 1.5)
+    gpu.state.blend_set('NONE')
+
+
+class PHANTOM_TL_garment_pin(WorkSpaceTool):
+    bl_space_type = 'VIEW_3D'
+    bl_context_mode = 'GARMENT'
+    bl_idname = PIN_TOOL
+    bl_label = "Pin"
+    bl_description = "Click the cloth to pin it in place, so it holds still in the simulation; right-click to unpin"
+    bl_icon = "phantom.garment_pin"  # release/datafiles/icons, see make_tool_icons.py
+    bl_keymap = (
+        ("phantom.garment_pin_cloth", {"type": 'LEFTMOUSE', "value": 'PRESS'}, None),
+        ("phantom.garment_pin_cloth", {"type": 'RIGHTMOUSE', "value": 'PRESS'}, {"properties": [("unpin", True)]}),
+    )
+
+    @staticmethod
+    def draw_cursor(context, _tool, xy):
+        _tool_circle(context, xy, PIN_PICK_DISTANCE * _ui_scale() * 0.5, PIN_COLOR)
+
+
+class PHANTOM_TL_garment_drag(WorkSpaceTool):
+    bl_space_type = 'VIEW_3D'
+    bl_context_mode = 'GARMENT'
+    bl_idname = DRAG_TOOL
+    bl_label = "Drag"
+    bl_description = "Grab the cloth and pull it while it simulates (GPU cloth)"
+    bl_icon = "phantom.garment_drag"  # release/datafiles/icons, see make_tool_icons.py
+    bl_keymap = (
+        ("phantom.garment_drag_cloth", {"type": 'LEFTMOUSE', "value": 'PRESS'}, None),
+    )
+
+    @staticmethod
+    def draw_settings(context, layout, _tool):
+        layout.prop(context.window_manager, "phantom_garment_drag_radius", text="Brush")
+
+    @staticmethod
+    def draw_cursor(context, _tool, xy):
+        radius = context.window_manager.phantom_garment_drag_radius * _ui_scale()
+        _tool_circle(context, xy, radius, BRUSH_COLOR if _state["grab"] is None else HOVER_COLOR)
+
+
+def _sync_garment_mode(window):
+    """The Garment workspace works in Garment Mode: switch to it on entering, back out on leaving."""
+    key = window.as_pointer()
+    workspace = window.workspace
+    name = workspace.name if workspace else None
+    previous = _mode_workspace.get(key, "")
+    _mode_workspace[key] = name
+    scene = window.scene
+    if previous == name or not hasattr(scene, "phantom_garment_mode"):
+        return
+    want = is_garment_workspace(workspace)
+    obj = window.view_layer.objects.active
+    if want and obj is not None and obj.mode != 'OBJECT':
+        return
+    if scene.phantom_garment_mode != want:
+        with bpy.context.temp_override(window=window, screen=window.screen):
+            scene.phantom_garment_mode = want
 
 
 class PHANTOM_OT_garment_tool(_GarmentTool, Operator):
@@ -2085,10 +2291,13 @@ def draw_header(self, context):
     if is_pattern_view(context.space_data):
         _tool_buttons(layout, context, PATTERN_TOOLS)
         layout.separator()
-        layout.prop(context.window_manager, "phantom_garment_mirror", text="", icon='MOD_MIRROR')
+        row = layout.row(align=True)
+        row.prop(context.window_manager, "phantom_garment_mirror", text="", icon='MOD_MIRROR')
+        row.prop(context.window_manager, "phantom_garment_show_silhouette", text="", icon='ARMATURE_DATA')
     else:
         _tool_buttons(layout, context, ('ARRANGE', 'MOVE', 'DRAG'), text=True)
         layout.separator()
+        layout.prop(context.window_manager, "phantom_garment_show_seams", text="", icon='LIGHT_SUN')
         _simulate_button(layout, context)
 
 
@@ -2124,29 +2333,7 @@ class VIEW3D_PT_phantom_garment_avatar(GarmentPanel, Panel):
         layout.operator_menu_enum(garment.PHANTOM_OT_garment_add_avatar.bl_idname, "choice",
                                   text="Add Avatar" if settings.avatar is None else "Change Avatar",
                                   icon='OUTLINER_OB_ARMATURE')
-        layout.prop(settings, "skin_offset")
-
-
-class VIEW3D_PT_phantom_garment_patterns(GarmentPanel, Panel):
-    bl_label = "Patterns"
-
-    def draw(self, context):
-        layout = self.layout
-        row = layout.row()
-        row.prop(context.window_manager, "phantom_garment_show_silhouette", text="Avatar Silhouette")
-        row.prop(context.window_manager, "phantom_garment_mirror", text="Mirror", icon='MOD_MIRROR')
-        col = layout.column(align=True)
-        _tool_buttons(col, context, PATTERN_TOOLS[:5])
-        _tool_buttons(col, context, PATTERN_TOOLS[5:] + ('ARRANGE', 'MOVE', 'DRAG'))
-        pieces = garment.pattern_pieces(context.scene)
-        if not pieces:
-            layout.label(text="Draw a piece in the pattern view", icon='INFO')
-            return
-        col = layout.column(align=True)
-        for ob in pieces:
-            row = col.row(align=True)
-            row.label(text=ob.name, icon='MESH_PLANE' if ob != context.active_object else 'RADIOBUT_ON')
-            row.prop(ob.phantom_garment, "arrangement", text="")
+        layout.prop(context.window_manager, "phantom_garment_drag_radius", text="Drag Brush")
 
 
 class VIEW3D_PT_phantom_garment_piece(GarmentPanel, Panel):
@@ -2180,8 +2367,16 @@ def _stretch_label(ob, segment, start, end):
     return label
 
 
-class VIEW3D_PT_phantom_garment_sewing(GarmentPanel, Panel):
-    bl_label = "Sewing"
+class GarmentProperties:
+    """The Properties editor's Garment tab (only shown in the Garment workspace)."""
+    bl_space_type = 'PROPERTIES'
+    bl_region_type = 'WINDOW'
+    bl_context = "phantom_garment"
+
+
+class PROPERTIES_PT_phantom_garment_seams(GarmentProperties, Panel):
+    bl_label = "Seams"
+    bl_options = {'DEFAULT_CLOSED'}
 
     def draw(self, context):
         layout = self.layout
@@ -2189,7 +2384,6 @@ class VIEW3D_PT_phantom_garment_sewing(GarmentPanel, Panel):
         if not len(seams):
             layout.label(text="Use Sew or Free Sew to join pieces", icon='INFO')
             return
-        layout.prop(context.window_manager, "phantom_garment_show_seams", icon='LIGHT_SUN')
         col = layout.column(align=True)
         for i, seam in enumerate(seams):
             row = col.row(align=True)
@@ -2202,9 +2396,8 @@ class VIEW3D_PT_phantom_garment_sewing(GarmentPanel, Panel):
             row.operator(garment.PHANTOM_OT_garment_remove_seam.bl_idname, text="", icon='X').index = i
 
 
-class VIEW3D_PT_phantom_garment_elastic(GarmentPanel, Panel):
+class PROPERTIES_PT_phantom_garment_elastic(GarmentProperties, Panel):
     bl_label = "Elastic"
-    bl_options = {'DEFAULT_CLOSED'}
 
     def draw(self, context):
         layout = self.layout
@@ -2220,27 +2413,34 @@ class VIEW3D_PT_phantom_garment_elastic(GarmentPanel, Panel):
             op.piece, op.segment = elastic.piece.name, elastic.segment
 
 
-class VIEW3D_PT_phantom_garment_fabric(GarmentPanel, Panel):
+class PROPERTIES_PT_phantom_garment_fabric(GarmentProperties, Panel):
     bl_label = "Fabric"
 
     def draw(self, context):
         settings = context.scene.phantom_garment
         layout = self.layout
+        layout.use_property_split = True
         row = layout.row(align=True)
-        row.prop(settings, "fabric", text="")
+        row.prop(settings, "fabric")
         row.operator(garment.PHANTOM_OT_garment_fabric_to_all.bl_idname, text="", icon='DUPLICATE')
-        layout.prop(settings, "particle_distance")
         layout.prop(settings, "sewing_force")
+        # Smaller spacing: a finer cloth mesh (slower to simulate).
+        layout.prop(settings, "particle_distance", text="Cloth Resolution")
+        layout.prop(settings, "skin_offset")
 
 
-class VIEW3D_PT_phantom_garment_simulation(GarmentPanel, Panel):
+class PROPERTIES_PT_phantom_garment_simulation(GarmentProperties, Panel):
     bl_label = "Simulation"
+    bl_options = {'HIDE_HEADER'}
 
     def draw(self, context):
         import phantom_garment_newton as gpu_cloth
         layout = self.layout
         settings = context.scene.phantom_garment
-        layout.prop(settings, "solver", expand=True)
+        row = layout.row()
+        row.alert = True
+        row.label(text="Garment is experimental: expect bugs, save often", icon='ERROR')
+        layout.prop(settings, "solver", text="")
         if settings.solver == 'GPU':
             if gpu_cloth.installing():
                 layout.label(text=gpu_cloth.install_status(), icon='SORTTIME')
@@ -2256,12 +2456,11 @@ class VIEW3D_PT_phantom_garment_simulation(GarmentPanel, Panel):
                 sim = gpu_cloth.simulation()
                 if sim is not None and gpu_cloth.running():
                     layout.label(text="%d particles, %.1f ms a frame" % (sim.count, sim.step_ms), icon='SOLO_ON')
-                row = layout.row(align=True)
-                row.prop(context.window_manager, "phantom_garment_drag_radius", text="Drag Brush")
         col = layout.column()
-        col.scale_y = 1.4
+        col.scale_y = 1.6
         _simulate_button(col, context)
         row = layout.row(align=True)
+        row.scale_y = 1.2
         row.operator(garment.PHANTOM_OT_garment_reset.bl_idname, text="Reset", icon='FILE_REFRESH')
         row.operator(garment.PHANTOM_OT_garment_make_sculptable.bl_idname, icon='SCULPTMODE_HLT')
 
@@ -2286,6 +2485,7 @@ def _show_garment_tab(window):
 def _watch():
     wm = bpy.context.window_manager
     for window in wm.windows if wm else ():
+        _sync_garment_mode(window)
         if not is_garment_workspace(window.workspace):
             continue
         _show_garment_tab(window)
@@ -2345,14 +2545,15 @@ classes = (
     PHANTOM_OT_garment_workspace_add,
     PHANTOM_OT_garment_tool,
     *TOOL_OPERATORS,
+    PHANTOM_OT_garment_pin_cloth,
+    PHANTOM_OT_garment_drag_cloth,
+    PROPERTIES_PT_phantom_garment_simulation,
+    PROPERTIES_PT_phantom_garment_fabric,
+    PROPERTIES_PT_phantom_garment_elastic,
+    PROPERTIES_PT_phantom_garment_seams,
     VIEW3D_PT_phantom_garment_experimental,
     VIEW3D_PT_phantom_garment_avatar,
-    VIEW3D_PT_phantom_garment_patterns,
     VIEW3D_PT_phantom_garment_piece,
-    VIEW3D_PT_phantom_garment_sewing,
-    VIEW3D_PT_phantom_garment_elastic,
-    VIEW3D_PT_phantom_garment_fabric,
-    VIEW3D_PT_phantom_garment_simulation,
 )
 _keymaps = []
 
@@ -2378,6 +2579,10 @@ def register():
         "point too (M)",
         default=False, update=lambda _self, _context: _redraw())
     bpy.types.VIEW3D_HT_tool_header.append(draw_header)
+    # Garment Mode's own tools, after Object Mode's (the 'GARMENT' tool list, see space_toolsystem_toolbar).
+    if 'GARMENT' in bpy.types.VIEW3D_PT_tools_active._tools:
+        bpy.utils.register_tool(PHANTOM_TL_garment_pin, separator=True)
+        bpy.utils.register_tool(PHANTOM_TL_garment_drag, after={PIN_TOOL})
     bpy.types.TOPBAR_MT_workspace_menu.append(draw_workspace_menu)
     _handles.append((bpy.types.SpaceView3D.draw_handler_add(_draw_view, (), 'WINDOW', 'POST_VIEW'), 'WINDOW'))
     _handles.append((bpy.types.SpaceView3D.draw_handler_add(_draw_labels, (), 'WINDOW', 'POST_PIXEL'), 'WINDOW'))
@@ -2411,6 +2616,12 @@ def unregister():
     _handles.clear()
     bpy.types.TOPBAR_MT_workspace_menu.remove(draw_workspace_menu)
     bpy.types.VIEW3D_HT_tool_header.remove(draw_header)
+    for tool in (PHANTOM_TL_garment_drag, PHANTOM_TL_garment_pin):
+        try:
+            bpy.utils.unregister_tool(tool)
+        except (Exception, SystemError):
+            # As with Transpose: Blender's `unregister_tool` trips over tuple keymaps on quit.
+            pass
     del bpy.types.WindowManager.phantom_garment_show_silhouette
     del bpy.types.WindowManager.phantom_garment_mirror
     del bpy.types.WindowManager.phantom_garment_show_seams

@@ -157,8 +157,10 @@ enum eContextObjectMode {
   CTX_MODE_SCULPT_GREASE_PENCIL,
   CTX_MODE_WEIGHT_GREASE_PENCIL,
   CTX_MODE_VERTEX_GREASE_PENCIL,
+  /** Phantom: Object Mode with the garment tools (the scene's #SCE_PHANTOM_GARMENT_MODE). */
+  CTX_MODE_GARMENT,
 };
-#define CTX_MODE_NUM (CTX_MODE_VERTEX_GREASE_PENCIL + 1)
+#define CTX_MODE_NUM (CTX_MODE_GARMENT + 1)
 
 /* Context */
 
@@ -399,6 +401,8 @@ RenderEngineType *CTX_data_engine_type(const bContext *C);
 ToolSettings *CTX_data_tool_settings(const bContext *C);
 
 const char *CTX_data_mode_string(const bContext *C);
+/** Phantom: Object Mode becomes Garment Mode while the scene is in Garment Mode. */
+enum eContextObjectMode CTX_data_mode_phantom_garment(const Scene *scene, eContextObjectMode mode);
 enum eContextObjectMode CTX_data_mode_enum_ex(const Object *obedit,
                                               const Object *ob,
                                               eObjectMode object_mode);

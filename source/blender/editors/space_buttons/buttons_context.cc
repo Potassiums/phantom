@@ -50,6 +50,8 @@
 #include "ED_physics.hh"
 #include "ED_screen.hh"
 
+#include "BKE_idprop.hh"
+
 #include "UI_interface.hh"
 #include "UI_interface_layout.hh"
 #include "UI_resources.hh"
@@ -645,6 +647,15 @@ static bool buttons_active_object_sculpting(const bContext *C)
   return ob && ob->type == OB_MESH && ob->mode == OB_MODE_SCULPT;
 }
 
+/** Phantom: the Garment workspace (marked by its "phantom_garment" property) gets the Garment tab. */
+static bool buttons_garment_workspace(const bContext *C)
+{
+  wmWindow *window = CTX_wm_window(C);
+  const WorkSpace *workspace = window ? WM_window_get_active_workspace(window) : nullptr;
+  return workspace && workspace->id.properties &&
+         IDP_GetPropertyFromGroup(workspace->id.properties, "phantom_garment") != nullptr;
+}
+
 static bool buttons_context_path(
     const bContext *C, SpaceProperties *sbuts, ButsContextPath *path, int mainb, int flag)
 {
@@ -769,6 +780,9 @@ static bool buttons_context_path(
     case BCONTEXT_PHANTOM_SCULPT:
       found = buttons_context_path_object(path) && buttons_active_object_sculpting(C);
       break;
+    case BCONTEXT_PHANTOM_GARMENT:
+      found = buttons_garment_workspace(C);
+      break;
     default:
       found = false;
       break;
@@ -819,6 +833,7 @@ static eSpaceButtons_Context buttons_shading_new_context(const bContext *C, int 
 }
 
 /** Phantom: the tabs the Properties editor keeps in Sculpt Mode. */
+/* (The Garment tab isn't one of them: it belongs to the Garment workspace.) */
 static constexpr int PHANTOM_SCULPT_TABS = (1 << BCONTEXT_RENDER) | (1 << BCONTEXT_OUTPUT) |
                                            (1 << BCONTEXT_SCENE) | (1 << BCONTEXT_WORLD) |
                                            (1 << BCONTEXT_OBJECT) | (1 << BCONTEXT_MODIFIER) |

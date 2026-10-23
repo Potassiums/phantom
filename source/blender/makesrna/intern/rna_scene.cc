@@ -779,6 +779,7 @@ static const EnumPropertyItem eevee_resolution_scale_items[] = {
 #  include "ED_grease_pencil.hh"
 #  include "ED_image.hh"
 #  include "ED_info.hh"
+#  include "WM_toolsystem.hh"
 #  include "ED_keyframing.hh"
 #  include "ED_mesh.hh"
 #  include "ED_node.hh"
@@ -2332,6 +2333,13 @@ static void rna_Scene_simplify_update_impl(Main *bmain,
   WM_main_add_notifier(NC_GEOM | ND_DATA, nullptr);
   WM_main_add_notifier(NC_OBJECT | ND_DRAW, nullptr);
   DEG_id_tag_update(&sce->id, ID_RECALC_SYNC_TO_EVAL);
+}
+
+/* Phantom: entering or leaving Garment Mode swaps the 3D view's tools. */
+static void rna_Scene_phantom_garment_mode_update(bContext *C, PointerRNA * /*ptr*/)
+{
+  WM_toolsystem_update_from_context_view3d(C);
+  WM_main_add_notifier(NC_SCENE | ND_MODE, nullptr);
 }
 
 static void rna_Scene_use_simplify_update(bContext *C, PointerRNA *ptr)
@@ -9511,6 +9519,14 @@ void RNA_def_scene(BlenderRNA *brna)
       prop, "Frame Dropping", "Play back dropping frames if frame display is too slow");
   RNA_def_property_update(prop, NC_SCENE, nullptr);
 #  endif
+
+  prop = RNA_def_property(srna, "phantom_garment_mode", PROP_BOOLEAN, PROP_NONE);
+  RNA_def_property_boolean_sdna(prop, nullptr, "flag", SCE_PHANTOM_GARMENT_MODE);
+  RNA_def_property_ui_text(
+      prop, "Garment Mode", "Object Mode with the garment tools, Pin and Drag (Phantom)");
+  RNA_def_property_clear_flag(prop, PROP_ANIMATABLE);
+  RNA_def_property_flag(prop, PROP_CONTEXT_UPDATE);
+  RNA_def_property_update(prop, 0, "rna_Scene_phantom_garment_mode_update");
 
   prop = RNA_def_property(srna, "use_custom_simulation_range", PROP_BOOLEAN, PROP_NONE);
   RNA_def_property_boolean_sdna(prop, nullptr, "flag", SCE_CUSTOM_SIMULATION_RANGE);

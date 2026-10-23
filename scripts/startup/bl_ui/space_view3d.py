@@ -247,7 +247,7 @@ class VIEW3D_HT_tool_header(Header):
             layout.popover_group(context=".posemode", **popover_kw)
         elif mode_string == 'PARTICLE':
             layout.popover_group(context=".particlemode", **popover_kw)
-        elif mode_string == 'OBJECT':
+        elif mode_string in {'OBJECT', 'GARMENT'}:
             layout.popover_group(context=".objectmode", **popover_kw)
 
         if mode_string in {
@@ -905,11 +905,15 @@ class VIEW3D_HT_header(Header):
         act_mode_i18n_context = bpy.types.Object.bl_rna.properties["mode"].translation_context
 
         sub = row.row(align=True)
-        sub.operator_menu_enum(
-            "object.mode_set", "mode",
-            text=iface_(act_mode_item.name, act_mode_i18n_context),
-            icon=act_mode_item.icon,
-        )
+        if mode_string == 'GARMENT':
+            # Phantom: Garment Mode is Object Mode with the garment tools.
+            sub.operator_menu_enum("object.mode_set", "mode", text=iface_("Garment Mode"), icon='PHANTOM_GARMENT')
+        else:
+            sub.operator_menu_enum(
+                "object.mode_set", "mode",
+                text=iface_(act_mode_item.name, act_mode_i18n_context),
+                icon=act_mode_item.icon,
+            )
         del act_mode_item
 
         layout.template_header_3D_mode()
@@ -1226,6 +1230,9 @@ class VIEW3D_MT_editor_menus(Menu):
         layout = self.layout
         obj = context.active_object
         mode_string = context.mode
+        if mode_string == 'GARMENT':
+            # Phantom: Garment Mode has Object Mode's menus.
+            mode_string = 'OBJECT'
         edit_object = context.edit_object
         tool_settings = context.tool_settings
 
@@ -7369,7 +7376,7 @@ class VIEW3D_PT_overlay_geometry(Panel):
         # Even when the Fade Inactive Geometry overlay is not affecting the
         # current active object depending on its mode, it will always affect
         # the rest of the scene.
-        if context.mode != 'OBJECT':
+        if context.mode not in {'OBJECT', 'GARMENT'}:
             row.prop(overlay, "show_fade_inactive", text="")
             sub = row.row()
             sub.active = overlay.show_fade_inactive
@@ -8047,11 +8054,11 @@ class VIEW3D_PT_proportional_edit(Panel):
         tool_settings = context.tool_settings
         col = layout.column()
         col.active = (
-            tool_settings.use_proportional_edit_objects if context.mode == 'OBJECT' else
+            tool_settings.use_proportional_edit_objects if context.mode in {'OBJECT', 'GARMENT'} else
             tool_settings.use_proportional_edit
         )
 
-        if context.mode != 'OBJECT':
+        if context.mode not in {'OBJECT', 'GARMENT'}:
             col.prop(tool_settings, "use_proportional_connected")
             sub = col.column()
             sub.active = not tool_settings.use_proportional_connected

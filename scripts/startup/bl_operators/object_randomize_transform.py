@@ -158,7 +158,7 @@ class RandomizeLocRotSize(Operator):
 
     @classmethod
     def poll(cls, context):
-        return context.mode == 'OBJECT'
+        return context.mode in {'OBJECT', 'GARMENT'}
 
     def execute(self, context):
         seed = self.random_seed

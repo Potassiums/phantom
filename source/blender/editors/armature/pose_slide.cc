@@ -82,7 +82,7 @@ static bool pose_slide_poll(bContext *C)
     return false;
   }
   const eContextObjectMode mode = CTX_data_mode_enum(C);
-  if (mode == CTX_MODE_OBJECT) {
+  if (ELEM(mode, CTX_MODE_OBJECT, CTX_MODE_GARMENT)) {
     return true;
   }
 

@@ -823,6 +823,7 @@ if(WITH_BLENDER)
       script
       scriptplugins
       sculptmode_hlt
+      phantom_garment
       select_difference
       select_extend
       select_intersect

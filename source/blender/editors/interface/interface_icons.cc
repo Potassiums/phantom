@@ -2192,6 +2192,8 @@ int icon_from_object_mode(const int mode)
       return ICON_POSE_HLT;
     case OB_MODE_PAINT_GREASE_PENCIL:
       return ICON_GREASEPENCIL;
+    case OB_MODE_PHANTOM_GARMENT:
+      return ICON_PHANTOM_GARMENT;
   }
   return ICON_NONE;
 }

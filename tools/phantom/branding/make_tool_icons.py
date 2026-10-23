@@ -1,7 +1,8 @@
 """Write Phantom's toolbar icons in Blender's icon geometry format (`.dat`, triangles).
 
 The Transpose icon follows ZBrush's: a big ring with move arrows around it, the action line
-through a small middle dot, and a smaller ring at the other end.
+through a small middle dot, and a smaller ring at the other end. The Garment Mode tools: Pin, a
+push pin stuck in a piece of cloth; Drag, a point pulled out of a hanging cloth with an arrow.
 
 Usage: python make_tool_icons.py [output_dir]
 """
@@ -80,6 +81,50 @@ def transpose_icon():
     return tris
 
 
+def cloth(x0, x1, y, amplitude, thickness, waves=2.0, steps=24):
+    """A wavy strip, like the edge of a piece of cloth, from x0 to x1 around height y."""
+    tris = []
+    for i in range(steps):
+        xa = x0 + (x1 - x0) * i / steps
+        xb = x0 + (x1 - x0) * (i + 1) / steps
+        ya = y + amplitude * math.sin(2 * math.pi * waves * i / steps)
+        yb = y + amplitude * math.sin(2 * math.pi * waves * (i + 1) / steps)
+        tris += bar(xa, ya, xb, yb, thickness)
+    return tris
+
+
+def garment_pin_icon():
+    tris = []
+    # The cloth the pin goes through.
+    tris += cloth(40, 215, 70, 10, 9)
+    tris += cloth(55, 200, 100, 8, 6)
+    # The pin: a round head, a collar and the needle, leaning to the left.
+    head = (160, 182)
+    tris += disc(*head, 30)
+    tris += bar(head[0] - 18, head[1] - 22, head[0] - 38, head[1] - 48, 34)
+    tris += bar(head[0] - 34, head[1] - 46, 70, 78, 7)
+    tris += disc(70, 78, 6)
+    return tris
+
+
+def garment_drag_icon():
+    tris = []
+    # A hanging cloth, its middle pulled out to a point.
+    left, right, top = 46, 210, 196
+    tris += bar(left, top, right, top, 8)
+    tris += bar(left, top, left + 8, 70, 7)
+    tris += bar(right, top, right - 8, 70, 7)
+    grab = (128, 112)
+    tris += bar(left + 8, 70, grab[0], grab[1], 7)
+    tris += bar(right - 8, 70, grab[0], grab[1], 7)
+    tris += disc(*grab, 14)
+    # The pull: an arrow out of the point.
+    end = (186, 46)
+    tris += bar(grab[0] + 12, grab[1] - 12, end[0] - 10, end[1] + 10, 8)
+    tris += arrow(*end, math.atan2(end[1] - grab[1], end[0] - grab[0]), 22)
+    return tris
+
+
 def write_icon(path, tris):
     coords = bytearray()
     colors = bytearray()
@@ -95,6 +140,8 @@ def write_icon(path, tris):
 def main():
     out = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_OUT
     write_icon(out / "phantom.transpose.dat", transpose_icon())
+    write_icon(out / "phantom.garment_pin.dat", garment_pin_icon())
+    write_icon(out / "phantom.garment_drag.dat", garment_drag_icon())
 
 
 if __name__ == "__main__":

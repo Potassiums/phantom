@@ -124,7 +124,9 @@ FABRIC_ITEMS = tuple((key, value["name"], "Make it " + value["name"].lower())
 _segment_cache = {}
 _avatar_cache = {}
 # Signature of what the Garment object was last built from (see ``garment_signature``).
-_built = {"signature": None}
+# What the Garment object was built from. "sources": (piece name, first garment vertex, vertex count)
+# per placed piece; "particle_of": with GPU cloth, the particle each of those vertices became.
+_built = {"signature": None, "sources": [], "particle_of": None}
 
 
 # -----------------------------------------------------------------------------
@@ -920,6 +922,9 @@ def build_garment(scene):
     avatar = settings.avatar
     _built["signature"] = garment_signature(scene)
     data, message = collect_garment(scene)
+    _built["sources"] = ([(ob.name, data.offsets[ob], len(ob.data.vertices)) for ob in data.placed]
+                         if data is not None else [])
+    _built["particle_of"] = None
     import phantom_garment_newton
     phantom_garment_newton.stop()
     if data is None:
@@ -928,6 +933,7 @@ def build_garment(scene):
     if newton_active(scene):
         ob, message = phantom_garment_newton.build(scene, data)
         if ob is not None:
+            _built["particle_of"] = phantom_garment_newton.simulation().particle_of
             return ob, message
         # The GPU cloth couldn't be built: fall back to Blender's cloth.
     phantom_garment_newton.discard()

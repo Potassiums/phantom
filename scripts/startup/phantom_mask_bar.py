@@ -236,34 +236,23 @@ def _ui_scale():
     return bpy.context.preferences.system.ui_scale
 
 
-def _any_set(attribute, dtype):
-    """Whether any value of a point or face attribute is non-zero."""
-    import numpy as np
-    if attribute is None or not len(attribute.data):
-        return False
-    values = np.empty(len(attribute.data), dtype=dtype)
-    attribute.data.foreach_get("value", values)
-    return bool(values.any())
-
-
 def mask_state(context):
     """(has_mask, has_hidden) for the mesh being sculpted, or None outside Sculpt Mode."""
     ob = context.active_object
     if context.mode != 'SCULPT' or ob is None or ob.type != 'MESH':
         return None
     attributes = ob.data.attributes
-    mask = attributes.get(".sculpt_mask")
-    hide = attributes.get(".hide_poly")
-    if mask is None and hide is None:
-        return False, False
     # Erasing or clearing a mask can leave it all zero, so look at the values, but only once
-    # per stroke or edit (each one pushes an undo step), not on every redraw.
-    key = (ob.as_pointer(), ob.data.as_pointer(), mask is not None, hide is not None,
+    # per stroke or edit (each one pushes an undo step), not on every redraw. They are read where
+    # sculpting keeps them: with Multires or Dyntopo that isn't the mesh's own attributes.
+    key = (ob.as_pointer(), ob.data.as_pointer(),
+           attributes.get(".sculpt_mask") is not None, attributes.get(".hide_poly") is not None,
            bpy.types.WindowManager.phantom_undo_push_count())
     if _state_cache[0] != key:
         _state_cache[0] = key
-        _state_cache[1] = (_any_set(mask, 'float32'), _any_set(hide, 'bool'))
-        _check_isolated(ob, hide if _state_cache[1][1] else None)
+        flags = bpy.types.WindowManager.phantom_sculpt_mask_state()
+        _state_cache[1] = (bool(flags & 1), bool(flags & 2))
+        _check_isolated(ob, attributes.get(".hide_poly") if _state_cache[1][1] else None)
     return _state_cache[1]
 
 

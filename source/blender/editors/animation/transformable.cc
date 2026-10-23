@@ -115,6 +115,7 @@ Vector<ed::AnimTransformable> selected_transformables_from_context(bContext &C)
   Vector<ed::AnimTransformable> transformables;
   Vector<PointerRNA> pointers;
   switch (CTX_data_mode_enum(&C)) {
+    case CTX_MODE_GARMENT:
     case CTX_MODE_OBJECT: {
       CTX_data_selected_objects(&C, &pointers);
       for (PointerRNA &ptr : pointers) {

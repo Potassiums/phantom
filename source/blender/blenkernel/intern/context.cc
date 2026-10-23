@@ -1492,11 +1492,21 @@ enum eContextObjectMode CTX_data_mode_enum_ex(const Object *obedit,
   return CTX_MODE_OBJECT;
 }
 
+enum eContextObjectMode CTX_data_mode_phantom_garment(const Scene *scene, eContextObjectMode mode)
+{
+  if (mode == CTX_MODE_OBJECT && scene && (scene->flag & SCE_PHANTOM_GARMENT_MODE)) {
+    return CTX_MODE_GARMENT;
+  }
+  return mode;
+}
+
 enum eContextObjectMode CTX_data_mode_enum(const bContext *C)
 {
   Object *obedit = CTX_data_edit_object(C);
   Object *obact = obedit ? nullptr : CTX_data_active_object(C);
-  return CTX_data_mode_enum_ex(obedit, obact, obact ? obact->mode : OB_MODE_OBJECT);
+  return CTX_data_mode_phantom_garment(
+      CTX_data_scene(C),
+      CTX_data_mode_enum_ex(obedit, obact, obact ? obact->mode : OB_MODE_OBJECT));
 }
 
 /**
@@ -1532,6 +1542,7 @@ static const char *data_mode_strings[] = {
     "grease_pencil_sculpt",
     "grease_pencil_weight",
     "grease_pencil_vertex",
+    "garment_mode",
     nullptr,
 };
 BLI_STATIC_ASSERT(ARRAY_SIZE(data_mode_strings) == CTX_MODE_NUM + 1,

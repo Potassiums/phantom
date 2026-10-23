@@ -1273,6 +1273,7 @@ std::array<const char *, 4> ED_view3d_buttons_contexts(const bContext *C)
     case CTX_MODE_PARTICLE:
       ARRAY_SET_ITEMS(contexts, ".paint_common", ".particlemode");
       break;
+    case CTX_MODE_GARMENT:
     case CTX_MODE_OBJECT:
       ARRAY_SET_ITEMS(contexts, ".objectmode");
       break;

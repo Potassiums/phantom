@@ -369,6 +369,7 @@ void slide_subjects_get(bContext *C, ListBaseT<SlideSubject> *r_transformable_li
     case CTX_MODE_PAINT_WEIGHT:
       get_pose_bones_for_slide(C, *r_transformable_list);
       break;
+    case CTX_MODE_GARMENT:
     case CTX_MODE_OBJECT:
       get_objects_for_slide(C, *r_transformable_list);
       break;

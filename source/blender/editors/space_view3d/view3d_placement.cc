@@ -1321,7 +1321,7 @@ static bool view3d_interactive_add_poll(bContext *C)
            !BKE_object_sculpt_use_dyntopo(ob);
   }
 
-  return ELEM(mode, CTX_MODE_OBJECT, CTX_MODE_EDIT_MESH);
+  return ELEM(mode, CTX_MODE_OBJECT, CTX_MODE_GARMENT, CTX_MODE_EDIT_MESH);
 }
 
 void VIEW3D_OT_interactive_add(wmOperatorType *ot)

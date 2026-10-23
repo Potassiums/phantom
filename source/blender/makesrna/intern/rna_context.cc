@@ -36,6 +36,7 @@ const EnumPropertyItem rna_enum_context_mode_items[] = {
     {CTX_MODE_PAINT_TEXTURE, "PAINT_TEXTURE", 0, "Texture Paint", ""},
     {CTX_MODE_PARTICLE, "PARTICLE", 0, "Particle", ""},
     {CTX_MODE_OBJECT, "OBJECT", 0, "Object", ""},
+    {CTX_MODE_GARMENT, "GARMENT", 0, "Garment", "Object Mode with the garment tools (Phantom)"},
     {CTX_MODE_PAINT_GPENCIL_LEGACY, "PAINT_GPENCIL", 0, "Grease Pencil Paint", ""},
     {CTX_MODE_EDIT_GPENCIL_LEGACY, "EDIT_GPENCIL", 0, "Grease Pencil Edit", ""},
     {CTX_MODE_SCULPT_GPENCIL_LEGACY, "SCULPT_GPENCIL", 0, "Grease Pencil Sculpt", ""},

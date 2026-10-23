@@ -262,6 +262,8 @@ Vector<eSpaceButtons_Context> ED_buttons_tabs_list(const SpaceProperties *sbuts,
 
   /* Phantom: sculpting settings, only while sculpting. */
   add_tab(BCONTEXT_PHANTOM_SCULPT);
+  /* Phantom: garment settings, only in the Garment workspace. */
+  add_tab(BCONTEXT_PHANTOM_GARMENT);
 
   add_spacer();
 
@@ -318,6 +320,8 @@ static const char *buttons_main_region_context_string(const short mainb)
       return "compositor";
     case BCONTEXT_PHANTOM_SCULPT:
       return "phantom_sculpt";
+    case BCONTEXT_PHANTOM_GARMENT:
+      return "phantom_garment";
   }
 
   /* All the cases should be handled. */

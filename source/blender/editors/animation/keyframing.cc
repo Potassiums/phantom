@@ -194,6 +194,7 @@ static bool get_selection(bContext *C, Vector<PointerRNA> *r_selection)
   }
 
   switch (context_mode) {
+    case CTX_MODE_GARMENT:
     case CTX_MODE_OBJECT: {
       CTX_data_selected_objects(C, r_selection);
       break;

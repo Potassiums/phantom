@@ -12,10 +12,19 @@ parts), which ship with Phantom in the Essentials asset library
 (``datafiles/assets/human_base_meshes``, CC0, by Blender Studio artists), plus Phantom's own base
 meshes (``datafiles/assets/phantom/base_meshes``, see ``PHANTOM_BASE_MESHES``).
 
-Click a thumbnail to select it and double-click (or press Enter) to start: the mesh is appended,
-framed from the front and put in Sculpt Mode. Scroll for more; Esc, right-click or a click
-outside closes it. The picker is also in the 3D View's Add menu ("Base Mesh...").
+Click a thumbnail to select it and double-click, press Enter or click **Start Sculpting** to start:
+the mesh is appended, framed from the front and put in Sculpt Mode. Scroll for more; Esc,
+right-click or a click outside closes it. The picker is also in the 3D View's Add menu ("Base
+Mesh...").
+
+Along the top: a search field (just type: it filters the meshes by name), **Open...** (a .blend
+from disk) and **Import...** (Blender's import menu: OBJ, FBX, STL, PLY, glTF...; the imported mesh
+is framed and sculpted like a base mesh). Bottom left, **Show at startup** opens the picker as
+soon as Phantom starts and for every new file (remembered in Phantom's config folder, in
+``phantom_start.json``).
 """
+
+import json
 
 import math
 import os
@@ -26,6 +35,7 @@ import bpy
 import gpu
 import numpy as np
 from bpy.props import EnumProperty
+from bpy.app.handlers import persistent
 from bpy.types import Operator
 from gpu_extras.batch import batch_for_shader
 from mathutils import Euler
@@ -37,6 +47,15 @@ WATCH_INTERVAL = 0.3
 COLUMNS = 4
 # Seconds the picker takes to fade in.
 FADE_TIME = 0.18
+# How far tiles move (share of the way, per 1/60 s) towards where the search puts them, and how
+# fast they fade in and out (per 1/60 s). The others wait for the fading ones to mostly go.
+TILE_EASE = 0.22
+TILE_FADE = 0.12
+TILE_FADE_OUT = 0.06
+# Phantom's own settings for the picker, in the user config folder.
+SETTINGS_FILE = "phantom_start.json"
+# How long (s) to wait for an import started from the picker to bring in a mesh.
+IMPORT_WAIT = 600.0
 
 # (key, label, kind, name in the bundle, thumbnail). Kind: 'SPHERE', 'COLLECTION' or 'OBJECT'.
 # The first ones are listed under "Start with", the rest under "More base meshes".
@@ -87,7 +106,10 @@ PHANTOM_BASE_MESHES = {
 _thumbs = {"pixels": None, "textures": {}}
 # The open picker's state.
 _picker = {"open": False, "region": 0, "hover": None, "selected": 'QUAD_SPHERE', "scroll": 0.0, "target": 0.0,
-           "opened": 0.0}
+           "opened": 0.0, "query": "", "button": None, "at_startup": False, "quiet_until": 0.0,
+           "anim": {}}
+# An import started from the picker: the meshes there were before it, and until when to wait.
+_import = {"before": None, "deadline": 0.0}
 # The workspace each window showed at the last check, to notice switches.
 _last_workspace = {}
 
@@ -95,6 +117,45 @@ _last_workspace = {}
 def _datafile(*parts):
     # ``system_resource`` only finds folders, so join the file onto the datafiles folder.
     return os.path.join(bpy.utils.system_resource('DATAFILES'), *parts)
+
+
+def _settings_path():
+    return os.path.join(bpy.utils.user_resource('CONFIG'), SETTINGS_FILE)
+
+
+def _settings():
+    try:
+        with open(_settings_path(), encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def show_at_startup():
+    return bool(_settings().get("show_at_startup", False))
+
+
+def set_show_at_startup(value):
+    data = _settings()
+    data["show_at_startup"] = bool(value)
+    try:
+        os.makedirs(os.path.dirname(_settings_path()), exist_ok=True)
+        with open(_settings_path(), "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+    except OSError as ex:
+        print("Phantom: couldn't save the start picker settings:", ex)
+
+
+def _sections():
+    """The picker's sections with the items matching the search: [(label, items)], empty ones left out."""
+    words = _picker["query"].lower().split()
+    sections = []
+    for label, items in (("Start with", STARTERS), ("More base meshes", MORE)):
+        shown = [item for item in items if all(w in item[1].lower() or w in item[3].lower() for w in words)]
+        if shown:
+            sections.append((label, shown))
+    return sections
 
 
 def canvas_is_empty(scene):
@@ -187,6 +248,12 @@ def spawn(context, key):
             return None
         target, added, _block = appended
 
+    _frame_and_sculpt(context, target, added)
+    return target
+
+
+def _frame_and_sculpt(context, target, added):
+    """Make ``target`` active, face its front framed in the 3D view, and sculpt it."""
     for ob in added:
         try:
             ob.select_set(True)
@@ -207,7 +274,6 @@ def spawn(context, key):
             except RuntimeError:
                 pass
     bpy.ops.object.mode_set(mode='SCULPT')
-    return target
 
 
 class PHANTOM_OT_start_asset(Operator):
@@ -324,23 +390,42 @@ class _Layout:
         self.label = 22 * s
         self.gap = 10 * s
         self.pad = 20 * s
-        self.header = 64 * s
+        self.header = 104 * s
+        self.footer = 56 * s
         self.section = 30 * s
         self.width = COLUMNS * self.tile + (COLUMNS - 1) * self.gap + 2 * self.pad
         row_h = self.thumb + self.label + self.gap
-        rows = sum(-(-len(items) // COLUMNS) for items in (STARTERS, MORE))
-        self.content = 2 * self.section + rows * row_h + self.pad
-        self.height = min(self.header + self.content, region.height * 0.8)
+        sections = _sections()
+        rows = sum(-(-len(items) // COLUMNS) for _label, items in sections)
+        self.content = max(len(sections) * self.section + rows * row_h + self.pad, 80 * s)
+        # The window's size doesn't follow the search: it's sized for everything.
+        all_rows = sum(-(-len(items) // COLUMNS) for items in (STARTERS, MORE))
+        full = 2 * self.section + all_rows * row_h + self.pad
+        self.height = min(self.header + full + self.footer, region.height * 0.85)
         self.x = (region.width - self.width) / 2.0
         self.y = (region.height - self.height) / 2.0
         self.view_top = self.y + self.height - self.header
-        self.view_h = self.height - self.header
+        self.view_bottom = self.y + self.footer
+        self.view_h = self.view_top - self.view_bottom
         self.max_scroll = max(0.0, self.content - self.view_h)
         self.scroll = min(max(scroll, 0.0), self.max_scroll)
-        # Tiles: [(key, x, y)], y being the tile's bottom; sections: [(label, y)].
+        # The bar along the top: the search field, Open and Import; along the bottom: the startup
+        # toggle and Start Sculpting. Each (x, y, w, h).
+        bar_y, bar_h, button_w = self.y + self.height - 94 * s, 30 * s, 92 * s
+        right = self.x + self.width - self.pad
+        self.buttons = {
+            'IMPORT': (right - button_w, bar_y, button_w, bar_h),
+            'OPEN': (right - 2 * button_w - 8 * s, bar_y, button_w, bar_h),
+            'SEARCH': (self.x + self.pad, bar_y, right - 2 * button_w - 16 * s - self.x - self.pad, bar_h),
+            'STARTUP': (self.x + self.pad, self.y + 14 * s, 150 * s, 28 * s),
+            'ACCEPT': (right - 150 * s, self.y + 12 * s, 150 * s, 32 * s),
+        }
+        # Tiles: [(key, x, y)], y being the tile's bottom; sections: [(label, y)]. The content's top
+        # (``content_top``) moves with the scroll; tile animation is kept relative to it.
         self.tiles, self.sections = [], []
         top = self.view_top + self.scroll
-        for label, items in (("Start with", STARTERS), ("More base meshes", MORE)):
+        self.content_top = top
+        for label, items in sections:
             top -= self.section
             self.sections.append((label, top + 8 * s))
             for i, item in enumerate(items):
@@ -352,8 +437,14 @@ class _Layout:
     def inside(self, mx, my):
         return self.x <= mx <= self.x + self.width and self.y <= my <= self.y + self.height
 
+    def button_at(self, mx, my):
+        for name, (bx, by, bw, bh) in self.buttons.items():
+            if bx <= mx <= bx + bw and by <= my <= by + bh:
+                return name
+        return None
+
     def tile_at(self, mx, my):
-        if not (self.y <= my <= self.view_top):
+        if not (self.view_bottom <= my <= self.view_top):
             return None
         for key, tx, ty in self.tiles:
             if tx <= mx <= tx + self.tile and ty <= my <= ty + self.thumb + self.label:
@@ -361,10 +452,42 @@ class _Layout:
         return None
 
 
+def _animate(layout):
+    """Move the tiles' drawn positions and opacity a step towards where the search puts them.
+    Tiles that no longer match fade out where they are. Returns True while anything is moving."""
+    anim = _picker["anim"]
+    targets = {key: (x - layout.x, y - layout.content_top) for key, x, y in layout.tiles}
+    moving = False
+    # Tiles leaving fade out where they are first; then the rest move up into the gaps.
+    waiting = any(state[2] > 0.3 for key, state in anim.items() if key not in targets)
+    for key, (tx, ty) in targets.items():
+        state = anim.get(key)
+        if state is None:
+            # New on screen (or back from a search): appear where it belongs.
+            anim[key] = state = [tx, ty, 0.0]
+        x, y, alpha = state
+        ease = 0.0 if waiting and alpha >= 1.0 else TILE_EASE
+        nx, ny = x + (tx - x) * ease, y + (ty - y) * ease
+        nalpha = min(1.0, alpha + TILE_FADE)
+        if abs(tx - nx) < 0.5 and abs(ty - ny) < 0.5:
+            nx, ny = tx, ty
+        moving |= (nx, ny, nalpha) != (x, y, alpha)
+        state[:] = [nx, ny, nalpha]
+    for key in list(anim):
+        if key not in targets:
+            anim[key][2] -= TILE_FADE_OUT
+            moving = True
+            if anim[key][2] <= 0.0:
+                del anim[key]
+    return moving
+
+
 class PHANTOM_OT_start_picker(Operator):
     """Choose a base mesh to start sculpting: a quad sphere or one of Blender's human base meshes"""
     bl_idname = "phantom.start_picker"
     bl_label = "Base Mesh"
+
+    at_startup: bpy.props.BoolProperty(options={'HIDDEN', 'SKIP_SAVE'})
 
     def invoke(self, context, _event):
         area = context.area
@@ -377,7 +500,11 @@ class PHANTOM_OT_start_picker(Operator):
         self.last_press = (None, 0.0)
         _load_pixels()
         _picker.update(open=True, region=self.region.as_pointer(), hover=None, selected='QUAD_SPHERE',
-                       scroll=0.0, target=0.0, opened=time.perf_counter())
+                       scroll=0.0, target=0.0, opened=time.perf_counter(), query="", button=None,
+                       at_startup=self.at_startup, anim={})
+        # Everything starts where it belongs, fully shown.
+        layout = _Layout(self.region, 0.0)
+        _picker["anim"] = {key: [x - layout.x, y - layout.content_top, 1.0] for key, x, y in layout.tiles}
         self.handle = bpy.types.SpaceView3D.draw_handler_add(_draw, (), 'WINDOW', 'POST_PIXEL')
         self.timer = context.window_manager.event_timer_add(1.0 / 60.0, window=context.window)
         context.window_manager.modal_handler_add(self)
@@ -392,10 +519,53 @@ class PHANTOM_OT_start_picker(Operator):
         self.area.tag_redraw()
 
     def _start(self, context, key):
+        if key is None:
+            _play("error")
+            return {'RUNNING_MODAL'}
         self._close(context)
+        window = context.window
+        sculpting = bpy.data.workspaces.get("Sculpting")
+        if _picker["at_startup"] and window.workspace.object_mode != 'SCULPT' and sculpting is not None:
+            # Opened at startup: sculpt in the Sculpting workspace, once it's shown.
+            _picker["quiet_until"] = time.perf_counter() + 2.0
+            window.workspace = sculpting
+
+            def later():
+                area, region = _view3d(window)
+                if area is not None:
+                    with bpy.context.temp_override(window=window, area=area, region=region):
+                        bpy.ops.phantom.start_asset('EXEC_DEFAULT', choice=key)
+                return None
+            bpy.app.timers.register(later, first_interval=0.05)
+            return {'FINISHED'}
         with context.temp_override(area=self.area, region=self.region):
             bpy.ops.phantom.start_asset('EXEC_DEFAULT', choice=key)
         return {'FINISHED'}
+
+    def _open(self, context):
+        self._close(context)
+        with context.temp_override(window=context.window, area=self.area, region=self.region):
+            bpy.ops.wm.open_mainfile('INVOKE_DEFAULT')
+        return {'FINISHED'}
+
+    def _import(self, context):
+        self._close(context)
+        # Sculpt whatever mesh the import brings in (see _watch_import).
+        _import.update(before={ob.name for ob in context.scene.objects}, deadline=time.perf_counter() + IMPORT_WAIT)
+        if not bpy.app.timers.is_registered(_watch_import):
+            bpy.app.timers.register(_watch_import, first_interval=0.5)
+        with context.temp_override(window=context.window, area=self.area, region=self.region):
+            bpy.ops.wm.call_menu(name="TOPBAR_MT_file_import")
+        return {'FINISHED'}
+
+    def _set_query(self, query):
+        if query == _picker["query"]:
+            return
+        _picker.update(query=query, scroll=0.0, target=0.0)
+        shown = [item[0] for _label, items in _sections() for item in items]
+        if _picker["selected"] not in shown:
+            _picker["selected"] = shown[0] if shown else None
+        self.area.tag_redraw()
 
     def modal(self, context, event):
         region = self.region
@@ -409,22 +579,38 @@ class PHANTOM_OT_start_picker(Operator):
             target = min(max(_picker["target"], 0.0), layout.max_scroll)
             _picker["target"] = target
             delta = target - _picker["scroll"]
+            moving = _animate(layout)
             if abs(delta) > 0.5 or time.perf_counter() - _picker["opened"] < FADE_TIME + 0.05:
                 _picker["scroll"] += delta * 0.35
+                moving = True
+            if moving:
                 self.area.tag_redraw()
             return {'PASS_THROUGH'}
+        if event.type == 'ESC' and event.value == 'PRESS' and _picker["query"]:
+            # Esc clears the search first, then closes.
+            self._set_query("")
+            return {'RUNNING_MODAL'}
         if event.type in {'ESC', 'RIGHTMOUSE'} and event.value == 'PRESS':
             _play("cancel")
             self._close(context)
             return {'CANCELLED'}
         if event.type in {'RET', 'NUMPAD_ENTER'} and event.value == 'PRESS':
             return self._start(context, _picker["selected"])
+        # Typing goes into the search field.
+        if event.value == 'PRESS' and event.type == 'BACK_SPACE':
+            self._set_query("" if event.ctrl else _picker["query"][:-1])
+            return {'RUNNING_MODAL'}
+        if (event.value == 'PRESS' and event.unicode and event.unicode.isprintable()
+                and not (event.ctrl or event.alt or event.oskey)):
+            self._set_query((_picker["query"] + event.unicode).lstrip())
+            return {'RUNNING_MODAL'}
         if not over_area:
             return {'PASS_THROUGH'}
         if event.type == 'MOUSEMOVE':
             hover = layout.tile_at(mx, my)
-            if hover != _picker["hover"]:
-                _picker["hover"] = hover
+            button = layout.button_at(mx, my)
+            if hover != _picker["hover"] or button != _picker["button"]:
+                _picker.update(hover=hover, button=button)
                 self.area.tag_redraw()
             return {'RUNNING_MODAL'}
         if event.type in {'WHEELUPMOUSE', 'WHEELDOWNMOUSE'}:
@@ -442,6 +628,20 @@ class PHANTOM_OT_start_picker(Operator):
                 _play("cancel")
                 self._close(context)
                 return {'CANCELLED'}
+            button = layout.button_at(mx, my)
+            if button == 'ACCEPT':
+                return self._start(context, _picker["selected"])
+            if button == 'OPEN':
+                return self._open(context)
+            if button == 'IMPORT':
+                return self._import(context)
+            if button == 'STARTUP':
+                set_show_at_startup(not show_at_startup())
+                _play("toggle_on" if show_at_startup() else "toggle_off")
+                self.area.tag_redraw()
+                return {'RUNNING_MODAL'}
+            if button == 'SEARCH':
+                return {'RUNNING_MODAL'}
             key = layout.tile_at(mx, my)
             now = time.perf_counter()
             # A second press on the same tile in time is a double-click too (Blender only reports
@@ -475,36 +675,80 @@ def _draw():
     x, y, w, h = layout.x, layout.y - rise, layout.width, layout.height
     _rounded_rect(x - s, y - s, w + 2 * s, h + 2 * s, 12 * s, (0.0, 0.0, 0.0, 0.45 * ease))
     _rounded_rect(x, y, w, h, 11 * s, (0.125, 0.125, 0.145, 0.98 * ease))
-    _text(x + w / 2.0, y + h - 32 * s, "What would you like to sculpt?", 17 * s, (1.0, 1.0, 1.0, ease))
-    _text(x + w / 2.0, y + h - 52 * s, "Double-click to start", 11 * s, (0.7, 0.7, 0.75, ease))
+    _text(x + w / 2.0, y + h - 36 * s, "What would you like to sculpt?", 17 * s, (1.0, 1.0, 1.0, ease))
 
-    # The scrolling part, clipped to the panel below its title.
+    def button(name, label, primary=False, enabled=True):
+        bx, by, bw, bh = layout.buttons[name]
+        by -= rise
+        hovered = _picker["button"] == name and enabled
+        if primary:
+            color = (0.56, 0.54, 1.0, ease) if hovered else (0.48, 0.46, 1.0, ease if enabled else 0.35 * ease)
+        else:
+            color = (0.3, 0.3, 0.35, ease) if hovered else (0.22, 0.22, 0.26, ease)
+        _rounded_rect(bx, by, bw, bh, 6 * s, color)
+        _text(bx + bw / 2.0, by + bh / 2.0 - 4 * s, label, 12 * s, (1.0, 1.0, 1.0, ease if enabled else 0.5 * ease))
+
+    # Search field: what's typed, or a hint.
+    sx, sy, sw, sh = layout.buttons['SEARCH']
+    sy -= rise
+    _rounded_rect(sx, sy, sw, sh, 6 * s, (0.09, 0.09, 0.11, ease))
+    query = _picker["query"]
+    if query:
+        _text(sx + 12 * s, sy + sh / 2.0 - 4 * s, query, 12 * s, (1.0, 1.0, 1.0, ease), align='LEFT')
+        blf.size(0, 12 * s)
+        caret_x = sx + 12 * s + blf.dimensions(0, query)[0] + 2 * s
+        if int(time.perf_counter() * 2.0) % 2 == 0:
+            _rounded_rect(caret_x, sy + 7 * s, 1.5 * s, sh - 14 * s, 0, (1.0, 1.0, 1.0, 0.8 * ease))
+    else:
+        _text(sx + 12 * s, sy + sh / 2.0 - 4 * s, "Search: just type", 12 * s, (0.55, 0.55, 0.6, ease), align='LEFT')
+    button('OPEN', "Open...")
+    button('IMPORT', "Import...")
+
+    # Bottom: the startup toggle on the left, Start Sculpting on the right.
+    tx_, ty_, tw_, th_ = layout.buttons['STARTUP']
+    ty_ -= rise
+    on = show_at_startup()
+    box = 16 * s
+    bx_, by_ = tx_, ty_ + (th_ - box) / 2.0
+    _rounded_rect(bx_, by_, box, box, 4 * s, (0.48, 0.46, 1.0, ease) if on else
+                  ((0.32, 0.32, 0.37, ease) if _picker["button"] == 'STARTUP' else (0.22, 0.22, 0.26, ease)))
+    if on:
+        _text(bx_ + box / 2.0, by_ + 3 * s, "\u2713", 13 * s, (1.0, 1.0, 1.0, ease))
+    _text(bx_ + box + 8 * s, ty_ + th_ / 2.0 - 4 * s, "Show at startup", 12 * s, (0.85, 0.85, 0.9, ease), align='LEFT')
+    button('ACCEPT', "Start Sculpting", primary=True, enabled=_picker["selected"] is not None)
+
+    # The scrolling part, clipped between the bars.
     gpu.state.scissor_test_set(True)
-    gpu.state.scissor_set(int(x), int(y + 4 * s), int(w), max(1, int(layout.view_h - 4 * s)))
+    gpu.state.scissor_set(int(x), int(layout.view_bottom), int(w), max(1, int(layout.view_h)))
+    if not layout.tiles and not _picker["anim"]:
+        _text(x + w / 2.0, layout.view_top - 50 * s, "Nothing called \"%s\"" % query, 12 * s, (0.7, 0.7, 0.75, ease))
     for label, ly in layout.sections:
         _text(x + layout.pad, ly - rise, label, 12 * s, (0.75, 0.75, 0.8, ease), align='LEFT')
     tile_h = layout.thumb + layout.label
-    for key, tx, ty in layout.tiles:
-        ty -= rise
-        if ty > layout.view_top or ty + tile_h < y:
+    shown = {key for key, _x, _y in layout.tiles}
+    # Leaving tiles underneath the ones staying.
+    for key, (ax, ay, alpha) in sorted(_picker["anim"].items(), key=lambda item: item[0] in shown):
+        tx, ty = layout.x + ax, layout.content_top + ay - rise
+        a = ease * max(0.0, min(1.0, alpha))
+        if a <= 0.0 or ty > layout.view_top or ty + tile_h < layout.view_bottom:
             continue
         hovered, selected = key == _picker["hover"], key == _picker["selected"]
         if selected:
-            _rounded_rect(tx - 2 * s, ty - 2 * s, layout.tile + 4 * s, tile_h + 4 * s, 9 * s, (0.48, 0.46, 1.0, ease))
+            _rounded_rect(tx - 2 * s, ty - 2 * s, layout.tile + 4 * s, tile_h + 4 * s, 9 * s, (0.48, 0.46, 1.0, a))
         _rounded_rect(tx, ty, layout.tile, tile_h, 8 * s,
-                      (0.24, 0.24, 0.28, ease) if hovered else (0.17, 0.17, 0.2, ease))
+                      (0.24, 0.24, 0.28, a) if hovered else (0.17, 0.17, 0.2, a))
         texture = _texture(key)
         if texture is not None:
             inset = (layout.tile - layout.thumb) / 2.0
-            _image(texture, tx + inset, ty + layout.label, layout.thumb, layout.thumb, ease)
+            _image(texture, tx + inset, ty + layout.label, layout.thumb, layout.thumb, a)
         _text(tx + layout.tile / 2.0, ty + 7 * s, ALL[key][1], 11 * s,
-              (1.0, 1.0, 1.0, ease) if hovered or selected else (0.82, 0.82, 0.86, ease))
+              (1.0, 1.0, 1.0, a) if hovered or selected else (0.82, 0.82, 0.86, a))
     gpu.state.scissor_test_set(False)
 
     if layout.max_scroll > 0.0:
         track_h = layout.view_h - 16 * s
         bar_h = max(30 * s, track_h * layout.view_h / layout.content)
-        bar_y = y + 8 * s + (track_h - bar_h) * (1.0 - layout.scroll / layout.max_scroll)
+        bar_y = layout.view_bottom - rise + 8 * s + (track_h - bar_h) * (1.0 - layout.scroll / layout.max_scroll)
         _rounded_rect(x + w - 9 * s, bar_y, 4 * s, bar_h, 2 * s, (1.0, 1.0, 1.0, 0.25 * ease))
     gpu.state.blend_set('NONE')
 
@@ -528,12 +772,63 @@ def _watch():
             continue
         if workspace.object_mode != 'SCULPT' or not canvas_is_empty(window.scene):
             continue
+        if time.perf_counter() < _picker["quiet_until"]:
+            # The picker itself switched workspaces to sculpt what was picked.
+            continue
         area, region = _view3d(window)
         if area is None:
             continue
         with bpy.context.temp_override(window=window, area=area, region=region):
             bpy.ops.phantom.start_picker('INVOKE_DEFAULT')
     return WATCH_INTERVAL
+
+
+def _watch_import():
+    """After Import... in the picker: sculpt the mesh the import brought in."""
+    if _import["before"] is None or time.perf_counter() > _import["deadline"]:
+        _import["before"] = None
+        return None
+    context = bpy.context
+    window = context.window or (context.window_manager.windows[0] if context.window_manager.windows else None)
+    if window is None:
+        return 0.5
+    new = [ob for ob in window.scene.objects if ob.name not in _import["before"] and ob.type == 'MESH']
+    if not new:
+        return 0.5
+    _import["before"] = None
+    target = max(new, key=lambda ob: len(ob.data.vertices))
+    area, region = _view3d(window)
+    if area is None:
+        return None
+    with context.temp_override(window=window, area=area, region=region):
+        if context.object is not None and context.object.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        for ob in window.view_layer.objects:
+            if ob is not None and ob.select_get():
+                ob.select_set(False)
+        _frame_and_sculpt(bpy.context, target, new)
+    _play("mode_switch")
+    return None
+
+
+def _open_at_startup():
+    wm = bpy.context.window_manager
+    window = wm.windows[0] if wm and wm.windows else None
+    if window is None or _picker["open"] or not canvas_is_empty(window.scene):
+        return None
+    area, region = _view3d(window)
+    if area is not None:
+        with bpy.context.temp_override(window=window, area=area, region=region):
+            bpy.ops.phantom.start_picker('INVOKE_DEFAULT', at_startup=True)
+    return None
+
+
+@persistent
+def _on_load(*_args):
+    # Phantom starting, or File > New: offer the picker if that's what the user chose.
+    if bpy.app.background or bpy.data.filepath or not show_at_startup():
+        return
+    bpy.app.timers.register(_open_at_startup, first_interval=0.4)
 
 
 classes = (
@@ -548,11 +843,14 @@ def register():
     bpy.types.VIEW3D_MT_add.append(draw_add_menu)
     if not bpy.app.background:
         bpy.app.timers.register(_watch, first_interval=WATCH_INTERVAL, persistent=True)
+    bpy.app.handlers.load_post.append(_on_load)
 
 
 def unregister():
     if bpy.app.timers.is_registered(_watch):
         bpy.app.timers.unregister(_watch)
+    if _on_load in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.remove(_on_load)
     bpy.types.VIEW3D_MT_add.remove(draw_add_menu)
     _thumbs["textures"].clear()
     for cls in reversed(classes):

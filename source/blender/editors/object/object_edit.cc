@@ -2000,6 +2000,14 @@ void OBJECT_OT_shade_auto_smooth(wmOperatorType *ot)
 /** \name Object Mode Set Operator
  * \{ */
 
+/** Phantom: Garment Mode, offered for meshes after the usual modes. */
+static const EnumPropertyItem phantom_garment_mode_item = {
+    OB_MODE_PHANTOM_GARMENT,
+    "GARMENT",
+    ICON_PHANTOM_GARMENT,
+    "Garment Mode",
+    "Object Mode with the garment tools (Pin and Drag)"};
+
 static const EnumPropertyItem *object_mode_set_itemf(bContext *C,
                                                      PointerRNA * /*ptr*/,
                                                      PropertyRNA * /*prop*/,
@@ -2020,6 +2028,9 @@ static const EnumPropertyItem *object_mode_set_itemf(bContext *C,
         RNA_enum_item_add(&item, &totitem, input);
       }
       input++;
+    }
+    if (ob->type == OB_MESH) {
+      RNA_enum_item_add(&item, &totitem, &phantom_garment_mode_item);
     }
   }
   else {
@@ -2047,6 +2058,25 @@ static wmOperatorStatus object_mode_set_exec(bContext *C, wmOperator *op)
   Object *ob = CTX_data_active_object(C);
   eObjectMode mode = eObjectMode(RNA_enum_get(op->ptr, "mode"));
   const bool toggle = RNA_boolean_get(op->ptr, "toggle");
+
+  /* Phantom: Garment Mode is Object Mode with the scene's garment flag; any other mode clears it. */
+  Scene *scene = CTX_data_scene(C);
+  const bool garment = mode == OB_MODE_PHANTOM_GARMENT;
+  const bool garment_before = (scene->flag & SCE_PHANTOM_GARMENT_MODE) != 0;
+  if (garment) {
+    mode = OB_MODE_OBJECT;
+  }
+  if (garment != garment_before && ob && (garment || mode_compat_test(ob, mode))) {
+    SET_FLAG_FROM_TEST(scene->flag, garment, SCE_PHANTOM_GARMENT_MODE);
+    WM_event_add_notifier(C, NC_SCENE | ND_MODE, scene);
+    if (ob->mode == mode) {
+      WM_ui_sound_play(WMUISound::ModeSwitch, garment ? 1.0f : 0.88f);
+    }
+  }
+  if (garment && ob && ob->mode == OB_MODE_OBJECT) {
+    WM_toolsystem_update_from_context_view3d(C);
+    return OPERATOR_FINISHED;
+  }
 
   if (!mode_compat_test(ob, mode)) {
     return OPERATOR_PASS_THROUGH;
@@ -2121,6 +2151,10 @@ static wmOperatorStatus object_mode_set_exec(bContext *C, wmOperator *op)
   if (ob->mode != mode_before) {
     /* Slightly lower when returning to Object Mode, like stepping back out. */
     WM_ui_sound_play(WMUISound::ModeSwitch, (ob->mode == OB_MODE_OBJECT) ? 0.88f : 1.0f);
+  }
+
+  if (garment != garment_before) {
+    WM_toolsystem_update_from_context_view3d(C);
   }
 
   if (use_submode) {
