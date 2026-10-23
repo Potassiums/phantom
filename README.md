@@ -66,9 +66,8 @@ Credits
 - [AutoRemesher](https://github.com/huxingyi/autoremesher) by Jeremy Hu (MIT), used by Quad
   Remesh.
 - [Nvidia Newton Physics](https://github.com/newton-physics/newton) for cloth simulation
-- Recommended matcaps (not included): **Mandarin**'s
-  [ZBrush Style Matcaps for Blender](https://mandarin.gumroad.com/l/zbrush-style-matcaps-for-blender)
-  on Gumroad, $2 or free with the code **FREE**; if you like them, consider supporting him there.
+- Recommended [ZBrush Style Matcaps for Blender](https://mandarin.gumroad.com/l/zbrush-style-matcaps-for-blender)
+  free with the code **FREE**.
 
 
 License
