@@ -19,6 +19,10 @@ The bar goes away when the mask is cleared and nothing is hidden.
 Each bar is customizable: its "+" button (or right-clicking it) lists more actions to add or
 remove. The choices are remembered between sessions (stored in ``phantom_mask_bar.json`` in
 the user config directory).
+
+Also here: the **Mask Shape** buttons (at the top of Brush Settings in Sculpt Mode) choose what
+Ctrl-drag draws off the mesh: a box, a lasso or a circle (``sculpt.phantom_mask_circle``, drawn
+from its center). Ctrl-drag on the mesh still paints the mask.
 """
 
 import json
@@ -160,6 +164,15 @@ CUSTOMIZE = 'CUSTOMIZE'
 DISMISS = 'DISMISS'
 
 _settings = {key: list(DEFAULTS[bar]) for bar, key in SETTINGS_KEYS.items()}
+_settings["mask_shape"] = 'BOX'
+
+# What Ctrl-drag draws off the mesh: (identifier, label, description, toolbar icon).
+MASK_SHAPES = (
+    ('BOX', "Box", "Ctrl-drag off the mesh draws a box mask", "ops.sculpt.border_mask"),
+    ('LASSO', "Lasso", "Ctrl-drag off the mesh draws a lasso mask", "ops.sculpt.lasso_mask"),
+    ('CIRCLE', "Circle", "Ctrl-drag off the mesh draws a circle mask, from its center",
+     "ops.generic.select_circle"),
+)
 _draw_handle = None
 _addon_keymaps = []
 _audio = {"device": None}
@@ -201,6 +214,8 @@ def _load_settings():
         if isinstance(chosen, list):
             known = {action.identifier for action in CATALOGS[bar]}
             _settings[key] = [a for a in chosen if a in known]
+    if data.get("mask_shape") in {shape[0] for shape in MASK_SHAPES}:
+        _settings["mask_shape"] = data["mask_shape"]
 
 
 def _save_settings():
@@ -678,6 +693,175 @@ class VIEW3D_PT_phantom_mask_bar(Panel):
         layout.operator(VIEW3D_OT_phantom_mask_bar_reset.bl_idname, icon='LOOP_BACK').bar = bar
 
 
+# -----------------------------------------------------------------------------
+# Mask shapes
+
+def _mask_shape_icon(icon):
+    from bl_ui.space_toolsystem_common import ToolSelectPanelHelper
+    return ToolSelectPanelHelper._icon_value_from_icon_handle(icon)
+
+
+def masking_now(context):
+    """Whether to show the Mask Shape buttons: with the Mask brush selected, or while Ctrl (the
+    mask modifier) is held without Shift (Ctrl-Shift trims)."""
+    import phantom_quick_brushes
+    held = phantom_quick_brushes.held
+    if held["ctrl"] and not held["shift"]:
+        return True
+    brush = context.tool_settings.sculpt.brush
+    return brush is not None and brush.sculpt_brush_type == 'MASK'
+
+
+def draw_mask_shape_buttons(layout, context):
+    """The Mask Shape buttons: square icons choosing what Ctrl-drag draws off the mesh."""
+    current = _settings["mask_shape"]
+    row = layout.row(align=True)
+    row.alignment = 'LEFT'
+    row.label(text="Mask Shape")
+    buttons = row.row(align=True)
+    buttons.scale_x = 1.4
+    buttons.scale_y = 1.4
+    for identifier, _label, _description, icon in MASK_SHAPES:
+        buttons.operator(SCULPT_OT_phantom_mask_shape_set.bl_idname, text="",
+                         icon_value=_mask_shape_icon(icon),
+                         depress=identifier == current).shape = identifier
+
+
+class SCULPT_OT_phantom_mask_shape_set(Operator):
+    """Choose what Ctrl-drag draws off the mesh"""
+    bl_idname = "sculpt.phantom_mask_shape_set"
+    bl_label = "Mask Shape"
+    bl_options = {'INTERNAL'}
+
+    shape: bpy.props.EnumProperty(items=[(i, l, d) for i, l, d, _icon in MASK_SHAPES])
+
+    @classmethod
+    def description(cls, _context, properties):
+        return next(d for i, _l, d, _icon in MASK_SHAPES if i == properties.shape)
+
+    def execute(self, context):
+        context.window_manager.phantom_mask_shape = self.shape
+        _play_sound("click")
+        return {'FINISHED'}
+
+
+def _get_mask_shape(_self):
+    return [shape[0] for shape in MASK_SHAPES].index(_settings["mask_shape"])
+
+
+def _set_mask_shape(_self, value):
+    _settings["mask_shape"] = MASK_SHAPES[value][0]
+    _save_settings()
+    for window in bpy.context.window_manager.windows:
+        for area in window.screen.areas:
+            area.tag_redraw()
+
+
+def _circle_points(center, radius, segments=64):
+    return [(center.x + radius * math.cos(2.0 * math.pi * i / segments),
+             center.y + radius * math.sin(2.0 * math.pi * i / segments)) for i in range(segments)]
+
+
+def _circle_is_empty(context, center, radius):
+    """Sample rays across the circle: True when none of them hits the sculpted object."""
+    from bpy_extras import view3d_utils
+    region, rv3d = context.region, context.region_data
+    depsgraph = context.evaluated_depsgraph_get()
+    target = context.active_object
+    steps = max(2, min(15, int(radius * 2 / 8)))
+    for yi in range(steps):
+        for xi in range(steps):
+            x = center.x - radius + 2.0 * radius * (xi + 0.5) / steps
+            y = center.y - radius + 2.0 * radius * (yi + 0.5) / steps
+            if (x - center.x) ** 2 + (y - center.y) ** 2 > radius * radius:
+                continue
+            origin = view3d_utils.region_2d_to_origin_3d(region, rv3d, (x, y))
+            direction = view3d_utils.region_2d_to_vector_3d(region, rv3d, (x, y))
+            hit, _loc, _nor, _index, ob, _matrix = context.scene.ray_cast(depsgraph, origin, direction)
+            if hit and ob is not None and ob.original == target:
+                return False
+    return True
+
+
+class SCULPT_OT_phantom_mask_circle(Operator):
+    """Mask inside a circle, dragged out from its center; a circle over empty space clears the
+    mask"""
+    bl_idname = "sculpt.phantom_mask_circle"
+    bl_label = "Mask Circle"
+    bl_options = {'INTERNAL'}
+
+    erase: bpy.props.BoolProperty(name="Erase", description="Remove the mask instead of adding it",
+                                  options={'SKIP_SAVE'})
+
+    @classmethod
+    def poll(cls, context):
+        return context.mode == 'SCULPT' and context.region is not None and context.region.type == 'WINDOW'
+
+    def invoke(self, context, event):
+        from mathutils import Vector
+        region = context.region
+        # Started from a drag: the circle's center is where the button went down.
+        self.center = Vector((event.mouse_prev_press_x - region.x, event.mouse_prev_press_y - region.y))
+        self.radius = (Vector((event.mouse_region_x, event.mouse_region_y)) - self.center).length
+        self.region = region
+        self.handle = bpy.types.SpaceView3D.draw_handler_add(self._draw, (), 'WINDOW', 'POST_PIXEL')
+        context.window_manager.modal_handler_add(self)
+        region.tag_redraw()
+        return {'RUNNING_MODAL'}
+
+    def _draw(self):
+        if bpy.context.region != self.region:
+            return
+        s = _ui_scale()
+        shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+        gpu.state.blend_set('ALPHA')
+        points = _circle_points(self.center, self.radius)
+        fill = [self.center] + points + [points[0]]
+        tris = []
+        for i in range(1, len(fill) - 1):
+            tris += (fill[0], fill[i], fill[i + 1])
+        _draw_shape(shader, 'TRIS', tris, (1.0, 1.0, 1.0, 0.06) if self.erase else (0.0, 0.0, 0.0, 0.12))
+        gpu.state.line_width_set(max(1.0, 2.0 * s))
+        _draw_shape(shader, 'LINE_LOOP', points, (0.0, 0.0, 0.0, 0.6))
+        gpu.state.line_width_set(max(1.0, s))
+        _draw_shape(shader, 'LINE_LOOP', points, (1.0, 1.0, 1.0, 0.9))
+        gpu.state.line_width_set(1.0)
+        gpu.state.blend_set('NONE')
+
+    def _end(self, context):
+        bpy.types.SpaceView3D.draw_handler_remove(self.handle, 'WINDOW')
+        self.region.tag_redraw()
+
+    def modal(self, context, event):
+        from mathutils import Vector
+        if event.type == 'MOUSEMOVE':
+            self.radius = (Vector((event.mouse_region_x, event.mouse_region_y)) - self.center).length
+            self.region.tag_redraw()
+            return {'RUNNING_MODAL'}
+        if event.type == 'LEFTMOUSE' and event.value == 'RELEASE':
+            self._end(context)
+            return self._apply(context)
+        if event.type in {'ESC', 'RIGHTMOUSE'} and event.value == 'PRESS':
+            self._end(context)
+            return {'CANCELLED'}
+        return {'RUNNING_MODAL'}
+
+    def _apply(self, context):
+        # Ignore stray clicks.
+        if self.radius < 4.0 * _ui_scale():
+            return {'CANCELLED'}
+        if _circle_is_empty(context, self.center, self.radius):
+            # Empty space: clear the mask, if there is one (as the lasso does).
+            has_mask = bpy.types.WindowManager.phantom_sculpt_mask_state() & 1
+            if self.erase or has_mask:
+                bpy.ops.paint.mask_flood_fill('EXEC_DEFAULT', True, mode='VALUE', value=0.0)
+            return {'FINISHED'}
+        path = [{"name": "", "loc": point, "time": 0.0} for point in _circle_points(self.center, self.radius)]
+        bpy.ops.paint.mask_lasso_gesture('EXEC_DEFAULT', path=path, mode='VALUE',
+                                         value=0.0 if self.erase else 1.0)
+        return {'FINISHED'}
+
+
 def _keep_faces(mesh, keep):
     """Delete the faces of `mesh` not in `keep` (one bool per face) and show everything."""
     bm = bmesh.new()
@@ -772,6 +956,10 @@ def _make_accessors(bar, identifier):
 
 def _register_properties():
     WM = bpy.types.WindowManager
+    WM.phantom_mask_shape = bpy.props.EnumProperty(
+        name="Mask Shape", description="What Ctrl-drag draws off the mesh",
+        items=[(i, l, d, n) for n, (i, l, d, _icon) in enumerate(MASK_SHAPES)],
+        get=_get_mask_shape, set=_set_mask_shape)
     for bar, actions in CATALOGS.items():
         for action in actions:
             get, set_ = _make_accessors(bar, action.identifier)
@@ -780,12 +968,15 @@ def _register_properties():
 
 
 def _unregister_properties():
+    del bpy.types.WindowManager.phantom_mask_shape
     for bar, actions in CATALOGS.items():
         for action in actions:
             delattr(bpy.types.WindowManager, _prop_name(bar, action.identifier))
 
 
 classes = (
+    SCULPT_OT_phantom_mask_shape_set,
+    SCULPT_OT_phantom_mask_circle,
     VIEW3D_OT_phantom_mask_bar_hover,
     VIEW3D_OT_phantom_mask_bar_click,
     VIEW3D_OT_phantom_mask_bar_customize,

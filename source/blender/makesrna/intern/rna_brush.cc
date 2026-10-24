@@ -3500,6 +3500,8 @@ static void rna_def_brush(BlenderRNA *brna)
   prop = RNA_def_property(srna, "hardness", PROP_FLOAT, PROP_FACTOR);
   RNA_def_property_float_sdna(prop, nullptr, "hardness");
   RNA_def_property_range(prop, 0.0f, 1.0f);
+  /* Phantom: fine steps for Focal Shift (the cursor ring follows it from the center out). */
+  RNA_def_property_ui_range(prop, 0.0f, 1.0f, 0.1, 3);
   RNA_def_property_ui_text(
       prop, "Hardness", "How close the brush falloff starts from the edge of the brush");
   RNA_def_property_update(prop, 0, "rna_Brush_update");

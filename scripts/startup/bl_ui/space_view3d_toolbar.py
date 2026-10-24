@@ -400,6 +400,28 @@ class VIEW3D_PT_tools_brush_settings(Panel, View3DPaintBrushPanel):
         settings = self.paint_settings_from_active_tool(context)
         brush = settings.brush
 
+        # Phantom: what Ctrl-drag draws off the mesh (box, lasso or circle), while masking: with
+        # the Mask brush selected, or while Ctrl (mask) is held.
+        if context.mode == 'SCULPT' and not self.is_popover:
+            import phantom_mask_bar
+            if phantom_mask_bar.masking_now(context):
+                phantom_mask_bar.draw_mask_shape_buttons(layout, context)
+                layout.separator(factor=0.5)
+
+        # Phantom: while Shift is held, the settings of the brush it smooths with.
+        if context.mode == 'SCULPT' and not self.is_popover:
+            import phantom_quick_brushes
+            smooth = phantom_quick_brushes.smooth_brush(context)
+            if smooth is not None:
+                brush = smooth
+                col = layout.column()
+                icon_value = brush.preview.icon_id if brush.preview else 0
+                col.label(text=iface_("{:s} (while Shift is held)").format(brush.name),
+                          icon='BRUSH_DATA' if not icon_value else 'NONE', icon_value=icon_value)
+                sub = col.row()
+                sub.enabled = False
+                sub.label(text="The size follows your brush")
+
         brush_settings(layout.column(), context, brush, popover=self.is_popover)
 
         # Phantom: stroke stabilizer (lazy mouse) right in the main settings while sculpting.

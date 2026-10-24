@@ -4,6 +4,45 @@ Phantom is a fork of Blender tuned for sculpting. This file lists what Phantom c
 own changes come from the Blender version each release is built on.
 
 
+## Unreleased
+
+- **Stroke, Alpha and Texture thumbnails in the Brush Asset panel:** next to the brush
+  thumbnail, like ZBrush's brush tray. Each shows the brush's current stroke method, alpha
+  image or color texture; click one to open its settings and change it. In Sculpt Mode the
+  Alpha is the brush texture and the Texture tile is greyed out, since sculpt brushes have no
+  color texture; in Texture Paint, Alpha is the Texture Mask.
+- **Focal Shift ring covers the whole brush:** the inner cursor ring now sits where the brush
+  stops being full strength, so it runs from a tiny ring at the center (Focal Shift 0) out to the
+  brush's edge (1), instead of only from halfway out. The Focal Shift slider also adjusts in
+  finer steps (0.001).
+- **Import ZBrush tools and projects:** File > Import > ZBrush (.ztl, .zpr) brings in the
+  geometry of every subtool as its own mesh object, in a collection named after the file, turned
+  from ZBrush's axes to Blender's (standing up, facing the front view). Also in the base mesh
+  picker's Import. Polygroups, UVs, masks and subdivision levels are not read yet, and older
+  files (version 1005, such as ZBrush's own LightBox tools) aren't supported.
+- **The Transpose line goes away** when you switch to another workspace tab or object, leave
+  Sculpt Mode, undo, redo or open a file, instead of lingering on the model.
+- **Fixed a crash when undoing** the first stroke (or Transpose) on a mesh started from the base
+  mesh picker: adding the mesh now makes its own undo step, so Ctrl+Z goes back to the plain
+  mesh instead of to before it existed.
+- **Transpose:** hold **Shift** while rotating (from an end, or twisting from the middle) to
+  snap to 15 degree steps; the dragged circle shows the angle. Shift also snaps the line's
+  direction to 15 degree steps while you draw it or place an end. Each inner circle is now
+  labelled with what it does in the current mode (Stretch / Move, Scale / Thicken, Rotate /
+  Twist), and notches between the circles mark the line. A measuring tick sounds as you
+  rotate, scale, move or place the line, like adjusting the voxel remesh size.
+- **Transpose with Shift held first:** holding Shift before clicking a circle (or before drawing
+  the line) now snaps too; before, Shift-click smoothed instead.
+- **Lasso and circle masking:** Ctrl-drag off the mesh can now draw a **Lasso** or a **Circle**
+  (dragged out from its center) as well as a **Box**. Pick the shape with the Mask Shape buttons
+  at the top of Brush Settings, shown while the Mask brush is selected or Ctrl is held. Ctrl-Alt
+  erases with any shape; a lasso or circle over empty space clears the mask. Ctrl-drag on the
+  mesh still paints the mask.
+- **Shift smoothing shows its settings:** while Shift is held, the Brush Settings panel shows
+  the brush Shift smooths with (Smooth, or Blur for paint brushes) so you can adjust its
+  strength and other settings; your own brush comes back when you let go.
+
+
 ## 0.3.2 alpha (2026-10-23)
 
 Built on Blender 5.4 alpha, on top of 0.3.1. A hotfix to help track down crashes some users

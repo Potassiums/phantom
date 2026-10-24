@@ -445,11 +445,13 @@ static void point_with_symmetry_draw(const PaintMode paint_mode,
 
 /**
  * Phantom: like ZBrush's focal shift ring, the inner cursor ring shows the brush hardness
- * ("Focal Shift"): halfway out for a soft brush, reaching the outer ring when fully hard.
+ * ("Focal Shift") where it acts: the brush is at full strength inside the ring (hardness times
+ * the radius, see #apply_hardness_to_distances) and falls off outside it. From a tiny ring at the
+ * center for a fully soft brush (kept just visible) to the outer ring when fully hard.
  */
 static float cursor_inner_ring_factor(const Brush &brush)
 {
-  return 0.5f + 0.5f * std::clamp(brush.hardness, 0.0f, 1.0f);
+  return std::clamp(brush.hardness, 0.02f, 1.0f);
 }
 
 static void inactive_cursor_draw(PaintCursorContext &pcontext)

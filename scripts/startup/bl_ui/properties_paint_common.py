@@ -415,7 +415,10 @@ class BrushSelectPanel(BrushPanel):
 
         brush = settings.brush
 
-        row = layout.row()
+        # Phantom: Stroke, Alpha and Texture thumbnails beside the brush (see phantom_brush_slots).
+        import phantom_brush_slots
+        tiles = brush is not None and phantom_brush_slots.wanted(context)
+        row = layout.split(factor=0.66) if tiles else layout.row()
 
         col = row.column(align=True)
         BrushAssetShelf.draw_popup_selector(col, context, brush, show_name=False)
@@ -423,6 +426,12 @@ class BrushSelectPanel(BrushPanel):
             col.prop(brush, "name", text="")
 
         if brush is None:
+            return
+
+        if tiles:
+            side = row.row()
+            phantom_brush_slots.draw_tiles(side, context, brush)
+            side.menu("VIEW3D_MT_brush_context_menu", icon='DOWNARROW_HLT', text="")
             return
 
         col = row.column()

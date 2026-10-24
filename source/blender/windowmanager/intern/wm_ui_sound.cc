@@ -13,6 +13,7 @@
 
 #include "BLI_path_utils.hh"
 #include "BLI_rand.hh"
+#include "BLI_string.hh"
 #include "BLI_time.hh"
 
 #include "BKE_appdir.hh"
@@ -95,6 +96,20 @@ static double ui_sound_min_interval(const WMUISound sound)
     default:
       return 0.04;
   }
+}
+
+bool WM_ui_sound_play_by_name(const char *name, const float pitch)
+{
+  for (int i = 0; i < WM_UI_SOUND_COUNT; i++) {
+    const WMUISound sound = WMUISound(i);
+    const char *filename = ui_sound_filename(sound);
+    const size_t len = strlen(name);
+    if (filename && STREQLEN(filename, name, len) && STREQ(filename + len, ".wav")) {
+      WM_ui_sound_play(sound, pitch);
+      return true;
+    }
+  }
+  return false;
 }
 
 void WM_ui_sound_play(const WMUISound sound, const float pitch)

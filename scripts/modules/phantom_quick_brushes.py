@@ -267,8 +267,9 @@ def unregister():
 # -----------------------------------------------------------------------------
 # What the Brush Asset panel shows while a modifier key is held
 
-# Kept up to date by Phantom's key watcher in Sculpt Mode.
-held = {"shift": False, "ctrl": False}
+# Kept up to date by Phantom's key watcher in Sculpt Mode. "smooth": session UID of the brush
+# Shift switches to (loaded by the key watcher, see #smooth_brush).
+held = {"shift": False, "ctrl": False, "smooth": None}
 
 _ESSENTIALS_SCULPT = "brushes/essentials_brushes-mesh_sculpt.blend/Brush/"
 
@@ -302,6 +303,39 @@ def tool_icon(tool):
     return ToolSelectPanelHelper._icon_value_from_icon_handle(tool.icon)
 
 
+# Brush types Shift doesn't switch away from (as in Blender's smooth toggle): the mask brush
+# smooths the mask itself, these two have their own smooth mode.
+_SMOOTH_IN_PLACE = {'MASK', 'SLIDE_RELAX', 'DRAW_FACE_SETS'}
+# Brush types that smooth colors (with Blur) instead of the shape.
+_PAINT_TYPES = {'PAINT', 'SMEAR'}
+
+
+def smooth_target(brush):
+    """Name of the Essentials brush Shift switches to from ``brush`` ("Smooth" or "Blur"), or None
+    when Shift keeps the brush (it has its own smooth mode)."""
+    if brush is None or brush.sculpt_brush_type in _SMOOTH_IN_PLACE:
+        return None
+    return "Blur" if brush.sculpt_brush_type in _PAINT_TYPES else "Smooth"
+
+
+def load_smooth_brush(context):
+    """Make sure the brush Shift switches to is in the file (call from an operator, not while
+    drawing) and remember it for #smooth_brush."""
+    name = smooth_target(context.tool_settings.sculpt.brush)
+    brush = bpy.types.WindowManager.phantom_sculpt_essentials_brush(name) if name else None
+    held["smooth"] = brush.session_uid if brush is not None else None
+
+
+def smooth_brush(context):
+    """While only Shift is held: the brush it smooths with, for the Brush Settings panel to show
+    and edit. None otherwise (or when Shift keeps the current brush)."""
+    if not held["shift"] or held["ctrl"] or held["smooth"] is None:
+        return None
+    if smooth_target(context.tool_settings.sculpt.brush) is None:
+        return None
+    return next((brush for brush in bpy.data.brushes if brush.session_uid == held["smooth"]), None)
+
+
 def temporary_display(context):
     """(label, icon_value, is_tool) of what a held modifier switches to, or None.
 
@@ -315,9 +349,11 @@ def temporary_display(context):
     if held["ctrl"]:
         name = "Mask"
     elif held["shift"]:
-        brush = context.tool_settings.sculpt.brush
-        # Paint brushes smooth colors with Blur, the rest of the brushes with Smooth.
-        name = "Blur" if brush is not None and brush.sculpt_brush_type == 'PAINT' else "Smooth"
+        # Paint brushes smooth colors with Blur, the rest of the brushes with Smooth; a few smooth
+        # in their own way and stay.
+        name = smooth_target(context.tool_settings.sculpt.brush)
+        if name is None:
+            return None
     else:
         return None
     slot = {"type": 'ESSENTIALS', "identifier": "", "relative": _ESSENTIALS_SCULPT + name}

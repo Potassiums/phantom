@@ -20,7 +20,12 @@ the surface under them. Each end and the middle have an outer ring and an inner 
   - Scale: an end scales it about the other end; the middle, dragged towards an end, thickens or
     thins it across the line.
   - Rotate: an end rotates it about the other end; the middle, dragged along the line, twists it
-    around the line.
+    around the line. Hold Shift to snap the angle to 15 degree steps.
+
+Holding Shift while drawing the line or placing an end snaps its on-screen direction to 15 degree
+steps too. Each inner circle is labelled with what it does in the current mode, and notches
+between the circles mark the line. While rotating or snapping, the dragged circle shows the
+angle, and a measuring tick sounds as it changes (like adjusting the voxel remesh size).
 
 The deformation itself is done by ``sculpt.phantom_transform`` (Blender's sculpt transform with a
 matrix), so masks, symmetry and undo work as with the gizmo tools.
@@ -30,6 +35,7 @@ import json
 import math
 import os
 
+import blf
 import bpy
 import gpu
 from bpy.props import EnumProperty
@@ -59,10 +65,33 @@ RING_COLOR = (1.0, 0.83, 0.3, 1.0)
 INNER_COLORS = {'MOVE': (1.0, 0.54, 0.24, 1.0), 'SCALE': (0.49, 1.0, 0.23, 1.0),
                 'ROTATE': (1.0, 0.3, 0.42, 1.0)}
 OUTLINE_COLOR = (0.0, 0.0, 0.0, 0.6)
+LABEL_COLOR = (1.0, 1.0, 1.0, 0.95)
+# Shift snaps rotations to this step.
+ROTATION_SNAP = math.radians(15.0)
+# Notches on each half of the line, between the circles, and their half length (unscaled pixels).
+NOTCHES = 3
+NOTCH_SIZE = 7
+# Measuring ticks: one per this many on-screen pixels of length or movement, per this rotation,
+# and per this scale ratio (4%, as when adjusting the voxel remesh size).
+TICK_PIXELS = 20
+TICK_ANGLE = math.radians(5.0)
+TICK_SCALE = 1.04
+LABEL_SIZE = 10
+# What dragging each inner circle does, per mode: (end, middle).
+LABELS = {
+    'MOVE': ("Stretch", "Move"),
+    'SCALE': ("Scale", "Thicken"),
+    'ROTATE': ("Rotate", "Twist"),
+}
 
 _settings = {"style": 'GIZMO', "mode": 'MOVE'}
 # The action line, in world space: {"a": Vector, "b": Vector} or None.
 _line = {"value": None}
+# What the line was drawn on: it goes away in another workspace, on another object, out of
+# Sculpt Mode, and on undo, redo or loading a file (see #_forget_line).
+_owner = {"object": None, "workspace": None}
+# While dragging an inner circle: which one ("A", "B", "M") and what to show beside it.
+_feedback = {"handle": None, "text": ""}
 _draw_handle = None
 
 
@@ -238,6 +267,31 @@ def _pick(context, mouse):
     return None
 
 
+def _play_tick():
+    """Phantom's measuring tick, through the interface's own sound player."""
+    play = getattr(bpy.types.WindowManager, "phantom_ui_sound_play", None)
+    if play is not None:
+        play("measure_tick")
+
+
+def _snap_direction(origin, mouse):
+    """`mouse` moved so the on-screen direction from `origin` is a multiple of 15 degrees,
+    and that angle (from the screen's x axis)."""
+    offset = mouse - origin
+    angle = _snapped(math.atan2(offset.y, offset.x), True)
+    return origin + Vector((math.cos(angle), math.sin(angle))) * offset.length, angle
+
+
+def _snapped(angle, snap):
+    """`angle`, snapped to #ROTATION_SNAP steps when `snap` (Shift held)."""
+    return round(angle / ROTATION_SNAP) * ROTATION_SNAP if snap else angle
+
+
+def _angle_text(label, angle, snapped):
+    text = f"{label} {math.degrees(angle):.0f}\u00b0"
+    return text + "  (snap)" if snapped else text
+
+
 def _about(point, linear):
     """`linear` (3x3) applied about `point`, as a 4x4 matrix."""
     return Matrix.Translation(point) @ linear.to_4x4() @ Matrix.Translation(-point)
@@ -263,9 +317,16 @@ class SCULPT_OT_phantom_transpose(Operator):
         return (context.mode == 'SCULPT' and context.active_object is not None and
                 context.region is not None and context.region.type == 'WINDOW')
 
+    def _tick(self, step):
+        """Play the measuring tick when `step` changes (not for the first one)."""
+        if self.tick_step is not None and step != self.tick_step:
+            _play_tick()
+        self.tick_step = step
+
     def invoke(self, context, event):
         mouse = (event.mouse_region_x, event.mouse_region_y)
         self.start_mouse = Vector(mouse)
+        self.tick_step = None
         picked = _pick(context, mouse)
         line = _line["value"]
         if picked is None:
@@ -275,6 +336,8 @@ class SCULPT_OT_phantom_transpose(Operator):
             self.action = 'CREATE'
             self.previous = line
             _line["value"] = {"a": hit.copy(), "b": hit.copy()}
+            _owner.update(object=context.active_object.as_pointer(),
+                          workspace=context.workspace.as_pointer())
         else:
             key, part = picked
             self.start_line = {"a": line["a"].copy(), "b": line["b"].copy()}
@@ -299,6 +362,11 @@ class SCULPT_OT_phantom_transpose(Operator):
         return {'RUNNING_MODAL'}
 
     def modal(self, context, event):
+        if event.type in {'LEFT_SHIFT', 'RIGHT_SHIFT'} and event.value in {'PRESS', 'RELEASE'}:
+            # Snapping turns on or off right away, without waiting for the mouse to move.
+            self._update(context, event)
+            _redraw(context)
+            return {'RUNNING_MODAL'}
         if event.type == 'MOUSEMOVE':
             self._update(context, event)
             _redraw(context)
@@ -312,6 +380,7 @@ class SCULPT_OT_phantom_transpose(Operator):
         return {'RUNNING_MODAL'}
 
     def _finish(self, context, cancel):
+        _feedback.update(handle=None, text="")
         if self.action == 'TRANSFORM':
             bpy.ops.sculpt.phantom_transform('EXEC_DEFAULT', True, action='CANCEL' if cancel else 'END')
             context.tool_settings.use_transform_pivot_point_align = self.pivot_only
@@ -333,10 +402,31 @@ class SCULPT_OT_phantom_transpose(Operator):
         mouse = Vector((event.mouse_region_x, event.mouse_region_y))
         line = _line["value"]
 
-        if self.action == 'CREATE':
-            # The end snaps to the model under it, else stays at the start's depth.
-            hit = _surface_hit(context, mouse)
-            line["b"] = hit if hit is not None else _at_depth(region, rv3d, mouse, line["a"])
+        s = _ui_scale(context)
+        if self.action in {'CREATE', 'MOVE_END'}:
+            # Placing an end: Shift snaps the line's on-screen direction to 15 degree steps.
+            if self.action == 'CREATE':
+                key, fixed = "b", line["a"]
+            else:
+                key = self.handle.lower()
+                fixed = self.start_line["b" if key == "a" else "a"]
+            fixed_screen = _to_screen(region, rv3d, fixed)
+            angle = None
+            if event.shift and fixed_screen is not None and (mouse - fixed_screen).length > 1.0:
+                mouse, angle = _snap_direction(fixed_screen, mouse)
+            if self.action == 'CREATE':
+                # The end snaps to the model under it, else stays at the start's depth.
+                hit = _surface_hit(context, mouse)
+                line["b"] = hit if hit is not None else _at_depth(region, rv3d, mouse, line["a"])
+            else:
+                line[key] = _at_depth(region, rv3d, mouse, self.start_line[key])
+            handle = "B" if key == "b" else "A"
+            if angle is not None:
+                _feedback.update(handle=handle, text=f"{math.degrees(angle) % 360.0:.0f}\u00b0  (snap)")
+            else:
+                _feedback.update(handle=None, text="")
+            length = (mouse - fixed_screen).length if fixed_screen is not None else 0.0
+            self._tick((int(length / (TICK_PIXELS * s)), angle))
             return
 
         start = self.start_line
@@ -344,10 +434,7 @@ class SCULPT_OT_phantom_transpose(Operator):
             mid = (start["a"] + start["b"]) / 2.0
             delta = _at_depth(region, rv3d, mouse, mid) - _at_depth(region, rv3d, self.start_mouse, mid)
             line["a"], line["b"] = start["a"] + delta, start["b"] + delta
-            return
-        if self.action == 'MOVE_END':
-            key = self.handle.lower()
-            line[key] = _at_depth(region, rv3d, mouse, start[key])
+            self._tick(int((mouse - self.start_mouse).length / (TICK_PIXELS * s)))
             return
         self._transform(context, event, mouse)
 
@@ -376,11 +463,16 @@ class SCULPT_OT_phantom_transpose(Operator):
                     delta = n * delta.dot(n)
                 matrix = Matrix.Translation(delta)
                 line["a"], line["b"] = a0 + delta, b0 + delta
+                self._tick(int(delta.length / axis.length * 20.0))
             elif mode == 'SCALE':
                 factor = max(0.01, 1.0 + along)
                 matrix = _about(a0, identity + (identity - _outer(n, n)) * (factor - 1.0))
+                self._tick(math.floor(math.log(factor) / math.log(TICK_SCALE)))
             else:
-                matrix = _about(a0, Matrix.Rotation(along * math.pi, 3, n))
+                angle = _snapped(along * math.pi, event.shift)
+                self._tick(math.floor(angle / TICK_ANGLE + 1e-6))
+                matrix = _about(a0, Matrix.Rotation(angle, 3, n))
+                _feedback.update(handle="M", text=_angle_text("Twist", angle, event.shift))
             origin = mid
         else:
             key, other = ("a", "b") if self.handle == "A" else ("b", "a")
@@ -391,16 +483,25 @@ class SCULPT_OT_phantom_transpose(Operator):
                 # Stretch/shear: the dragged end follows the mouse, the other end stays.
                 matrix = _about(o, identity + _outer(p1 - p0, d0) * (1.0 / d0.length_squared))
                 line[key] = p1
+                self._tick(int((p1 - p0).length / d0.length * 20.0))
             elif mode == 'SCALE':
                 factor = max(0.01, d1.length / d0.length)
                 matrix = _about(o, identity * factor)
                 line[key] = o + d0 * factor
+                self._tick(math.floor(math.log(factor) / math.log(TICK_SCALE)))
             else:
                 if d1.length < 1e-9:
                     return
-                rotation = d0.rotation_difference(d1).to_matrix()
+                axis = d0.cross(d1)
+                if axis.length < 1e-12:
+                    rotation, angle = identity, 0.0
+                else:
+                    angle = _snapped(d0.angle(d1), event.shift)
+                    rotation = Matrix.Rotation(angle, 3, axis.normalized())
                 matrix = _about(o, rotation)
-                line[key] = o + d1.normalized() * d0.length
+                line[key] = o + rotation @ d0
+                self._tick(math.floor(angle / TICK_ANGLE + 1e-6))
+                _feedback.update(handle=self.handle, text=_angle_text("Rotate", angle, event.shift))
             origin = o
 
         ob = context.active_object
@@ -413,18 +514,76 @@ class SCULPT_OT_phantom_transpose(Operator):
 # -----------------------------------------------------------------------------
 # Drawing
 
+def _notches(a, b, s):
+    """Short ticks across the line, evenly spaced between the circles (#NOTCHES per half)."""
+    axis = b - a
+    length = axis.length
+    if length < 1e-6:
+        return []
+    u = axis / length
+    perp = Vector((-u.y, u.x))
+    half = NOTCH_SIZE * s
+    gap = OUTER_RADIUS * s
+    ticks = []
+    # Each half runs between the edges of two rings.
+    for start, end in ((0.0, length / 2.0), (length / 2.0, length)):
+        inner_start, inner_end = start + gap, end - gap
+        if inner_end - inner_start < 4.0 * half:
+            continue
+        for i in range(1, NOTCHES + 1):
+            t = inner_start + (inner_end - inner_start) * i / (NOTCHES + 1)
+            point = a + u * t
+            ticks += [point - perp * half, point + perp * half]
+    return ticks
+
+
+def _draw_label(text, center, offset, s):
+    """Text centered beside a circle, `offset` away from its center, with a shadow."""
+    blf.size(0, LABEL_SIZE * s)
+    width, height = blf.dimensions(0, text)
+    # Grow away from the circle: left of it ends at the offset, right of it starts there, above
+    # or below it is centered (and in between, in between).
+    direction = offset.normalized() if offset.length > 1e-6 else Vector((0.0, 1.0))
+    x = center.x + offset.x - width * (1.0 - direction.x) / 2.0
+    y = center.y + offset.y - height * (1.0 - direction.y) / 2.0
+    blf.enable(0, blf.SHADOW)
+    blf.shadow(0, 3, 0.0, 0.0, 0.0, 0.9)
+    blf.shadow_offset(0, 1, -1)
+    blf.position(0, round(x), round(y), 0)
+    blf.color(0, *LABEL_COLOR)
+    blf.draw(0, text)
+    blf.disable(0, blf.SHADOW)
+
+
 def _circle(center, radius, segments=32):
     return [(center.x + radius * math.cos(2.0 * math.pi * i / segments),
              center.y + radius * math.sin(2.0 * math.pi * i / segments)) for i in range(segments + 1)]
 
 
+@bpy.app.handlers.persistent
+def _forget_line(*_args):
+    """Undo, redo or a new file: the line no longer matches the model."""
+    _line["value"] = None
+    _feedback.update(handle=None, text="")
+
+
+def _line_belongs(context):
+    """Whether the line was drawn here: same workspace and object, still sculpting with
+    Transpose."""
+    ob = context.active_object
+    return (context.mode == 'SCULPT' and ob is not None and
+            ob.as_pointer() == _owner["object"] and
+            context.workspace.as_pointer() == _owner["workspace"] and
+            _active_tool(context) == TRANSPOSE_TOOL)
+
+
 def _draw():
     context = bpy.context
     line = _line["value"]
-    if line is None or context.mode != 'SCULPT':
+    if line is None:
         return
-    if _active_tool(context) != TRANSPOSE_TOOL:
-        # Switched to another tool: the action line goes away.
+    if not _line_belongs(context):
+        # Another tool, workspace or object, or out of Sculpt Mode: the action line goes away.
         _line["value"] = None
         return
     region, rv3d = context.region, context.region_data
@@ -444,6 +603,13 @@ def _draw():
         lines.uniform_float("lineWidth", width * s)
         lines.uniform_float("color", color)
         batch_for_shader(lines, 'LINES', {"pos": [a, b]}).draw(lines)
+    # Notches between the circles.
+    ticks = _notches(a, b, s)
+    if ticks:
+        for width, color in ((4.0, OUTLINE_COLOR), (2.0, LINE_COLOR)):
+            lines.uniform_float("lineWidth", width * s)
+            lines.uniform_float("color", color)
+            batch_for_shader(lines, 'LINES', {"pos": ticks}).draw(lines)
     # Outer rings.
     for center in (a, b, m):
         for width, color in ((4.0, OUTLINE_COLOR), (2.0, RING_COLOR)):
@@ -457,6 +623,23 @@ def _draw():
         for radius, color in ((INNER_RADIUS * s + 1.5 * s, OUTLINE_COLOR), (INNER_RADIUS * s, inner_color)):
             fill.uniform_float("color", color)
             batch_for_shader(fill, 'TRI_FAN', {"pos": [center] + _circle(center, radius)}).draw(fill)
+
+    # Labels: what each inner circle does, on the side of the line facing up. While dragging, only
+    # the dragged circle, with its angle when rotating.
+    axis = b - a
+    perp = Vector((-axis.y, axis.x)).normalized() if axis.length > 1e-6 else Vector((0.0, 1.0))
+    if perp.y < 0.0:
+        perp = -perp
+    offset = perp * ((OUTER_RADIUS + 6) * s)
+    end_label, middle_label = LABELS[_settings["mode"]]
+    labels = {"A": end_label, "B": end_label, "M": middle_label}
+    centers = {"A": a, "B": b, "M": m}
+    if _feedback["handle"] is not None:
+        _draw_label(_feedback["text"] or labels[_feedback["handle"]], centers[_feedback["handle"]],
+                    offset, s)
+    else:
+        for key, center in centers.items():
+            _draw_label(labels[key], center, offset, s)
     gpu.state.blend_set('NONE')
 
 
@@ -475,6 +658,8 @@ class PHANTOM_TL_transpose(WorkSpaceTool):
     bl_icon = "phantom.transpose"  # release/datafiles/icons, see make_tool_icons.py
     bl_keymap = (
         ("sculpt.phantom_transpose", {"type": 'LEFTMOUSE', "value": 'PRESS'}, None),
+        # Shift held before clicking snaps too (else Shift-click would smooth instead).
+        ("sculpt.phantom_transpose", {"type": 'LEFTMOUSE', "value": 'PRESS', "shift": True}, None),
     )
 
 
@@ -492,10 +677,15 @@ def register():
         bpy.utils.register_class(cls)
     bpy.utils.register_tool(PHANTOM_TL_transpose, after={"builtin.transform"})
     _draw_handle = bpy.types.SpaceView3D.draw_handler_add(_draw, (), 'WINDOW', 'POST_PIXEL')
+    for handlers in (bpy.app.handlers.undo_post, bpy.app.handlers.redo_post, bpy.app.handlers.load_post):
+        handlers.append(_forget_line)
 
 
 def unregister():
     global _draw_handle
+    for handlers in (bpy.app.handlers.undo_post, bpy.app.handlers.redo_post, bpy.app.handlers.load_post):
+        if _forget_line in handlers:
+            handlers.remove(_forget_line)
     if _draw_handle is not None:
         bpy.types.SpaceView3D.draw_handler_remove(_draw_handle, 'WINDOW')
         _draw_handle = None

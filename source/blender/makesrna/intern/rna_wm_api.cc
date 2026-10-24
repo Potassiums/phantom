@@ -106,6 +106,8 @@ const EnumPropertyItem rna_enum_window_cursor_items[] = {
 #  include "BKE_attribute.hh"
 #  include "BKE_object_types.hh"
 #  include "BKE_paint.hh"
+#  include "BKE_paint_types.hh"
+#  include "DNA_brush_types.h"
 #  include "BKE_subdiv_ccg.hh"
 #  include "BLI_bit_span_ops.hh"
 #  include "DNA_mesh_types.h"
@@ -1049,6 +1051,17 @@ static int rna_WindowManager_phantom_sculpt_mask_state(bContext *C)
   return flags;
 }
 
+static Brush *rna_WindowManager_phantom_sculpt_essentials_brush(Main *bmain, const char *name)
+{
+  /* The same brush the Shift (smooth) toggle switches to, loaded the same way when needed. */
+  return BKE_paint_brush_from_essentials(bmain, bke::paint::AssetCategory::MeshSculpt, name);
+}
+
+static bool rna_WindowManager_phantom_ui_sound_play(const char *name, float pitch)
+{
+  return WM_ui_sound_play_by_name(name, pitch);
+}
+
 static int rna_WindowManager_phantom_undo_push_count()
 {
   return BKE_undosys_phantom_push_count();
@@ -1242,6 +1255,33 @@ void RNA_api_wm(StructRNA *srna)
       "Whether the active object being sculpted has a mask (bit 1) and hidden faces (bit 2), "
       "read where sculpting keeps them: the mesh, the Multires grids or the Dyntopo BMesh");
   parm = RNA_def_int(func, "flags", 0, 0, INT_MAX, "Flags", "", 0, INT_MAX);
+  RNA_def_function_return(func, parm);
+
+  func = RNA_def_function(srna,
+                          "phantom_sculpt_essentials_brush",
+                          "rna_WindowManager_phantom_sculpt_essentials_brush");
+  RNA_def_function_flag(func, FUNC_NO_SELF | FUNC_USE_MAIN);
+  RNA_def_function_ui_description(
+      func,
+      "The sculpt brush of this name from the Essentials asset library (e.g. \"Smooth\", the one "
+      "Shift switches to), loaded into the file if it isn't yet. Don't call while drawing");
+  parm = RNA_def_string(func, "name", nullptr, 0, "Name", "Name of the Essentials brush");
+  RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
+  parm = RNA_def_pointer(func, "brush", "Brush", "Brush", "The brush, or None");
+  RNA_def_function_return(func, parm);
+
+  func = RNA_def_function(
+      srna, "phantom_ui_sound_play", "rna_WindowManager_phantom_ui_sound_play");
+  RNA_def_function_flag(func, FUNC_NO_SELF);
+  RNA_def_function_ui_description(
+      func,
+      "Play one of Phantom's interface sounds by file name without extension (e.g. "
+      "\"measure_tick\"), if interface sounds are on, through the same player as the "
+      "interface itself");
+  parm = RNA_def_string(func, "name", nullptr, 0, "Name", "Sound name, e.g. \"click\"");
+  RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
+  RNA_def_float(func, "pitch", 1.0f, 0.25f, 4.0f, "Pitch", "Playback speed factor", 0.5f, 2.0f);
+  parm = RNA_def_boolean(func, "found", false, "Found", "Whether there is such a sound");
   RNA_def_function_return(func, parm);
 
   func = RNA_def_function(

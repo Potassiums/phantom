@@ -159,6 +159,9 @@ class SCULPT_OT_phantom_key_watch(Operator):
     def invoke(self, context, event):
         held = quick_brushes.held
         if held["shift"] != event.shift or held["ctrl"] != event.ctrl:
+            if event.shift and not held["shift"]:
+                # The Brush Settings panel shows the smooth brush while Shift is held.
+                quick_brushes.load_smooth_brush(context)
             held["shift"] = event.shift
             held["ctrl"] = event.ctrl
             _redraw_sidebars(context)

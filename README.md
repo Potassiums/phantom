@@ -29,15 +29,19 @@ Phantom is in **alpha** and follows Blender's in-development code (currently 5.4
   with gold stars, a default matcap for every project, four quick slots and "new!" badges.
 - **Silhouette thumbnail:** a live black-on-white view of the scene, docked in the top-left
   corner with the viewport's aspect ratio. Move, resize and dock it; it follows the sidebar.
-- **ZBrush-style masking:** Ctrl-drag to mask (off the mesh: box mask, or clear the mask / voxel
-  remesh when empty), Ctrl-Alt-drag to erase, Ctrl-click to smooth (on the mesh) or invert (off
+- **ZBrush-style masking:** Ctrl-drag to mask (off the mesh: a box, lasso or circle mask, chosen
+  at the top of Brush Settings while masking; a box over empty space clears the mask or voxel
+  remeshes), Ctrl-Alt-drag to erase, Ctrl-click to smooth (on the mesh) or invert (off
   it), Ctrl-Alt-click to sharpen. Alt inverts the brush.
 - **Masks stay visible** with viewport overlays off.
   isolates a polygroup, swaps on an isolated one and shows everything off the mesh; Ctrl+F
   toggles polygroups plus wireframe (PolyFrame).
 - **Transpose:** ZBrush-style action line. Draw it on the model; drag its rings to place it and
   its inner circles to move, stretch, scale, thicken or thin, rotate or twist the unmasked model.
-  Masks, symmetry and undo work as expected.
+  Each circle is labelled with what it does; hold Shift to snap rotations, and the line's
+  direction while placing it, to 15 degree steps. Masks, symmetry and undo work as expected.
+- **ZBrush import:** File > Import > ZBrush (.ztl, .zpr) brings in every subtool's geometry as
+  its own object, standing up in Blender's axes.
 - **Quad Remesh** (powered by [AutoRemesher](https://github.com/huxingyi/autoremesher))
   with its own dropdown next to Remesh; settings saved with the file.
 - **Brushes:** the sidebar moves next to the tools with the Brush Asset panel (tool icon and name

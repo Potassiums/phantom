@@ -12,6 +12,7 @@
 #include "BLI_enumerable_thread_specific.hh"
 #include "BLI_math_matrix.hh"
 #include "BLI_math_vector.hh"
+#include "BLI_lasso_2d.hh"
 #include "BLI_rect.hh"
 
 #include "BLT_translation.hh"
@@ -56,6 +57,7 @@
 #include "ED_paint.hh"
 #include "ED_screen.hh"
 #include "ED_sculpt.hh"
+#include "ED_view3d.hh"
 
 #include "../paint_intern.hh"
 #include "mesh_brush_common.hh"
@@ -69,6 +71,7 @@
 #include "sculpt_undo.hh"
 
 #include "RNA_access.hh"
+#include "RNA_prototypes.hh"
 #include "RNA_define.hh"
 
 #include "UI_interface.hh"
@@ -1426,9 +1429,11 @@ static void SCULPT_OT_mask_from_boundary(wmOperatorType *ot)
  *
  * Drag (Ctrl-drag, chosen by what is under the cursor when it starts):
  * - On the mesh: paint with the mask brush for the duration of the stroke.
- * - Off the mesh: drag a screen-space box mask.
+ * - Off the mesh: draw a screen-space mask shape, chosen with the Mask Shape buttons
+ *   (`WindowManager.phantom_mask_shape`, defined in `phantom_mask_bar.py`): a box, a lasso
+ *   (#SCULPT_OT_phantom_smart_mask_lasso) or a circle (`sculpt.phantom_mask_circle`, Python).
  * - A box over empty space clears the mask, or voxel-remeshes when there is no mask
- *   (like ZBrush's DynaMesh gesture).
+ *   (like ZBrush's DynaMesh gesture). A lasso or circle over empty space clears the mask.
  * With "erase" (Ctrl-Alt) the same gestures remove the mask instead.
  *
  * Click (Ctrl-click):
@@ -1481,6 +1486,38 @@ static wmOperatorStatus mask_flood_fill(bContext *C, const char *mode, const flo
   return ret;
 }
 
+/** The shape Ctrl-drag draws off the mesh: "BOX", "LASSO" or "CIRCLE". */
+static std::string mask_shape(bContext *C)
+{
+  wmWindowManager *wm = CTX_wm_manager(C);
+  PointerRNA wm_ptr = RNA_pointer_create_discrete(&wm->id, RNA_WindowManager, wm);
+  PropertyRNA *prop = RNA_struct_find_property(&wm_ptr, "phantom_mask_shape");
+  if (prop == nullptr || RNA_property_type(prop) != PROP_ENUM) {
+    return "BOX";
+  }
+  const char *identifier = nullptr;
+  RNA_property_enum_identifier(
+      C, &wm_ptr, prop, RNA_property_enum_get(&wm_ptr, prop), &identifier);
+  return identifier ? identifier : "BOX";
+}
+
+/** Invoke a mask shape operator with this drag, passing "erase" on. */
+static wmOperatorStatus invoke_shape_operator(bContext *C,
+                                              const char *idname,
+                                              const bool erase,
+                                              const wmEvent *event)
+{
+  wmOperatorType *ot = WM_operatortype_find(idname, false);
+  if (ot == nullptr) {
+    return OPERATOR_CANCELLED;
+  }
+  PointerRNA ptr = WM_operator_properties_create_ptr(ot);
+  RNA_boolean_set(&ptr, "erase", erase);
+  WM_operator_name_call_ptr(C, ot, wm::OpCallContext::InvokeDefault, &ptr, event);
+  WM_operator_properties_free(&ptr);
+  return OPERATOR_FINISHED;
+}
+
 static wmOperatorStatus smart_mask_invoke(bContext *C, wmOperator *op, const wmEvent *event)
 {
   const bool erase = RNA_boolean_get(op->ptr, "erase");
@@ -1500,7 +1537,14 @@ static wmOperatorStatus smart_mask_invoke(bContext *C, wmOperator *op, const wmE
     return OPERATOR_FINISHED;
   }
 
-  /* Off the mesh: a box that starts right away from this press. */
+  /* Off the mesh: the chosen shape, starting right away from this press. */
+  const std::string shape = mask_shape(C);
+  if (shape == "LASSO") {
+    return invoke_shape_operator(C, "SCULPT_OT_phantom_smart_mask_lasso", erase, event);
+  }
+  if (shape == "CIRCLE") {
+    return invoke_shape_operator(C, "SCULPT_OT_phantom_mask_circle", erase, event);
+  }
   RNA_boolean_set(op->ptr, "wait_for_input", false);
   return WM_gesture_box_invoke(C, op, event);
 }
@@ -1562,6 +1606,90 @@ static void SCULPT_OT_phantom_smart_mask(wmOperatorType *ot)
   RNA_def_property_flag(prop, PROP_SKIP_SAVE);
 }
 
+/** Sample a grid of rays across the lasso: true when none of those inside it hits the mesh. */
+static bool lasso_is_empty(bContext *C, const Span<int2> path)
+{
+  rcti rect;
+  BLI_lasso_boundbox(&rect, path);
+  const int width = BLI_rcti_size_x(&rect);
+  const int height = BLI_rcti_size_y(&rect);
+  const int steps_x = std::clamp(width / 6, 2, 24);
+  const int steps_y = std::clamp(height / 6, 2, 24);
+  for (int y = 0; y < steps_y; y++) {
+    for (int x = 0; x < steps_x; x++) {
+      const int2 co(rect.xmin + width * (x + 0.5f) / steps_x,
+                    rect.ymin + height * (y + 0.5f) / steps_y);
+      if (BLI_lasso_is_point_inside(path, co.x, co.y, IS_CLIPPED) &&
+          mesh_under(C, float2(co)))
+      {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+static wmOperatorStatus smart_mask_lasso_exec(bContext *C, wmOperator *op)
+{
+  const bool erase = RNA_boolean_get(op->ptr, "erase");
+  const Array<int2> path = WM_gesture_lasso_path_to_array(C, op);
+  if (path.size() < 3) {
+    return OPERATOR_CANCELLED;
+  }
+  rcti rect;
+  BLI_lasso_boundbox(&rect, path);
+  /* Ignore stray clicks. */
+  if (BLI_rcti_size_x(&rect) < 8 && BLI_rcti_size_y(&rect) < 8) {
+    return OPERATOR_CANCELLED;
+  }
+
+  if (lasso_is_empty(C, path)) {
+    /* Empty space: clear the mask (only the box remeshes). */
+    if (erase || object_has_mask(*CTX_data_active_object(C))) {
+      return mask_flood_fill(C, "VALUE", 0.0f);
+    }
+    return OPERATOR_CANCELLED;
+  }
+
+  /* Mask with Blender's lasso mask, along the same path. */
+  wmOperatorType *ot = WM_operatortype_find("PAINT_OT_mask_lasso_gesture", false);
+  PointerRNA ptr = WM_operator_properties_create_ptr(ot);
+  RNA_BEGIN (op->ptr, item, "path") {
+    PointerRNA point;
+    RNA_collection_add(&ptr, "path", &point);
+    float loc[2];
+    RNA_float_get_array(&item, "loc", loc);
+    RNA_float_set_array(&point, "loc", loc);
+  }
+  RNA_END;
+  RNA_enum_set_identifier(C, &ptr, "mode", "VALUE");
+  RNA_float_set(&ptr, "value", erase ? 0.0f : 1.0f);
+  const wmOperatorStatus ret = WM_operator_name_call_ptr(
+      C, ot, wm::OpCallContext::ExecDefault, &ptr, nullptr);
+  WM_operator_properties_free(&ptr);
+  return ret;
+}
+
+static void SCULPT_OT_phantom_smart_mask_lasso(wmOperatorType *ot)
+{
+  ot->name = "Smart Mask Lasso";
+  ot->idname = "SCULPT_OT_phantom_smart_mask_lasso";
+  ot->description = "Mask inside a lasso drawn off the mesh; a lasso over empty space clears it";
+
+  ot->invoke = WM_gesture_lasso_invoke;
+  ot->modal = WM_gesture_lasso_modal;
+  ot->exec = smart_mask_lasso_exec;
+  ot->poll = sculpt_mode_poll_view3d;
+
+  /* No undo flag: the lasso mask or the clear push their own undo step. */
+  ot->flag = OPTYPE_DEPENDS_ON_CURSOR;
+
+  WM_operator_properties_gesture_lasso(ot);
+  PropertyRNA *prop = RNA_def_boolean(
+      ot->srna, "erase", false, "Erase", "Remove the mask instead of adding it");
+  RNA_def_property_flag(prop, PROP_SKIP_SAVE);
+}
+
 static wmOperatorStatus smart_mask_click_invoke(bContext *C, wmOperator *op, const wmEvent *event)
 {
   const bool sharpen = RNA_boolean_get(op->ptr, "sharpen");
@@ -1609,6 +1737,7 @@ void operatortypes_sculpt()
 {
   WM_operatortype_append(SCULPT_OT_brush_stroke);
   WM_operatortype_append(smart_mask::SCULPT_OT_phantom_smart_mask);
+  WM_operatortype_append(smart_mask::SCULPT_OT_phantom_smart_mask_lasso);
   WM_operatortype_append(smart_mask::SCULPT_OT_phantom_smart_mask_click);
   WM_operatortype_append(SCULPT_OT_sculptmode_toggle);
   WM_operatortype_append(SCULPT_OT_set_persistent_base);

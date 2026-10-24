@@ -534,12 +534,14 @@ class PHANTOM_OT_start_picker(Operator):
                 area, region = _view3d(window)
                 if area is not None:
                     with bpy.context.temp_override(window=window, area=area, region=region):
-                        bpy.ops.phantom.start_asset('EXEC_DEFAULT', choice=key)
+                        bpy.ops.phantom.start_asset('EXEC_DEFAULT', True, choice=key)
                 return None
             bpy.app.timers.register(later, first_interval=0.05)
             return {'FINISHED'}
+        # `True`: push the operator's undo step (Python operator calls skip undo by default).
+        # Without it, undoing the first stroke went back to before the mesh existed and crashed.
         with context.temp_override(area=self.area, region=self.region):
-            bpy.ops.phantom.start_asset('EXEC_DEFAULT', choice=key)
+            bpy.ops.phantom.start_asset('EXEC_DEFAULT', True, choice=key)
         return {'FINISHED'}
 
     def _open(self, context):

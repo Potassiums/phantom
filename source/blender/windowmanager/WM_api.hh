@@ -2667,5 +2667,10 @@ enum class WMUISound {
 void WM_ui_sound_play(WMUISound sound, float pitch = 1.0f);
 /** Like #WM_ui_sound_play with a random pitch within `1 +/- spread`, for repeated sounds. */
 void WM_ui_sound_play_varied(WMUISound sound, float spread);
+/**
+ * Play an interface sound by its file name without extension (e.g. "measure_tick"), for
+ * scripts. Returns false when there is no such sound.
+ */
+bool WM_ui_sound_play_by_name(const char *name, float pitch = 1.0f);
 
 }  // namespace blender
