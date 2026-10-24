@@ -1066,6 +1066,47 @@ class VIEW3D_PT_sculpt_dyntopo(Panel, View3DPaintPanel):
             col.operator("sculpt.detail_flood_fill")
 
 
+def draw_remesh_settings(layout, mesh, sample_detail_size=False):
+    """Phantom: the remesh method drop-down and its settings (shared with the mesh properties).
+    The method is a preference, so it stays the same for every object; the rest is per mesh."""
+    edit = bpy.context.preferences.edit
+    col = layout.column()
+    col.prop(edit, "remesh_method", text="Method")
+    dynamic = edit.remesh_method == 'DYNAMIC'
+
+    row = col.row(align=True)
+    if dynamic:
+        row.prop(mesh, "remesh_voxel_size", text="Edge Length")
+    else:
+        row.prop(mesh, "remesh_voxel_size")
+    if sample_detail_size:
+        props = row.operator("sculpt.sample_detail_size", text="", icon='EYEDROPPER')
+        props.mode = 'VOXEL'
+
+    if dynamic:
+        row = col.row(heading="Close Holes")
+        row.prop(mesh, "use_remesh_close_holes", text="")
+        sub = row.row()
+        sub.active = mesh.use_remesh_close_holes
+        sub.prop(mesh, "remesh_close_radius", text="Radius")
+        row = col.row(heading="Project Detail")
+        row.prop(mesh, "use_remesh_project", text="")
+        sub = row.row()
+        sub.active = mesh.use_remesh_project
+        sub.prop(mesh, "remesh_crease_threshold", text="Crease")
+        col.prop(mesh, "remesh_band")
+
+        col = layout.column(heading="Preserve", align=True)
+        col.prop(mesh, "use_remesh_preserve_attributes", text="Attributes")
+    else:
+        col.prop(mesh, "remesh_voxel_adaptivity")
+        col.prop(mesh, "use_remesh_fix_poles")
+
+        col = layout.column(heading="Preserve", align=True)
+        col.prop(mesh, "use_remesh_preserve_volume", text="Volume")
+        col.prop(mesh, "use_remesh_preserve_attributes", text="Attributes")
+
+
 class VIEW3D_PT_sculpt_voxel_remesh(Panel, View3DPaintPanel):
     bl_context = ".sculpt_mode"  # dot on purpose (access from topbar)
     bl_label = "Remesh"
@@ -1081,18 +1122,8 @@ class VIEW3D_PT_sculpt_voxel_remesh(Panel, View3DPaintPanel):
         layout.use_property_split = True
         layout.use_property_decorate = False
 
-        col = layout.column()
         mesh = context.active_object.data
-        row = col.row(align=True)
-        row.prop(mesh, "remesh_voxel_size")
-        props = row.operator("sculpt.sample_detail_size", text="", icon='EYEDROPPER')
-        props.mode = 'VOXEL'
-        col.prop(mesh, "remesh_voxel_adaptivity")
-        col.prop(mesh, "use_remesh_fix_poles")
-
-        col = layout.column(heading="Preserve", align=True)
-        col.prop(mesh, "use_remesh_preserve_volume", text="Volume")
-        col.prop(mesh, "use_remesh_preserve_attributes", text="Attributes")
+        draw_remesh_settings(layout, mesh, sample_detail_size=True)
 
         layout.operator("object.voxel_remesh", text="Remesh")
 

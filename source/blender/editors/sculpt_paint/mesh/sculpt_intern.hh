@@ -960,6 +960,10 @@ void face_set_overlay_check(bContext &C, wmOperator &op);
 
 void SCULPT_OT_set_pivot_position(wmOperatorType *ot);
 void SCULPT_OT_phantom_transform(wmOperatorType *ot);
+void SCULPT_OT_phantom_clay_polish(wmOperatorType *ot);
+void SCULPT_OT_phantom_history_goto(wmOperatorType *ot);
+void SCULPT_OT_phantom_history_scrub(wmOperatorType *ot);
+void OBJECT_OT_phantom_history_delete(wmOperatorType *ot);
 void SCULPT_OT_paint_mask_extract(wmOperatorType *ot);
 void SCULPT_OT_face_set_extract(wmOperatorType *ot);
 void SCULPT_OT_paint_mask_slice(wmOperatorType *ot);

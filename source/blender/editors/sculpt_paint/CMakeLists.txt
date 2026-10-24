@@ -95,6 +95,7 @@ set(SRC
   mesh/sculpt.cc
   mesh/sculpt_automasking.cc
   mesh/sculpt_boundary.cc
+  mesh/sculpt_clay_polish.cc
   mesh/sculpt_cloth.cc
   mesh/sculpt_detail.cc
   mesh/sculpt_dyntopo.cc
@@ -110,6 +111,7 @@ set(SRC
   mesh/sculpt_mask_extract.cc
   mesh/sculpt_mask_init.cc
   mesh/sculpt_ops.cc
+  mesh/sculpt_phantom_history.cc
   mesh/sculpt_paint_color.cc
   mesh/sculpt_pose.cc
   mesh/sculpt_project.cc

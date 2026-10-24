@@ -5910,6 +5910,29 @@ static void rna_def_userdef_edit(BlenderRNA *brna)
   RNA_def_property_ui_text(
       prop, "Undo Memory Size", "Maximum memory usage in megabytes (0 means unlimited)");
 
+  /* Phantom: remesher choice, for every object. */
+  static const EnumPropertyItem remesh_method_items[] = {
+      {USER_REMESH_OPENVDB,
+       "OPENVDB",
+       0,
+       "OpenVDB",
+       "Remesh with OpenVDB's volume to mesh conversion"},
+      {USER_REMESH_DYNAMIC,
+       "DYNAMIC",
+       0,
+       "Dynamic",
+       "Remesh with dual contouring, closing small holes and projecting back the detail"},
+      {0, nullptr, 0, nullptr, nullptr},
+  };
+  prop = RNA_def_property(srna, "remesh_method", PROP_ENUM, PROP_NONE);
+  RNA_def_property_enum_sdna(prop, nullptr, "remesh_method");
+  RNA_def_property_enum_items(prop, remesh_method_items);
+  RNA_def_property_ui_text(prop,
+                           "Remesh Method",
+                           "Remesher used by Remesh, its shortcut and masking empty space, for "
+                           "every object");
+  RNA_def_property_update(prop, 0, "rna_userdef_update");
+
   prop = RNA_def_property(srna, "use_global_undo", PROP_BOOLEAN, PROP_NONE);
   RNA_def_property_boolean_sdna(prop, nullptr, "uiflag", USER_GLOBALUNDO);
   RNA_def_property_ui_text(

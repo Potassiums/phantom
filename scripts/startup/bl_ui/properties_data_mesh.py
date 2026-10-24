@@ -420,15 +420,12 @@ class DATA_PT_remesh(MeshButtonsPanel, Panel):
         row.prop(mesh, "remesh_mode", text="Mode", expand=True)
         col = layout.column()
         if mesh.remesh_mode == 'VOXEL':
-            col.prop(mesh, "remesh_voxel_size")
-            col.prop(mesh, "remesh_voxel_adaptivity")
-            col.prop(mesh, "use_remesh_fix_poles")
+            from bl_ui.space_view3d_toolbar import draw_remesh_settings
+            draw_remesh_settings(layout, mesh)
 
-            col = layout.column(heading="Preserve")
-            col.prop(mesh, "use_remesh_preserve_volume", text="Volume")
-            col.prop(mesh, "use_remesh_preserve_attributes", text="Attributes")
-
-            col.operator("object.voxel_remesh", text="Voxel Remesh")
+            layout.operator("object.voxel_remesh",
+                            text="Remesh" if context.preferences.edit.remesh_method == 'DYNAMIC'
+                            else "Voxel Remesh")
         else:
             col.operator("object.quadriflow_remesh", text="QuadriFlow Remesh")
             col.operator("object.auto_remesh", text="Quad Remesh")

@@ -3265,6 +3265,63 @@ static void rna_def_mesh(BlenderRNA *brna)
   RNA_def_property_clear_flag(prop, PROP_ANIMATABLE);
   RNA_def_property_flag(prop, PROP_NO_DEG_UPDATE);
 
+  /* Phantom: dynamic remesher settings (the method is a preference). */
+  prop = RNA_def_property(srna, "use_remesh_close_holes", PROP_BOOLEAN, PROP_NONE);
+  RNA_def_property_boolean_sdna(
+      prop, nullptr, "remesh_dynamic_flag", ME_REMESH_DYNAMIC_CLOSE_HOLES);
+  RNA_def_property_ui_text(prop,
+                           "Close Holes",
+                           "Close holes and gaps narrower than twice the close radius. Also "
+                           "fills narrow crevices");
+  RNA_def_property_update(prop, 0, "rna_Mesh_update_draw");
+  RNA_def_property_clear_flag(prop, PROP_ANIMATABLE);
+  RNA_def_property_flag(prop, PROP_NO_DEG_UPDATE);
+
+  prop = RNA_def_property(srna, "remesh_close_radius", PROP_INT, PROP_NONE);
+  RNA_def_property_int_sdna(prop, nullptr, "remesh_dynamic_close_radius");
+  RNA_def_property_range(prop, 1, 4);
+  RNA_def_property_ui_text(prop,
+                           "Close Radius",
+                           "Size of the holes to close, in edge lengths. Larger values round "
+                           "off the model more");
+  RNA_def_property_update(prop, 0, "rna_Mesh_update_draw");
+  RNA_def_property_clear_flag(prop, PROP_ANIMATABLE);
+  RNA_def_property_flag(prop, PROP_NO_DEG_UPDATE);
+
+  prop = RNA_def_property(srna, "use_remesh_project", PROP_BOOLEAN, PROP_NONE);
+  RNA_def_property_boolean_sdna(prop, nullptr, "remesh_dynamic_flag", ME_REMESH_DYNAMIC_PROJECT);
+  RNA_def_property_ui_text(prop,
+                           "Project Detail",
+                           "Project the new mesh onto the original surface to keep detail "
+                           "smaller than the edge length");
+  RNA_def_property_update(prop, 0, "rna_Mesh_update_draw");
+  RNA_def_property_clear_flag(prop, PROP_ANIMATABLE);
+  RNA_def_property_flag(prop, PROP_NO_DEG_UPDATE);
+
+  prop = RNA_def_property(srna, "remesh_crease_threshold", PROP_FLOAT, PROP_FACTOR);
+  RNA_def_property_float_sdna(prop, nullptr, "remesh_dynamic_crease_threshold");
+  RNA_def_property_range(prop, 0.0f, 2.0f);
+  RNA_def_property_ui_range(prop, 0.0f, 2.0f, 0.05, 2);
+  RNA_def_property_ui_text(prop,
+                           "Crease Threshold",
+                           "Normal difference where projection starts fading out, so vertices "
+                           "aren't pulled across sharp creases. Lower is more cautious");
+  RNA_def_property_update(prop, 0, "rna_Mesh_update_draw");
+  RNA_def_property_clear_flag(prop, PROP_ANIMATABLE);
+  RNA_def_property_flag(prop, PROP_NO_DEG_UPDATE);
+
+  prop = RNA_def_property(srna, "remesh_band", PROP_INT, PROP_NONE);
+  RNA_def_property_int_sdna(prop, nullptr, "remesh_dynamic_band");
+  RNA_def_property_range(prop, 2, 8);
+  RNA_def_property_ui_text(prop,
+                           "Band",
+                           "Width of the exact distance band around the surface, in edge "
+                           "lengths. Wider is slower, with steadier vertex placement around "
+                           "thin and closed-over areas");
+  RNA_def_property_update(prop, 0, "rna_Mesh_update_draw");
+  RNA_def_property_clear_flag(prop, PROP_ANIMATABLE);
+  RNA_def_property_flag(prop, PROP_NO_DEG_UPDATE);
+
   /* End remesh */
 
   /* Symmetry */

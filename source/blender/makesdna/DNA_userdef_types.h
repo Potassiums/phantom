@@ -236,6 +236,12 @@ enum eUserPref_Tablet_Flags : int {
 };
 ENUM_OPERATORS(eUserPref_Tablet_Flags)
 
+/** Phantom: #UserDef.remesh_method */
+enum eUserpref_RemeshMethod {
+  USER_REMESH_OPENVDB = 0,
+  USER_REMESH_DYNAMIC = 1,
+};
+
 /** #UserDef.app_flag */
 enum eUserpref_APP_Flag : char {
   USER_APP_LOCK_CORNER_SPLIT = (1 << 0),
@@ -1032,7 +1038,9 @@ struct UserDef {
   char ui_sounds = 1;
   /** Phantom: interface sound volume, 0-100. */
   char ui_sound_volume = 60;
-  char _pad8[2] = {};
+  /** Phantom: #eUserpref_RemeshMethod, the remesher for Remesh, Ctrl+R and masking empty space. */
+  char remesh_method = 0;
+  char _pad8[1] = {};
   /**
    * Experimental flag for app-templates to make changes to behavior
    * which are outside the scope of typical preferences.

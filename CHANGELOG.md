@@ -4,7 +4,40 @@ Phantom is a fork of Blender tuned for sculpting. This file lists what Phantom c
 own changes come from the Blender version each release is built on.
 
 
-## Unreleased
+## 0.4.0 alpha (2026-10-24)
+
+Built on Blender 5.4 alpha, on top of 0.3.2.
+
+### Experimental
+
+These three are new and **experimental**: expect rough edges, and save often. Each is off or
+optional unless you choose it.
+
+- **Dynamic remesher** (experimental): a new remesher next to OpenVDB. Pick it with **Method**
+  at the top of the Remesh panel (sculpt header, or Properties > Data > Remesh); the choice is a
+  preference, so it stays the same for every object and file, and Ctrl+R and box-masking empty
+  space use it too. It builds a narrow-band distance field, closes holes and gaps up to
+  **Close Radius** cells wide, merges overlapping shells into one, extracts an evenly spaced,
+  quad-only, watertight surface with dual contouring, and projects it back onto the original
+  for detail smaller than the **Edge Length** (faded out across creases). The result is the
+  same on any number of threads. Not yet: progressive preview while remeshing.
+- **ClayPolish** (experimental): Properties > Sculpting > ClayPolish polishes the whole mesh at
+  once, typically right after a remesh: it smooths away noise and stair-stepping without
+  shrinking (tangential and Taubin smoothing), keeps creases by their angle (**Angle
+  Preservation**, **Angle Ratio**), restores the edges the polish softened (**Sharpness**,
+  **Softness**), and can inflate convex or concave areas afterwards. Masked and hidden parts
+  don't move. Settings are saved with the file. Not with Dyntopo or Multires.
+- **Sculpt history and timeline** (experimental): turn on **History** in Properties >
+  Sculpting to record every sculpt edit of the object (strokes, filters, remeshes, ClayPolish).
+  In Sculpt Mode a timeline at the top of the viewport shows the steps (orange ticks where the
+  topology changed); click or drag it to scrub, and the mesh follows exactly. Sculpting after
+  going back drops the steps after it. Set a **Limit** (100 steps by default; older steps are
+  deleted past it), choose whether the history is **saved in the file**, pause it, or delete
+  it. Only moved vertices are stored between steps, so it stays small. Not with Dyntopo or
+  Multires; scrubbing across a remesh drops attributes like UVs, as the remesh did. Ctrl+Z is
+  still Blender's undo.
+
+### Other changes
 
 - **Stroke, Alpha and Texture thumbnails in the Brush Asset panel:** next to the brush
   thumbnail, like ZBrush's brush tray. Each shows the brush's current stroke method, alpha

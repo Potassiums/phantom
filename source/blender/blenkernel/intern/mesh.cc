@@ -444,6 +444,14 @@ static void mesh_blend_read_data(BlendDataReader *reader, ID *id)
   if (!mesh->mat) {
     mesh->totcol = 0;
   }
+  /* Phantom: files from before the dynamic remesher read its settings as zero; the band is
+   * never zero once set, so use it to give them their defaults. */
+  if (mesh->remesh_dynamic_band == 0) {
+    mesh->remesh_dynamic_flag = ME_REMESH_DYNAMIC_CLOSE_HOLES | ME_REMESH_DYNAMIC_PROJECT;
+    mesh->remesh_dynamic_close_radius = 1;
+    mesh->remesh_dynamic_band = 3;
+    mesh->remesh_dynamic_crease_threshold = 0.5f;
+  }
 
   /* Deprecated pointers to custom data layers are read here for backward compatibility
    * with files where these were owning pointers rather than a view into custom data.
@@ -1470,6 +1478,10 @@ void BKE_mesh_copy_parameters(Mesh *me_dst, const Mesh *me_src)
   me_dst->remesh_voxel_size = me_src->remesh_voxel_size;
   me_dst->remesh_voxel_adaptivity = me_src->remesh_voxel_adaptivity;
   me_dst->remesh_mode = me_src->remesh_mode;
+  me_dst->remesh_dynamic_flag = me_src->remesh_dynamic_flag;
+  me_dst->remesh_dynamic_close_radius = me_src->remesh_dynamic_close_radius;
+  me_dst->remesh_dynamic_band = me_src->remesh_dynamic_band;
+  me_dst->remesh_dynamic_crease_threshold = me_src->remesh_dynamic_crease_threshold;
   me_dst->symmetry = me_src->symmetry;
 
   me_dst->face_sets_color_seed = me_src->face_sets_color_seed;

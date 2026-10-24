@@ -669,12 +669,72 @@ struct Object {
   /** Irradiance caches baked for this object (light-probes only). */
   struct LightProbeObjectCache *lightprobe_cache = nullptr;
 
+  /** Phantom: sculpt history of the object's mesh, scrubbed on the timeline. */
+  struct PhantomHistory *phantom_history = nullptr;
+
   bke::ObjectRuntime *runtime = nullptr;
 
 #ifdef __cplusplus
   const float4x4 &object_to_world() const;
   const float4x4 &world_to_object() const;
 #endif
+};
+
+/**
+ * Phantom: one step of an object's sculpt history (see `BKE_phantom_history.hh`). A keyframe
+ * holds the whole mesh shape; any other step holds the vertices that moved since the step before.
+ */
+struct PhantomHistoryStep {
+  /** Keyframe: positions (`verts_num * 3`) and faces. Null for deltas. */
+  float *positions = nullptr;
+  int *face_offsets = nullptr;
+  int *corner_verts = nullptr;
+  int verts_num = 0;
+  int faces_num = 0;
+  int corners_num = 0;
+
+  /** Delta: the moved vertices and their new positions (`delta_num * 3`). */
+  int delta_num = 0;
+  int *delta_indices = nullptr;
+  float *delta_positions = nullptr;
+
+  /** #ePhantomHistoryStepFlag. */
+  int flag = 0;
+  /** Number of the step, counting from the first one ever recorded (for the UI). */
+  int number = 0;
+  /** What made the step (operator or brush name). */
+  char name[/*MAX_NAME*/ 64] = "";
+};
+
+/** #PhantomHistoryStep.flag */
+enum ePhantomHistoryStepFlag {
+  PHANTOM_HISTORY_STEP_KEYFRAME = 1 << 0,
+};
+
+/** Phantom: an object's sculpt history, #Object.phantom_history. */
+struct PhantomHistory {
+  /** Steps, oldest first: the first is always a keyframe. */
+  PhantomHistoryStep *steps = nullptr;
+  int steps_num = 0;
+  /** The step the mesh is at (the scrub cursor). */
+  int current = 0;
+  /** Steps kept before the oldest are dropped; 0 keeps them all. */
+  int limit = 100;
+  /** #ePhantomHistoryFlag. */
+  int flag = 0;
+  /** #PhantomHistoryStep.number of the next step. */
+  int next_number = 0;
+  char _pad[4] = {};
+  /** Not saved: the positions of the current step, to compare the next one to. */
+  void *runtime = nullptr;
+};
+
+/** #PhantomHistory.flag */
+enum ePhantomHistoryFlag {
+  /** Record new steps (when off, the history is kept but nothing is added). */
+  PHANTOM_HISTORY_RECORD = 1 << 0,
+  /** Save the steps in the .blend file. */
+  PHANTOM_HISTORY_SAVE = 1 << 1,
 };
 
 /** DEPRECATED: this is not used anymore because hooks are now modifiers. */

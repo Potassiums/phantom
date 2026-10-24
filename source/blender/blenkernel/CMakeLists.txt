@@ -204,6 +204,7 @@ set(SRC
   intern/mesh_mirror.cc
   intern/mesh_normals.cc
   intern/mesh_remap.cc
+  intern/mesh_remesh_dynamic.cc
   intern/mesh_remesh_voxel.cc
   intern/mesh_runtime.cc
   intern/mesh_sample.cc
@@ -249,6 +250,7 @@ set(SRC
   intern/paint_canvas.cc
   intern/paint_runtime.cc
   intern/particle.cc
+  intern/phantom_history.cc
   intern/particle_child.cc
   intern/particle_distribute.cc
   intern/particle_system.cc
@@ -469,6 +471,7 @@ set(SRC
   BKE_mesh_mapping.hh
   BKE_mesh_mirror.hh
   BKE_mesh_remap.hh
+  BKE_mesh_remesh_dynamic.hh
   BKE_mesh_remesh_voxel.hh
   BKE_mesh_runtime.hh
   BKE_mesh_sample.hh
@@ -504,6 +507,7 @@ set(SRC
   BKE_paint_bvh_pixels.hh
   BKE_paint_types.hh
   BKE_particle.h
+  BKE_phantom_history.hh
   BKE_path_templates.hh
   BKE_pointcache.h
   BKE_pointcloud.hh

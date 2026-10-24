@@ -61,6 +61,7 @@
 #include "BKE_object_types.hh"
 #include "BKE_paint.hh"
 #include "BKE_paint_types.hh"
+#include "BKE_phantom_history.hh"
 #include "BKE_scene.hh"
 #include "BKE_subdiv_ccg.hh"
 #include "BKE_undo_system.hh"
@@ -1992,6 +1993,41 @@ static void save_common_data(Object &ob, SculptUndoStep *us)
   }
 }
 
+/** Phantom: sculpt history (#Object.phantom_history) follows the undo steps of the mesh. */
+static std::string &history_step_name()
+{
+  static std::string name;
+  return name;
+}
+
+static bool history_applies(const Object &ob)
+{
+  if (!bke::phantom_history::is_recording(ob)) {
+    return false;
+  }
+  /* Dyntopo and Multires don't edit the mesh itself. */
+  if (const bke::pbvh::Tree *pbvh = bke::object::pbvh_get(ob)) {
+    return pbvh->type() == bke::pbvh::Type::Mesh;
+  }
+  const SculptSession *ss = ob.runtime->sculpt_session;
+  return ss == nullptr || ss->bm == nullptr;
+}
+
+static void history_begin(Object &ob, const char *name)
+{
+  history_step_name() = name;
+  if (history_applies(ob)) {
+    bke::phantom_history::begin_edit(ob, name);
+  }
+}
+
+static void history_record(Object &ob, const bool topology_changed)
+{
+  if (history_applies(ob)) {
+    bke::phantom_history::record(ob, history_step_name(), topology_changed);
+  }
+}
+
 void push_begin_ex(const Scene & /*scene*/, Object &ob, const char *name)
 {
   UndoStack *ustack = ED_undo_stack_get();
@@ -2028,6 +2064,7 @@ void push_begin_ex(const Scene & /*scene*/, Object &ob, const char *name)
       break;
     }
   }
+  history_begin(ob, name);
 }
 
 void push_begin(const Scene &scene, Object &ob, const wmOperator *op)
@@ -2107,6 +2144,10 @@ void push_end_ex(Object &ob, const bool use_nested_undo)
           return size;
         },
         std::plus<size_t>());
+  }
+
+  if (step_data->type == Type::Position) {
+    history_record(ob, false);
   }
 
   /* We could remove this and enforce all callers run in an operator using 'OPTYPE_UNDO'. */
@@ -2366,6 +2407,7 @@ void geometry_begin_ex(const Scene & /*scene*/, Object &ob, const char *name)
       BKE_undosys_step_push_init_with_type(ustack, C, name, BKE_UNDOSYS_TYPE_SCULPT));
   save_common_data(ob, us);
   geometry_push(ob);
+  history_begin(ob, name);
 }
 
 static size_t calculate_node_geometry_allocated_size(const NodeGeometry &node_geometry)
@@ -2403,6 +2445,7 @@ static size_t estimate_geometry_step_size(const StepData &step_data)
 void geometry_end(Object &ob)
 {
   geometry_push(ob);
+  history_record(ob, true);
 
   StepData *step_data = get_step_data();
   step_data->undo_size = estimate_geometry_step_size(*step_data);

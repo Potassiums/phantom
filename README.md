@@ -44,6 +44,13 @@ Phantom is in **alpha** and follows Blender's in-development code (currently 5.4
   its own object, standing up in Blender's axes.
 - **Quad Remesh** (powered by [AutoRemesher](https://github.com/huxingyi/autoremesher))
   with its own dropdown next to Remesh; settings saved with the file.
+- **Dynamic remesher (experimental):** a second remesher next to OpenVDB, picked in the Remesh
+  panel and used by Ctrl+R too: evenly spaced quads, small holes closed, overlapping shells
+  merged, detail projected back.
+- **ClayPolish (experimental):** smooth the whole surface at once while keeping creases crisp
+  (Properties > Sculpting).
+- **Sculpt history (experimental):** record every sculpt edit of an object and scrub back
+  through them on a timeline at the top of the viewport (Properties > Sculpting > History).
 - **Brushes:** the sidebar moves next to the tools with the Brush Asset panel (tool icon and name
   on top) and four quick-brush slots: drag brushes in or out, right-click to replace, remove or
   give a shortcut. A quick-brush shortcut takes over its key (for example C instead of Clay

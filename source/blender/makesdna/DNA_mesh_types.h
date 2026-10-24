@@ -130,6 +130,12 @@ enum eMesh_RemeshMode : char {
   REMESH_QUAD = 1,
 };
 
+/** Phantom: #Mesh.remesh_dynamic_flag. */
+enum eMesh_RemeshDynamicFlag : char {
+  ME_REMESH_DYNAMIC_CLOSE_HOLES = 1 << 0,
+  ME_REMESH_DYNAMIC_PROJECT = 1 << 1,
+};
+
 /** #SubsurfModifierData.subdivType */
 enum MeshSubdivType : int {
   ME_CC_SUBSURF = 0,
@@ -255,6 +261,17 @@ struct Mesh {
   /** Per-mesh settings for voxel remesh. */
   float remesh_voxel_size = 0.1f;
   float remesh_voxel_adaptivity = 0.0f;
+
+  /**
+   * Phantom: per-mesh settings for the dynamic remesher (chosen in the preferences,
+   * #UserDef.remesh_method), which uses #remesh_voxel_size as its target edge length. Older files
+   * read these as zero; see #mesh_blend_read_data.
+   */
+  char _pad_remesh = 0;
+  char remesh_dynamic_flag = ME_REMESH_DYNAMIC_CLOSE_HOLES | ME_REMESH_DYNAMIC_PROJECT;
+  char remesh_dynamic_close_radius = 1;
+  char remesh_dynamic_band = 3;
+  float remesh_dynamic_crease_threshold = 0.5f;
 
   int face_sets_color_seed = 0;
   /* Stores the initial Face Set to be rendered white. This way the overlay can be enabled by

@@ -33,6 +33,7 @@
 #include "BKE_main.hh"
 #include "BKE_mesh.hh"
 #include "BKE_mesh_mirror.hh"
+#include "BKE_mesh_remesh_dynamic.hh"
 #include "BKE_mesh_remesh_voxel.hh"
 #include "BKE_modifier.hh"
 #include "BKE_object.hh"
@@ -64,9 +65,13 @@
 
 #include "BLF_api.hh"
 
+#include "CLG_log.h"
+
 #include "object_intern.hh" /* own include */
 
 namespace blender::ed::object {
+
+static CLG_LogRef LOG = {"object.remesh"};
 
 /* TODO(sebpa): unstable, can lead to unrecoverable errors. */
 // #define USE_MESH_CURVATURE
@@ -107,15 +112,54 @@ static bool object_remesh_poll(bContext *C)
   return ED_operator_object_active_editable_mesh(C);
 }
 
+/** Phantom: the dynamic remesher, with its stats in the log. */
+static Mesh *remesh_dynamic(const Mesh &mesh, ReportList *reports)
+{
+  DynamicRemeshSettings settings;
+  settings.target_edge_length = mesh.remesh_voxel_size;
+  settings.band_cells = mesh.remesh_dynamic_band;
+  settings.close_holes = mesh.remesh_dynamic_flag & ME_REMESH_DYNAMIC_CLOSE_HOLES;
+  settings.close_radius_cells = mesh.remesh_dynamic_close_radius;
+  settings.project = mesh.remesh_dynamic_flag & ME_REMESH_DYNAMIC_PROJECT;
+  settings.crease_threshold = mesh.remesh_dynamic_crease_threshold;
+
+  DynamicRemeshStats stats;
+  Mesh *new_mesh = BKE_mesh_remesh_dynamic(&mesh, settings, reports, &stats);
+  if (new_mesh) {
+    CLOG_INFO(&LOG,
+              "Dynamic remesh: %d verts, grid %dx%dx%d (cell %.4g), error mean %.4g p95 %.4g, "
+              "validate %.3fs, field %.3fs, sign %.3fs, extract %.3fs, project %.3fs",
+              new_mesh->verts_num,
+              stats.grid_dims[0],
+              stats.grid_dims[1],
+              stats.grid_dims[2],
+              stats.cell_size,
+              stats.error_mean,
+              stats.error_p95,
+              stats.time_validate,
+              stats.time_field,
+              stats.time_sign,
+              stats.time_extract,
+              stats.time_project);
+  }
+  return new_mesh;
+}
+
 static wmOperatorStatus voxel_remesh_exec(bContext *C, wmOperator *op)
 {
   const Scene &scene = *CTX_data_scene(C);
   Object *ob = CTX_data_active_object(C);
 
   Mesh *mesh = id_cast<Mesh *>(ob->data);
+  /* Phantom: the remesh method preference picks the remesher, for the button, the shortcut and
+   * masking empty space alike. */
+  const bool use_dynamic = U.remesh_method == USER_REMESH_DYNAMIC;
 
   if (mesh->remesh_voxel_size <= 0.0f) {
-    BKE_report(op->reports, RPT_ERROR, "Voxel remesher cannot run with a voxel size of 0.0");
+    BKE_report(op->reports,
+               RPT_ERROR,
+               use_dynamic ? "Remesher cannot run with an edge length of 0.0" :
+                             "Voxel remesher cannot run with a voxel size of 0.0");
     return OPERATOR_CANCELLED;
   }
 
@@ -123,31 +167,43 @@ static wmOperatorStatus voxel_remesh_exec(bContext *C, wmOperator *op)
     return OPERATOR_CANCELLED;
   }
 
-  float isovalue = 0.0f;
-  if (mesh->flag & ME_REMESH_REPROJECT_VOLUME) {
-    isovalue = mesh->remesh_voxel_size * 0.3f;
+  Mesh *new_mesh;
+  if (use_dynamic) {
+    /* It reports its own errors. */
+    new_mesh = remesh_dynamic(*mesh, op->reports);
+    if (!new_mesh) {
+      return OPERATOR_CANCELLED;
+    }
   }
+  else {
+    float isovalue = 0.0f;
+    if (mesh->flag & ME_REMESH_REPROJECT_VOLUME) {
+      isovalue = mesh->remesh_voxel_size * 0.3f;
+    }
 
-  Mesh *new_mesh = BKE_mesh_remesh_voxel(
-      mesh, mesh->remesh_voxel_size, mesh->remesh_voxel_adaptivity, isovalue, op->reports);
+    new_mesh = BKE_mesh_remesh_voxel(
+        mesh, mesh->remesh_voxel_size, mesh->remesh_voxel_adaptivity, isovalue, op->reports);
 
-  if (!new_mesh) {
-    BKE_report(op->reports, RPT_ERROR, "Voxel remesher failed to create mesh");
-    return OPERATOR_CANCELLED;
+    if (!new_mesh) {
+      BKE_report(op->reports, RPT_ERROR, "Voxel remesher failed to create mesh");
+      return OPERATOR_CANCELLED;
+    }
   }
 
   if (ob->mode == OB_MODE_SCULPT) {
     sculpt_paint::undo::geometry_begin(scene, *ob, op);
   }
 
-  if (mesh->flag & ME_REMESH_FIX_POLES && mesh->remesh_voxel_adaptivity <= 0.0f) {
-    Mesh *mesh_fixed_poles = BKE_mesh_remesh_voxel_fix_poles(new_mesh);
-    BKE_id_free(nullptr, new_mesh);
-    new_mesh = mesh_fixed_poles;
-  }
+  if (!use_dynamic) {
+    if (mesh->flag & ME_REMESH_FIX_POLES && mesh->remesh_voxel_adaptivity <= 0.0f) {
+      Mesh *mesh_fixed_poles = BKE_mesh_remesh_voxel_fix_poles(new_mesh);
+      BKE_id_free(nullptr, new_mesh);
+      new_mesh = mesh_fixed_poles;
+    }
 
-  if (mesh->flag & ME_REMESH_REPROJECT_VOLUME) {
-    BKE_shrinkwrap_remesh_target_project(new_mesh, mesh, ob);
+    if (mesh->flag & ME_REMESH_REPROJECT_VOLUME) {
+      BKE_shrinkwrap_remesh_target_project(new_mesh, mesh, ob);
+    }
   }
 
   if (mesh->flag & ME_REMESH_REPROJECT_ATTRIBUTES) {
@@ -182,8 +238,8 @@ void OBJECT_OT_voxel_remesh(wmOperatorType *ot)
   /* identifiers */
   ot->name = "Voxel Remesh";
   ot->description =
-      "Calculates a new manifold mesh based on the volume of the current mesh. All data layers "
-      "will be lost";
+      "Calculates a new manifold mesh based on the volume of the current mesh, with the remesh "
+      "method chosen in the preferences (OpenVDB or Dynamic). All data layers will be lost";
   ot->idname = "OBJECT_OT_voxel_remesh";
 
   /* API callbacks. */

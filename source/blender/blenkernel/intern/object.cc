@@ -111,6 +111,7 @@
 #include "BKE_multires.hh"
 #include "BKE_node.hh"
 #include "BKE_object.hh"
+#include "BKE_phantom_history.hh"
 #include "BKE_object_types.hh"
 #include "BKE_paint.hh"
 #include "BKE_particle.h"
@@ -238,6 +239,8 @@ static void object_copy_data(Main *bmain,
 
   ob_dst->mode = OB_MODE_OBJECT;
   ob_dst->runtime->sculpt_session = nullptr;
+  /* Phantom: copies (duplicates, evaluated objects) start without a sculpt history. */
+  ob_dst->phantom_history = nullptr;
 
   if (ob_src->pd) {
     ob_dst->pd = MEM_dupalloc(ob_src->pd);
@@ -314,6 +317,7 @@ static void object_free_data(ID *id)
   sbFree(ob);
 
   BKE_sculptsession_free(ob);
+  bke::phantom_history::remove(*ob);
 
   ob->pc_ids.free_no_destruct();
 
@@ -823,6 +827,9 @@ static void object_blend_write(BlendWriter *writer, ID *id, const void *id_addre
   bke::motionpath::blend_write(writer, ob->mpath);
 
   writer->write_struct(ob->pd);
+  if (ob->phantom_history) {
+    bke::phantom_history::blend_write(*writer, *ob->phantom_history);
+  }
   if (ob->soft) {
     /* Set deprecated pointers to prevent crashes of older Blenders */
     ob->soft->pointcache = ob->soft->shared->pointcache;
@@ -898,6 +905,7 @@ static void object_blend_read_data(BlendDataReader *reader, ID *id)
   }
 
   BLO_read_struct(reader, bPose, &ob->pose);
+  bke::phantom_history::blend_read(*reader, *ob);
   BKE_pose_blend_read_data(reader, &ob->id, ob->pose);
 
   BLO_read_struct(reader, bMotionPath, &ob->mpath);

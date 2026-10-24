@@ -334,6 +334,7 @@ const EnumPropertyItem rna_enum_object_axis_flip_items[] = {
 #  include "BKE_object.hh"
 #  include "BKE_object_deform.h"
 #  include "BKE_particle.h"
+#  include "BKE_phantom_history.hh"
 #  include "BKE_scene.hh"
 
 #  include "DEG_depsgraph.hh"
@@ -2334,6 +2335,36 @@ static void rna_LightLinking_collection_update(Main *bmain, Scene * /*scene*/, P
   WM_main_add_notifier(NC_OBJECT | ND_DRAW, ptr->owner_id);
 }
 
+/* Phantom: sculpt history. */
+
+static bool rna_Object_use_sculpt_history_get(PointerRNA *ptr)
+{
+  return bke::phantom_history::is_recording(*static_cast<const Object *>(ptr->data));
+}
+
+static void rna_Object_use_sculpt_history_set(PointerRNA *ptr, const bool value)
+{
+  Object &ob = *static_cast<Object *>(ptr->data);
+  if (value) {
+    bke::phantom_history::ensure(ob).flag |= PHANTOM_HISTORY_RECORD;
+  }
+  else if (ob.phantom_history) {
+    ob.phantom_history->flag &= ~PHANTOM_HISTORY_RECORD;
+  }
+}
+
+static void rna_PhantomHistory_limit_update(Main * /*bmain*/, Scene * /*scene*/, PointerRNA *ptr)
+{
+  bke::phantom_history::apply_limit(*static_cast<PhantomHistory *>(ptr->data));
+  WM_main_add_notifier(NC_OBJECT | ND_DRAW, ptr->owner_id);
+}
+
+static float rna_PhantomHistory_memory_get(PointerRNA *ptr)
+{
+  return float(bke::phantom_history::memory_bytes(*static_cast<const PhantomHistory *>(ptr->data)) /
+               (1024.0 * 1024.0));
+}
+
 }  // namespace blender
 
 #else
@@ -3818,6 +3849,25 @@ static void rna_def_object(BlenderRNA *brna)
       prop, nullptr, nullptr, "rna_Object_light_linking_override_apply");
   RNA_def_property_ui_text(prop, "Light Linking", "Light linking settings");
 
+  /* Phantom: sculpt history. */
+  prop = RNA_def_property(srna, "use_sculpt_history", PROP_BOOLEAN, PROP_NONE);
+  RNA_def_property_boolean_funcs(
+      prop, "rna_Object_use_sculpt_history_get", "rna_Object_use_sculpt_history_set");
+  RNA_def_property_clear_flag(prop, PROP_ANIMATABLE);
+  RNA_def_property_ui_text(prop,
+                           "Sculpt History",
+                           "Record every sculpt edit of the mesh, to go back to any of them on "
+                           "the timeline");
+  RNA_def_property_update(prop, NC_OBJECT | ND_DRAW, nullptr);
+
+  prop = RNA_def_property(srna, "sculpt_history", PROP_POINTER, PROP_NONE);
+  RNA_def_property_pointer_sdna(prop, nullptr, "phantom_history");
+  RNA_def_property_struct_type(prop, "PhantomHistory");
+  RNA_def_property_clear_flag(prop, PROP_EDITABLE);
+  RNA_def_property_override_flag(prop, PROPOVERRIDE_NO_COMPARISON);
+  RNA_def_property_ui_text(
+      prop, "Sculpt History", "Recorded sculpt edits of the mesh (None when there is none)");
+
   /* Shadow terminator. */
   prop = RNA_def_property(srna, "shadow_terminator_normal_offset", PROP_FLOAT, PROP_DISTANCE);
   RNA_def_property_range(prop, 0.0f, FLT_MAX);
@@ -3901,9 +3951,68 @@ static void rna_def_object_light_linking(BlenderRNA *brna)
   RNA_define_lib_overridable(false);
 }
 
+static void rna_def_phantom_history(BlenderRNA *brna)
+{
+  StructRNA *srna = RNA_def_struct(brna, "PhantomHistoryStep", nullptr);
+  RNA_def_struct_sdna(srna, "PhantomHistoryStep");
+  RNA_def_struct_ui_text(srna, "Sculpt History Step", "One recorded sculpt edit");
+
+  PropertyRNA *prop = RNA_def_property(srna, "name", PROP_STRING, PROP_NONE);
+  RNA_def_property_clear_flag(prop, PROP_EDITABLE);
+  RNA_def_property_ui_text(prop, "Name", "What made the step");
+  RNA_def_struct_name_property(srna, prop);
+
+  prop = RNA_def_property(srna, "number", PROP_INT, PROP_NONE);
+  RNA_def_property_clear_flag(prop, PROP_EDITABLE);
+  RNA_def_property_ui_text(
+      prop, "Number", "Number of the step, counting from the first step ever recorded");
+
+  prop = RNA_def_property(srna, "is_keyframe", PROP_BOOLEAN, PROP_NONE);
+  RNA_def_property_boolean_sdna(prop, nullptr, "flag", PHANTOM_HISTORY_STEP_KEYFRAME);
+  RNA_def_property_clear_flag(prop, PROP_EDITABLE);
+  RNA_def_property_ui_text(
+      prop, "Keyframe", "The step holds the whole mesh (the first step, and topology changes)");
+
+  srna = RNA_def_struct(brna, "PhantomHistory", nullptr);
+  RNA_def_struct_sdna(srna, "PhantomHistory");
+  RNA_def_struct_ui_text(srna, "Sculpt History", "Recorded sculpt edits of an object's mesh");
+
+  prop = RNA_def_property(srna, "steps", PROP_COLLECTION, PROP_NONE);
+  RNA_def_property_collection_sdna(prop, nullptr, "steps", "steps_num");
+  RNA_def_property_struct_type(prop, "PhantomHistoryStep");
+  RNA_def_property_clear_flag(prop, PROP_EDITABLE);
+  RNA_def_property_ui_text(prop, "Steps", "Recorded steps, oldest first");
+
+  prop = RNA_def_property(srna, "current", PROP_INT, PROP_NONE);
+  RNA_def_property_clear_flag(prop, PROP_EDITABLE);
+  RNA_def_property_ui_text(prop, "Current", "Index of the step the mesh is at");
+
+  prop = RNA_def_property(srna, "limit", PROP_INT, PROP_NONE);
+  RNA_def_property_range(prop, 0, 100000);
+  RNA_def_property_ui_range(prop, 0, 1000, 10, -1);
+  RNA_def_property_clear_flag(prop, PROP_ANIMATABLE);
+  RNA_def_property_ui_text(prop,
+                           "Limit",
+                           "Number of steps kept: past it, the oldest steps are deleted "
+                           "(0 keeps them all)");
+  RNA_def_property_update(prop, 0, "rna_PhantomHistory_limit_update");
+
+  prop = RNA_def_property(srna, "use_save", PROP_BOOLEAN, PROP_NONE);
+  RNA_def_property_boolean_sdna(prop, nullptr, "flag", PHANTOM_HISTORY_SAVE);
+  RNA_def_property_clear_flag(prop, PROP_ANIMATABLE);
+  RNA_def_property_ui_text(
+      prop, "Save in File", "Save the history in the .blend file (it can make the file large)");
+
+  prop = RNA_def_property(srna, "memory_size", PROP_FLOAT, PROP_NONE);
+  RNA_def_property_float_funcs(prop, "rna_PhantomHistory_memory_get", nullptr, nullptr);
+  RNA_def_property_clear_flag(prop, PROP_EDITABLE);
+  RNA_def_property_ui_text(prop, "Memory", "Memory used by the history, in megabytes");
+}
+
 void RNA_def_object(BlenderRNA *brna)
 {
   rna_def_object(brna);
+  rna_def_phantom_history(brna);
 
   RNA_define_animate_sdna(false);
   rna_def_vertex_group(brna);

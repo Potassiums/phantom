@@ -1589,7 +1589,7 @@ static void SCULPT_OT_phantom_smart_mask(wmOperatorType *ot)
   ot->idname = "SCULPT_OT_phantom_smart_mask";
   ot->description =
       "Mask like ZBrush: paint on the mesh, drag a box off the mesh, "
-      "or box empty space to voxel remesh";
+      "or box empty space to remesh (with the mesh's remesh method)";
 
   ot->invoke = smart_mask_invoke;
   ot->modal = WM_gesture_box_modal;
@@ -1750,6 +1750,10 @@ void operatortypes_sculpt()
   WM_operatortype_append(mask::SCULPT_OT_mask_filter);
   WM_operatortype_append(SCULPT_OT_set_pivot_position);
   WM_operatortype_append(SCULPT_OT_phantom_transform);
+  WM_operatortype_append(SCULPT_OT_phantom_clay_polish);
+  WM_operatortype_append(SCULPT_OT_phantom_history_goto);
+  WM_operatortype_append(SCULPT_OT_phantom_history_scrub);
+  WM_operatortype_append(OBJECT_OT_phantom_history_delete);
   WM_operatortype_append(face_set::SCULPT_OT_face_sets_create);
   WM_operatortype_append(face_set::SCULPT_OT_face_set_change_visibility);
   WM_operatortype_append(face_set::SCULPT_OT_face_sets_randomize_colors);
