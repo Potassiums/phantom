@@ -334,6 +334,36 @@ static void undosys_stack_clear_all_last(UndoStack *ustack, UndoStep *us)
   }
 }
 
+void BKE_undosys_stack_clear_after(UndoStack *ustack, UndoStep *us)
+{
+  BLI_assert(us != nullptr && ustack->step_init == nullptr);
+  ustack->step_active = us;
+  undosys_stack_clear_all_last(ustack, us->next);
+}
+
+void BKE_undosys_stack_remove_range(UndoStack *ustack, UndoStep *first, UndoStep *last)
+{
+  BLI_assert(ustack->step_init == nullptr);
+  for (UndoStep *us = first;; us = us->next) {
+    if (us == ustack->step_active) {
+      ustack->step_active = first->prev;
+    }
+    if (us == last) {
+      break;
+    }
+  }
+  UndoStep *us = first;
+  while (true) {
+    UndoStep *next = us->next;
+    undosys_step_free_and_unlink(ustack, us);
+    if (us == last) {
+      break;
+    }
+    us = next;
+  }
+  undosys_stack_validate(ustack, ustack->step_active != nullptr);
+}
+
 static void undosys_stack_clear_all_first(UndoStack *ustack, UndoStep *us, UndoStep *us_exclude)
 {
   if (us && us == us_exclude) {

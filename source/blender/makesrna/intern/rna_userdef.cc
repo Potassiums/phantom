@@ -267,6 +267,7 @@ static const EnumPropertyItem rna_enum_preferences_extension_repo_source_type_it
 #  include "BKE_blender.hh"
 #  include "BKE_blender_project.hh"
 #  include "BKE_blender_version.h"
+#  include "BKE_phantom_history.hh"
 #  include "BKE_callbacks.hh"
 #  include "BKE_global.hh"
 #  include "BKE_idprop.hh"
@@ -337,6 +338,24 @@ void rna_userdef_is_dirty_update(Main * /*bmain*/, Scene * /*scene*/, PointerRNA
 static void rna_userdef_ui_update(Main * /*bmain*/, Scene * /*scene*/, PointerRNA * /*ptr*/)
 {
   WM_main_add_notifier(NC_WINDOW, nullptr);
+}
+
+/* Phantom: the sculpt history step limit (see #UserDef.sculpt_history_limit). */
+static int rna_userdef_sculpt_history_limit_get(PointerRNA * /*ptr*/)
+{
+  return bke::phantom_history::step_limit();
+}
+
+static void rna_userdef_sculpt_history_limit_set(PointerRNA * /*ptr*/, const int value)
+{
+  U.sculpt_history_limit = short(value == 0 ? -1 : std::min(value, int(SHRT_MAX)));
+}
+
+static void rna_userdef_sculpt_history_limit_update(Main *bmain, Scene * /*scene*/, PointerRNA * /*ptr*/)
+{
+  bke::phantom_history::apply_limit_to_all(*bmain);
+  USERDEF_TAG_DIRTY;
+  WM_main_add_notifier(NC_OBJECT | ND_DRAW, nullptr);
 }
 
 static void rna_userdef_update(Main * /*bmain*/, Scene * /*scene*/, PointerRNA * /*ptr*/)
@@ -5939,6 +5958,25 @@ static void rna_def_userdef_edit(BlenderRNA *brna)
                            "Sculpt History",
                            "Record every sculpt edit of each mesh object as soon as it is "
                            "sculpted, to scrub back through on the timeline (experimental)");
+  RNA_def_property_update(prop, 0, "rna_userdef_update");
+
+  prop = RNA_def_property(srna, "sculpt_history_limit", PROP_INT, PROP_NONE);
+  RNA_def_property_int_funcs(prop,
+                             "rna_userdef_sculpt_history_limit_get",
+                             "rna_userdef_sculpt_history_limit_set",
+                             nullptr);
+  RNA_def_property_range(prop, 0, SHRT_MAX);
+  RNA_def_property_ui_range(prop, 0, 1000, 10, -1);
+  RNA_def_property_ui_text(prop,
+                           "History Limit",
+                           "Sculpt history steps kept for each object: past it, the oldest are "
+                           "deleted (0 keeps them all)");
+  RNA_def_property_update(prop, 0, "rna_userdef_sculpt_history_limit_update");
+
+  prop = RNA_def_property(srna, "use_sculpt_history_save", PROP_BOOLEAN, PROP_NONE);
+  RNA_def_property_boolean_negative_sdna(prop, nullptr, "sculpt_history_nosave", 1);
+  RNA_def_property_ui_text(
+      prop, "Save History", "Save sculpt histories in .blend files (it can make files large)");
   RNA_def_property_update(prop, 0, "rna_userdef_update");
 
   prop = RNA_def_property(srna, "use_global_undo", PROP_BOOLEAN, PROP_NONE);

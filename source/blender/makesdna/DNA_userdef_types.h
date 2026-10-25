@@ -1046,6 +1046,14 @@ struct UserDef {
    */
   char sculpt_history_off = 0;
   /**
+   * Phantom: sculpt history steps kept for each object. Zero (also what preferences saved before
+   * this setting read) means the default, 100; -1 keeps every step.
+   */
+  short sculpt_history_limit = 0;
+  /** Phantom: leave sculpt histories out of .blend files (zero, the default, saves them). */
+  char sculpt_history_nosave = 0;
+  char _pad9[5] = {};
+  /**
    * Experimental flag for app-templates to make changes to behavior
    * which are outside the scope of typical preferences.
    */

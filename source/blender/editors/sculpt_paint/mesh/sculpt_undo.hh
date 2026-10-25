@@ -79,6 +79,12 @@ void push_begin_ex(const Scene &scene, Object &ob, const char *name);
 void push_end(Object &ob);
 void push_end_ex(Object &ob, bool use_nested_undo);
 
+/**
+ * Phantom: after the sculpt history steps after the current one were deleted, drop the undo steps
+ * that lead into them, so undo and redo keep matching the history.
+ */
+void history_steps_deleted(const Object &ob);
+
 void restore_from_bmesh_enter_geometry(const StepData &step_data, Mesh &mesh);
 bool has_bmesh_log_entry();
 

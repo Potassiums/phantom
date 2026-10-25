@@ -1754,6 +1754,7 @@ void operatortypes_sculpt()
   WM_operatortype_append(SCULPT_OT_phantom_history_goto);
   WM_operatortype_append(SCULPT_OT_phantom_history_scrub);
   WM_operatortype_append(OBJECT_OT_phantom_history_delete);
+  WM_operatortype_append(SCULPT_OT_phantom_history_truncate);
   WM_operatortype_append(face_set::SCULPT_OT_face_sets_create);
   WM_operatortype_append(face_set::SCULPT_OT_face_set_change_visibility);
   WM_operatortype_append(face_set::SCULPT_OT_face_sets_randomize_colors);

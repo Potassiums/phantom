@@ -11,6 +11,7 @@
 #include "MEM_guardedalloc.h"
 
 #include "BLI_index_mask.hh"
+#include "BLI_listbase.hh"
 #include "BLI_string.hh"
 #include "BLI_offset_indices.hh"
 #include "BLI_task.hh"
@@ -21,6 +22,7 @@
 #include "DNA_object_types.h"
 #include "DNA_userdef_types.h"
 
+#include "BKE_main.hh"
 #include "BKE_mesh.hh"
 #include "BKE_phantom_history.hh"
 #include "BKE_report.hh"
@@ -104,9 +106,52 @@ void remove(Object &ob)
 
 bool is_recording(const Object &ob)
 {
-  /* The preference turns it on for every object; an object's own history can be paused. */
-  return !U.sculpt_history_off && ob.type == OB_MESH &&
-         (ob.phantom_history == nullptr || (ob.phantom_history->flag & PHANTOM_HISTORY_RECORD));
+  return !U.sculpt_history_off && ob.type == OB_MESH;
+}
+
+int step_limit()
+{
+  /* Zero (preferences from before the setting) is the default; -1 keeps every step. */
+  if (U.sculpt_history_limit == 0) {
+    return 100;
+  }
+  return U.sculpt_history_limit < 0 ? 0 : U.sculpt_history_limit;
+}
+
+void apply_limit_to_all(Main &bmain)
+{
+  for (Object &ob : bmain.objects) {
+    if (ob.phantom_history) {
+      apply_limit(*ob.phantom_history);
+    }
+  }
+}
+
+int cursor_get(const Object &ob)
+{
+  const PhantomHistory *history = ob.phantom_history;
+  if (history == nullptr || history->steps_num == 0) {
+    return 0;
+  }
+  return history->steps[history->current].number + 1;
+}
+
+void cursor_set(Object &ob, const int cursor)
+{
+  PhantomHistory *history = ob.phantom_history;
+  if (history == nullptr || cursor <= 0) {
+    return;
+  }
+  for (const int i : IndexRange(history->steps_num)) {
+    if (history->steps[i].number + 1 == cursor) {
+      if (i != history->current) {
+        history->current = i;
+        /* The compared-against shape is rebuilt from the new current step when needed. */
+        free_runtime(*history);
+      }
+      return;
+    }
+  }
 }
 
 static int keyframe_of(const PhantomHistory &history, const int index)
@@ -228,12 +273,29 @@ void begin_edit(Object &ob, const StringRef /*name*/)
   set_runtime_from_mesh(history, *mesh);
 }
 
-void apply_limit(PhantomHistory &history)
+void truncate_after_current(PhantomHistory &history)
 {
-  if (history.limit <= 0) {
+  if (history.current >= history.steps_num - 1) {
     return;
   }
-  while (history.steps_num > std::max(history.limit, 1) && history.current > 0) {
+  for (int i = history.current + 1; i < history.steps_num; i++) {
+    free_step(history.steps[i]);
+  }
+  history.steps_num = history.current + 1;
+  /* Give the memory of the dropped steps' slots back too. */
+  PhantomHistoryStep *steps = MEM_new_array<PhantomHistoryStep>(history.steps_num, __func__);
+  memcpy(steps, history.steps, sizeof(PhantomHistoryStep) * history.steps_num);
+  MEM_SAFE_DELETE(history.steps);
+  history.steps = steps;
+}
+
+void apply_limit(PhantomHistory &history)
+{
+  const int limit = step_limit();
+  if (limit <= 0) {
+    return;
+  }
+  while (history.steps_num > std::max(limit, 1) && history.current > 0) {
     PhantomHistoryStep &first = history.steps[0];
     PhantomHistoryStep &second = history.steps[1];
     if (second.flag & PHANTOM_HISTORY_STEP_KEYFRAME) {
@@ -294,10 +356,7 @@ void record(Object &ob, const StringRef name, bool topology_changed)
   }
 
   /* Editing from the middle of the history drops the steps after it. */
-  for (int i = history.current + 1; i < history.steps_num; i++) {
-    free_step(history.steps[i]);
-  }
-  history.steps_num = history.current + 1;
+  truncate_after_current(history);
 
   PhantomHistoryStep &step = append_step(history, name);
   if (topology_changed) {
@@ -381,7 +440,7 @@ void blend_write(BlendWriter &writer, const PhantomHistory &history)
 {
   /* Steps also go into undo steps (memory files), or undoing out of Sculpt Mode would lose
    * them; unchanged ones are shared between undo steps. */
-  const bool write_steps = (history.flag & PHANTOM_HISTORY_SAVE) || writer.is_undo();
+  const bool write_steps = !U.sculpt_history_nosave || writer.is_undo();
   PhantomHistory history_copy = history;
   history_copy.runtime = nullptr;
   if (!write_steps) {

@@ -4,6 +4,25 @@ Phantom is a fork of Blender tuned for sculpting. This file lists what Phantom c
 own changes come from the Blender version each release is built on.
 
 
+## 0.4.2 alpha (2026-10-25)
+
+Built on Blender 5.4 alpha, on top of 0.4.1. An incremental update to sculpt history, which is
+**still experimental** and still being tested.
+
+- **History follows undo and redo:** Ctrl+Z and Ctrl+Shift+Z move the timeline along with the
+  mesh, all the way back to the start of the history and forward again.
+- **Sculpting on an older step asks first:** a stroke on an older step of the timeline is held
+  back, and a question slides out from under the timeline: **Keep Sculpting** deletes the later
+  steps right away (they can't be redone) and carries on from there; **Cancel** leaves everything
+  as it was.
+- **Undo stays in step with the timeline** through any mix of strokes, undo, redo, jumps on the
+  timeline and Keep Sculpting. Before, Keep Sculpting dropped one undo step too many (Ctrl+Z then
+  skipped a stroke or left Sculpt Mode), and after jumping back on the timeline, undo could bring
+  back a shape whose steps had been deleted, so the timeline stopped following.
+- **History settings are all in the History dropdown and apply to every object:** **Record**,
+  the **Limit** of steps kept, and **Save in File**. The per-object record option is gone.
+  **Delete History** (in red) asks before deleting the active object's history.
+
 ## 0.4.1 alpha (2026-10-24)
 
 Built on Blender 5.4 alpha, on top of 0.4.0.

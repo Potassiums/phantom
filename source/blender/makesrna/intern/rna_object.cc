@@ -2337,29 +2337,6 @@ static void rna_LightLinking_collection_update(Main *bmain, Scene * /*scene*/, P
 
 /* Phantom: sculpt history. */
 
-static bool rna_Object_use_sculpt_history_get(PointerRNA *ptr)
-{
-  const Object &ob = *static_cast<const Object *>(ptr->data);
-  return ob.phantom_history == nullptr || (ob.phantom_history->flag & PHANTOM_HISTORY_RECORD);
-}
-
-static void rna_Object_use_sculpt_history_set(PointerRNA *ptr, const bool value)
-{
-  Object &ob = *static_cast<Object *>(ptr->data);
-  if (value) {
-    bke::phantom_history::ensure(ob).flag |= PHANTOM_HISTORY_RECORD;
-  }
-  else if (ob.phantom_history) {
-    ob.phantom_history->flag &= ~PHANTOM_HISTORY_RECORD;
-  }
-}
-
-static void rna_PhantomHistory_limit_update(Main * /*bmain*/, Scene * /*scene*/, PointerRNA *ptr)
-{
-  bke::phantom_history::apply_limit(*static_cast<PhantomHistory *>(ptr->data));
-  WM_main_add_notifier(NC_OBJECT | ND_DRAW, ptr->owner_id);
-}
-
 static float rna_PhantomHistory_memory_get(PointerRNA *ptr)
 {
   return float(bke::phantom_history::memory_bytes(*static_cast<const PhantomHistory *>(ptr->data)) /
@@ -3851,16 +3828,6 @@ static void rna_def_object(BlenderRNA *brna)
   RNA_def_property_ui_text(prop, "Light Linking", "Light linking settings");
 
   /* Phantom: sculpt history. */
-  prop = RNA_def_property(srna, "use_sculpt_history", PROP_BOOLEAN, PROP_NONE);
-  RNA_def_property_boolean_funcs(
-      prop, "rna_Object_use_sculpt_history_get", "rna_Object_use_sculpt_history_set");
-  RNA_def_property_clear_flag(prop, PROP_ANIMATABLE);
-  RNA_def_property_ui_text(prop,
-                           "Record History",
-                           "Record this object's sculpt edits (with the Sculpt History "
-                           "preference on); off pauses its history");
-  RNA_def_property_update(prop, NC_OBJECT | ND_DRAW, nullptr);
-
   prop = RNA_def_property(srna, "sculpt_history", PROP_POINTER, PROP_NONE);
   RNA_def_property_pointer_sdna(prop, nullptr, "phantom_history");
   RNA_def_property_struct_type(prop, "PhantomHistory");
@@ -3987,22 +3954,6 @@ static void rna_def_phantom_history(BlenderRNA *brna)
   prop = RNA_def_property(srna, "current", PROP_INT, PROP_NONE);
   RNA_def_property_clear_flag(prop, PROP_EDITABLE);
   RNA_def_property_ui_text(prop, "Current", "Index of the step the mesh is at");
-
-  prop = RNA_def_property(srna, "limit", PROP_INT, PROP_NONE);
-  RNA_def_property_range(prop, 0, 100000);
-  RNA_def_property_ui_range(prop, 0, 1000, 10, -1);
-  RNA_def_property_clear_flag(prop, PROP_ANIMATABLE);
-  RNA_def_property_ui_text(prop,
-                           "Limit",
-                           "Number of steps kept: past it, the oldest steps are deleted "
-                           "(0 keeps them all)");
-  RNA_def_property_update(prop, 0, "rna_PhantomHistory_limit_update");
-
-  prop = RNA_def_property(srna, "use_save", PROP_BOOLEAN, PROP_NONE);
-  RNA_def_property_boolean_sdna(prop, nullptr, "flag", PHANTOM_HISTORY_SAVE);
-  RNA_def_property_clear_flag(prop, PROP_ANIMATABLE);
-  RNA_def_property_ui_text(
-      prop, "Save in File", "Save the history in the .blend file (it can make the file large)");
 
   prop = RNA_def_property(srna, "memory_size", PROP_FLOAT, PROP_NONE);
   RNA_def_property_float_funcs(prop, "rna_PhantomHistory_memory_get", nullptr, nullptr);

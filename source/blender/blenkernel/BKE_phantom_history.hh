@@ -27,6 +27,7 @@
 namespace blender {
 struct BlendDataReader;
 struct BlendWriter;
+struct Main;
 struct Mesh;
 struct Object;
 struct PhantomHistory;
@@ -40,11 +41,24 @@ PhantomHistory &ensure(Object &ob);
 void remove(Object &ob);
 void free(PhantomHistory *history);
 
-/**
- * Whether edits of this object are recorded now: the sculpt history preference is on, and the
- * object's history (if it has one yet) isn't paused. The first recorded edit creates it.
- */
+/** Whether edits of this object are recorded now (the sculpt history preference, for meshes). */
 bool is_recording(const Object &ob);
+
+/** Steps kept for each object (the preference); 0 keeps them all. */
+int step_limit();
+/** Apply the step limit to every object's history (after the preference changed). */
+void apply_limit_to_all(Main &bmain);
+
+/**
+ * The current step as a stable number (#PhantomHistoryStep.number plus one, so 0 is "no
+ * history"), for undo steps to remember where the history was.
+ */
+int cursor_get(const Object &ob);
+/**
+ * Make the step `cursor` (from #cursor_get) current without touching the mesh: undo and redo
+ * have just put the mesh in that state themselves. Steps since dropped are skipped.
+ */
+void cursor_set(Object &ob, int cursor);
 
 /**
  * Before an edit: make the mesh as it is now the first step, if there is none yet. Nothing is
@@ -79,6 +93,9 @@ StepShape step_shape(const PhantomHistory &history, int index);
  * only positions were written (the caller updates the sculpt session either way).
  */
 bool apply_step(Object &ob, int index);
+
+/** Delete the steps after the current one (sculpting from an older step replaces them). */
+void truncate_after_current(PhantomHistory &history);
 
 /** Drop the oldest steps past the limit, never the current one. */
 void apply_limit(PhantomHistory &history);

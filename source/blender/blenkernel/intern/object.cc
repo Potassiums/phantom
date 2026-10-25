@@ -827,7 +827,8 @@ static void object_blend_write(BlendWriter *writer, ID *id, const void *id_addre
   bke::motionpath::blend_write(writer, ob->mpath);
 
   writer->write_struct(ob->pd);
-  if (ob->phantom_history) {
+  /* Phantom: the sculpt history isn't part of undo steps (see #object_undo_preserve). */
+  if (ob->phantom_history && !is_undo) {
     bke::phantom_history::blend_write(*writer, *ob->phantom_history);
   }
   if (ob->soft) {
@@ -1273,6 +1274,21 @@ static AssetTypeInfo AssetType_OB = {
     /*on_clear_asset_fn*/ nullptr,
 };
 
+/**
+ * Phantom: the sculpt history outlives undo and redo of whole-file steps (entering and leaving
+ * Sculpt Mode, object edits...): undo steps don't store it, and the history of the object as it
+ * was is moved onto the object undo reads back. Only sculpt undo steps move its current step.
+ */
+static void object_undo_preserve(BlendLibReader * /*reader*/, ID *id_new, ID *id_old)
+{
+  Object *ob_new = id_cast<Object *>(id_new);
+  Object *ob_old = id_cast<Object *>(id_old);
+  if (ob_new == ob_old) {
+    return;
+  }
+  std::swap(ob_new->phantom_history, ob_old->phantom_history);
+}
+
 IDTypeInfo IDType_ID_OB = {
     .id_code = Object::id_type,
     .id_filter = FILTER_ID_OB,
@@ -1301,7 +1317,7 @@ IDTypeInfo IDType_ID_OB = {
     .blend_read_data = object_blend_read_data,
     .blend_read_after_liblink = object_blend_read_after_liblink,
 
-    .blend_read_undo_preserve = nullptr,
+    .blend_read_undo_preserve = object_undo_preserve,
 
     .lib_override_apply_post = object_lib_override_apply_post,
 };

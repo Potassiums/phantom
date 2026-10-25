@@ -28,8 +28,13 @@
 
 #include "DEG_depsgraph.hh"
 
+#include "BKE_undo_system.hh"
+
 #include "ED_screen.hh"
 #include "ED_sculpt.hh"
+#include "ED_undo.hh"
+
+#include "UI_interface_icons.hh"
 
 #include "RNA_access.hh"
 #include "RNA_define.hh"
@@ -293,15 +298,59 @@ static wmOperatorStatus history_delete_exec(bContext *C, wmOperator * /*op*/)
   return OPERATOR_FINISHED;
 }
 
+static wmOperatorStatus history_delete_invoke(bContext *C,
+                                              wmOperator *op,
+                                              const wmEvent * /*event*/)
+{
+  const Object &ob = *CTX_data_active_object(C);
+  const std::string message = fmt::format(
+      fmt::runtime(IFACE_("Are you sure you want to delete history for {}?")), ob.id.name + 2);
+  return WM_operator_confirm_ex(
+      C, op, IFACE_("Delete History"), message.c_str(), IFACE_("Confirm"), ui::AlertIcon::Warning);
+}
+
 void OBJECT_OT_phantom_history_delete(wmOperatorType *ot)
 {
   ot->name = "Delete Sculpt History";
   ot->idname = "OBJECT_OT_phantom_history_delete";
   ot->description = "Delete the object's sculpt history (the mesh stays as it is)";
 
-  ot->invoke = WM_operator_confirm;
+  ot->invoke = history_delete_invoke;
   ot->exec = history_delete_exec;
   ot->poll = history_delete_poll;
+
+  ot->flag = OPTYPE_REGISTER;
+}
+
+/** \} */
+
+/* -------------------------------------------------------------------- */
+/** \name Delete the Later Steps
+ * \{ */
+
+static wmOperatorStatus history_truncate_exec(bContext *C, wmOperator * /*op*/)
+{
+  Object &ob = *CTX_data_active_object(C);
+  PhantomHistory &history = *ob.phantom_history;
+  if (history.current >= history.steps_num - 1) {
+    return OPERATOR_CANCELLED;
+  }
+  bke::phantom_history::truncate_after_current(history);
+  undo::history_steps_deleted(ob);
+  WM_event_add_notifier(C, NC_OBJECT | ND_DRAW, &ob);
+  WM_file_tag_modified();
+  return OPERATOR_FINISHED;
+}
+
+void SCULPT_OT_phantom_history_truncate(wmOperatorType *ot)
+{
+  ot->name = "Delete Later History Steps";
+  ot->idname = "SCULPT_OT_phantom_history_truncate";
+  ot->description =
+      "Delete the sculpt history steps after the current one, to sculpt on from this step";
+
+  ot->exec = history_truncate_exec;
+  ot->poll = history_poll;
 
   ot->flag = OPTYPE_REGISTER;
 }

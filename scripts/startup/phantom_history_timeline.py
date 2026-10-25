@@ -13,8 +13,10 @@ follows, and releasing makes it one undo step. Sculpting after going back drops 
 it.
 
 The Sculpt Mode header has History: its checkbox shows or hides the bar, and its dropdown holds
-every history setting: Sculpt History on or off, where the bar is docked (top, bottom, left or
-right of the viewport), and the object's history (pause, limit, saving, delete). The bar keeps
+every history setting: where the bar is docked (top, bottom, left or right of the viewport),
+showing it, recording, the step limit and saving in files (for every object), and deleting the
+active object's history. Undo and redo move along the timeline too. Starting to sculpt from an
+older step slides a warning out from under it: the steps after it will be replaced. The bar keeps
 clear of the headers, toolbar and sidebar, gliding along as they open and close. Its own settings
 are remembered between sessions (``phantom_history_bar.json`` in the user config).
 """
@@ -315,14 +317,141 @@ def _text(text, x, y, align_x, align_y, color):
     blf.draw(0, text)
 
 
-def _status_text(context, ob, history, index):
+def _status_text(context, history, index):
     if not context.preferences.edit.use_sculpt_history:
         return "Sculpt History off", DIM_TEXT_COLOR
-    paused = " (paused)" if history is not None and not ob.use_sculpt_history else ""
     if history is None or len(history.steps) == 0:
-        return "No history yet: sculpt to start" + paused, DIM_TEXT_COLOR
+        return "No history yet: sculpt to start", DIM_TEXT_COLOR
     steps = history.steps
-    return "{:d} / {:d}  {:s}{:s}".format(index + 1, len(steps), steps[index].name, paused), TEXT_COLOR
+    return "{:d} / {:d}  {:s}".format(index + 1, len(steps), steps[index].name), TEXT_COLOR
+
+
+# -----------------------------------------------------------------------------
+# Warning: sculpting on an older step
+
+WARNING_SLIDE = 0.16
+WARNING_PAD = 8
+BUTTON_W = 110
+BUTTON_H = 20
+CONTINUE_COLOR = (1.0, 0.62, 0.34, 0.30)
+CONTINUE_HOVER_COLOR = (1.0, 0.62, 0.34, 0.50)
+CANCEL_COLOR = (1.0, 1.0, 1.0, 0.08)
+CANCEL_HOVER_COLOR = (1.0, 1.0, 1.0, 0.16)
+
+# A stroke on an older step is held back, and the warning slides out from under the timeline
+# asking what to do: Keep Sculpting (strokes then go ahead, the first one deleting the later
+# steps) or Cancel. `t` slides toward `target`; `key` is the history state it asked about (it
+# goes away when that changes); `buttons` are where its buttons were last drawn.
+_warning = {"t": 0.0, "target": 0.0, "last": 0.0, "text": "", "key": None, "buttons": []}
+# The history state the user agreed to sculpt from.
+_confirmed_key = None
+
+
+def _history_key(ob, history):
+    return (ob.name, history.current, len(history.steps)) if history is not None else None
+
+
+def _warning_tick():
+    w = _warning
+    now = time.perf_counter()
+    step = (now - w["last"]) / WARNING_SLIDE
+    w["last"] = now
+    if w["t"] < w["target"]:
+        w["t"] = min(w["target"], w["t"] + step)
+    else:
+        w["t"] = max(w["target"], w["t"] - step)
+    _redraw_views()
+    return None if w["t"] == w["target"] else 1.0 / 60.0
+
+
+def _set_warning(open_):
+    w = _warning
+    w["target"] = 1.0 if open_ else 0.0
+    if not open_:
+        w["key"] = None
+        w["buttons"] = []
+    if not bpy.app.timers.is_registered(_warning_tick):
+        w["last"] = time.perf_counter()
+        bpy.app.timers.register(_warning_tick, first_interval=0.0)
+
+
+def ask_older_step(ob, history):
+    """Hold back a stroke on an older step: slide out the warning and its question."""
+    later = len(history.steps) - 1 - history.current
+    _warning["text"] = "This is an older step: sculpting here deletes the {:d} later step{:s}.".format(
+        later, "" if later == 1 else "s")
+    _warning["key"] = _history_key(ob, history)
+    _set_warning(True)
+
+
+def _stroke_needs_asking(context, event, ob, history):
+    """A brush stroke about to start on an older step, not agreed to yet."""
+    if (event.ctrl or not context.preferences.edit.use_sculpt_history or history is None or
+            history.current >= len(history.steps) - 1):
+        return False
+    if _confirmed_key == _history_key(ob, history):
+        return False
+    # Only brush strokes: masking (Ctrl) and tools like Transpose don't change the history.
+    tool = context.workspace.tools.from_space_view3d_mode(context.mode, create=False)
+    return tool is not None and tool.idname == "builtin.brush"
+
+
+def _draw_warning(shader, lay, s):
+    """The warning box, slid `t` of the way out from under the bar's inner edge."""
+    t = _warning["t"]
+    _warning["buttons"] = []
+    if t <= 0.0:
+        return
+    text = _warning["text"]
+    tw, _th = blf.dimensions(0, text)
+    cap = blf.dimensions(0, "H")[1]
+    pad = WARNING_PAD * s
+    bw_, bh_ = BUTTON_W * s, BUTTON_H * s
+    w = max(tw, 2 * bw_ + pad) + 2 * pad
+    h = cap + bh_ + 3 * pad
+    bx, by, bw, bh = lay.bar
+    dock = _settings["dock"]
+    if dock == 'TOP':
+        edge, inward = by, (0, -1)
+        rect = [bx + (bw - w) / 2, edge - h, w, h]
+    elif dock == 'BOTTOM':
+        edge, inward = by + bh, (0, 1)
+        rect = [bx + (bw - w) / 2, edge, w, h]
+    elif dock == 'LEFT':
+        edge, inward = bx + bw, (1, 0)
+        rect = [edge, by + (bh - h) / 2, w, h]
+    else:
+        edge, inward = bx, (-1, 0)
+        rect = [edge - w, by + (bh - h) / 2, w, h]
+    extent = h if inward[1] else w
+    rect[0] -= inward[0] * (1.0 - t) * extent
+    rect[1] -= inward[1] * (1.0 - t) * extent
+    # Only what is past the bar's edge shows: it comes out from underneath.
+    x0, y0, x1, y1 = rect[0], rect[1], rect[0] + w, rect[1] + h
+    if inward[1] < 0:
+        y1 = min(y1, edge)
+    elif inward[1] > 0:
+        y0 = max(y0, edge)
+    elif inward[0] > 0:
+        x0 = max(x0, edge)
+    else:
+        x1 = min(x1, edge)
+    if x1 - x0 <= 0.5 or y1 - y0 <= 0.5:
+        return
+    _draw(shader, 'TRIS', _rect(x0, y0, x1 - x0, y1 - y0), BAR_COLOR)
+    # The text and buttons once the box is all the way out.
+    if t < 1.0:
+        return
+    _text(text, rect[0] + w / 2, rect[1] + h - pad - cap / 2, 'CENTER', 'MIDDLE', KEYFRAME_COLOR)
+    buttons_x = rect[0] + (w - (2 * bw_ + pad)) / 2
+    buttons = [("CONTINUE", "Keep Sculpting", (buttons_x, rect[1] + pad, bw_, bh_),
+                CONTINUE_COLOR, CONTINUE_HOVER_COLOR),
+               ("CANCEL", "Cancel", (buttons_x + bw_ + pad, rect[1] + pad, bw_, bh_),
+                CANCEL_COLOR, CANCEL_HOVER_COLOR)]
+    for identifier, label, brect, color, hover_color in buttons:
+        _draw(shader, 'TRIS', _rect(*brect), hover_color if _hover == identifier else color)
+        _text(label, brect[0] + bw_ / 2, brect[1] + bh_ / 2, 'CENTER', 'MIDDLE', TEXT_COLOR)
+        _warning["buttons"].append((identifier, brect))
 
 
 def draw_callback():
@@ -339,6 +468,11 @@ def draw_callback():
     shader = gpu.shader.from_builtin('UNIFORM_COLOR')
     blf.size(0, TEXT_SIZE * s)
 
+    # The question is about one history state: once that changes (undo, scrub...), it's moot.
+    if _warning["key"] is not None and _warning["key"] != _history_key(ob, history):
+        _set_warning(False)
+    # The warning first, so it comes out from underneath the bar.
+    _draw_warning(shader, lay, s)
     _draw(shader, 'TRIS', _rect(*lay.bar), BAR_COLOR)
     a, b = lay.track
     _draw(shader, 'TRIS', _across(lay, (a + b) / 2, abs(b - a) / 2, 1 * s), TRACK_COLOR)
@@ -356,7 +490,7 @@ def draw_callback():
             _draw(shader, 'TRIS', ticks, TICK_COLOR)
         if keyframes:
             _draw(shader, 'TRIS', keyframes, KEYFRAME_COLOR)
-        if _hover is not None and _hover < count:
+        if isinstance(_hover, int) and _hover < count:
             _draw(shader, 'TRIS', _across(lay, lay.step_pos(_hover, count), 1 * s,
                                           (THICKNESS / 2 - 2) * s), HOVER_COLOR)
         _draw(shader, 'TRIS', _across(lay, lay.step_pos(history.current, count), 2.5 * s,
@@ -364,9 +498,11 @@ def draw_callback():
 
     _text("Start", *lay.start_label, DIM_TEXT_COLOR)
     _text("End", *lay.end_label, DIM_TEXT_COLOR)
-    index = _hover if _hover is not None and _hover < count else (history.current if count else 0)
-    text, color = _status_text(context, ob, history, index)
-    _text(text, *lay.status, color)
+    if _warning["t"] == 0.0:
+        index = _hover if isinstance(_hover, int) and _hover < count else (
+            history.current if count else 0)
+        text, color = _status_text(context, history, index)
+        _text(text, *lay.status, color)
 
     gpu.state.blend_set('NONE')
 
@@ -385,9 +521,27 @@ class VIEW3D_OT_phantom_history_timeline_click(Operator):
         return _visible(context)
 
     def invoke(self, context, event):
+        global _confirmed_key
         lay = Layout(context.area, context.region)
-        if not _hit(lay.bar, event.mouse_region_x, event.mouse_region_y):
-            # Not on the timeline: let the click reach the sculpt brush.
+        mx, my = event.mouse_region_x, event.mouse_region_y
+        # The warning's answer buttons.
+        if _warning["t"] >= 1.0:
+            for identifier, rect in _warning["buttons"]:
+                if _hit(rect, mx, my):
+                    if identifier == "CONTINUE":
+                        # Agreed: the later steps (and the redo steps into them) go right away.
+                        bpy.ops.sculpt.phantom_history_truncate()
+                        _confirmed_key = None
+                    _set_warning(False)
+                    return {'FINISHED'}
+        if not _hit(lay.bar, mx, my):
+            ob = timeline_object(context)
+            history = ob.sculpt_history
+            if _stroke_needs_asking(context, event, ob, history):
+                # Hold the stroke back until the user agrees to delete the later steps.
+                ask_older_step(ob, history)
+                return {'FINISHED'}
+            # Let the click reach the sculpt brush.
             return {'PASS_THROUGH'}
         history = timeline_object(context).sculpt_history
         if history is None or len(history.steps) < 2:
@@ -417,7 +571,10 @@ class VIEW3D_OT_phantom_history_timeline_hover(Operator):
         mx, my = event.mouse_region_x, event.mouse_region_y
         history = timeline_object(context).sculpt_history
         hover = None
-        if _hit(lay.bar, mx, my) and history is not None and len(history.steps):
+        for identifier, rect in _warning["buttons"]:
+            if _hit(rect, mx, my):
+                hover = identifier
+        if hover is None and _hit(lay.bar, mx, my) and history is not None and len(history.steps):
             hover = lay.index_at(mx, my, len(history.steps))
         if hover != _hover:
             _hover = hover
@@ -450,32 +607,28 @@ class VIEW3D_PT_phantom_history(Panel):
         row.use_property_split = False
         row.column().prop(wm, "phantom_history_bar_show", text="Show Timeline")
         row.column().prop(edit, "use_sculpt_history", text="Record")
+        # Both apply to every object.
+        row = layout.row()
+        row.use_property_split = False
+        row.column().prop(edit, "sculpt_history_limit", text="Limit")
+        row.column().prop(edit, "use_sculpt_history_save", text="Save in File")
 
-        ob = context.active_object
-        if ob is None or ob.type != 'MESH':
-            return
-        history = ob.sculpt_history
         layout.separator()
-        col = layout.column()
-        col.active = edit.use_sculpt_history
-        col.label(text=ob.name, icon='OBJECT_DATA')
-        col.prop(ob, "use_sculpt_history", text="Record This Object")
-        if history is None:
-            sub = col.row()
-            sub.active = False
-            sub.label(text="Starts with the first sculpt edit")
-            return
-        col.prop(history, "limit")
-        col.prop(history, "use_save")
-        steps = len(history.steps)
-        sub = col.row()
+        ob = context.active_object
+        history = ob.sculpt_history if ob is not None and ob.type == 'MESH' else None
+        steps = len(history.steps) if history is not None else 0
+        sub = layout.row()
         sub.active = False
+        name = ob.name if ob is not None else "No object"
         if steps:
-            sub.label(text="Step {:d} of {:d}, {:.1f} MB".format(
-                history.current + 1, steps, history.memory_size))
+            sub.label(text="{:s}: step {:d} of {:d}, {:.1f} MB".format(
+                name, history.current + 1, steps, history.memory_size), icon='OBJECT_DATA')
         else:
-            sub.label(text="No steps yet")
-        col.operator("object.phantom_history_delete", text="Delete History", icon='TRASH')
+            sub.label(text="{:s}: no history yet".format(name), icon='OBJECT_DATA')
+        row = layout.row()
+        row.alert = True
+        row.enabled = history is not None
+        row.operator("object.phantom_history_delete", text="Delete History", icon='TRASH')
 
 
 def draw_header_item(layout, context):

@@ -242,6 +242,13 @@ UndoStack *BKE_undosys_stack_create();
 void BKE_undosys_stack_destroy(UndoStack *ustack);
 void BKE_undosys_stack_clear(UndoStack *ustack);
 void BKE_undosys_stack_clear_active(UndoStack *ustack);
+/** Phantom: make `us` the active step and free the steps after it, without decoding anything. */
+void BKE_undosys_stack_clear_after(UndoStack *ustack, UndoStep *us);
+/**
+ * Phantom: free the steps from `first` to `last` (in order), without decoding anything. The steps
+ * around them must not depend on them.
+ */
+void BKE_undosys_stack_remove_range(UndoStack *ustack, UndoStep *first, UndoStep *last);
 /* name optional */
 bool BKE_undosys_stack_has_undo(const UndoStack *ustack, const char *name);
 /**

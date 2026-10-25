@@ -24,6 +24,7 @@
  */
 #include "sculpt_undo.hh"
 
+#include <algorithm>
 #include <mutex>
 #include <zstd.h>
 
@@ -463,6 +464,13 @@ struct SculptUndoStep {
 
   /* Active color attribute at the end of this undo step. */
   SculptAttrRef active_color_end;
+
+  /**
+   * Phantom: the sculpt history cursor (#bke::phantom_history::cursor_get) before and after
+   * this step, so undo and redo move the history timeline along (0: none).
+   */
+  int history_cursor_before;
+  int history_cursor_after;
 };
 
 size_t step_memory_size_get(UndoStep *step)
@@ -945,6 +953,29 @@ static void store_geometry_data(NodeGeometry *geometry, const Object &object)
   geometry->edges_num = mesh->edges_num;
   geometry->corners_num = mesh->corners_num;
   geometry->faces_num = mesh->faces_num;
+}
+
+static void geometry_free_data(NodeGeometry *geometry);
+
+/** Phantom: replace `dst` with a copy of `src`. */
+static void copy_geometry_data(const NodeGeometry &src, NodeGeometry &dst)
+{
+  BLI_assert(src.is_initialized);
+  geometry_free_data(&dst);
+  dst.is_initialized = true;
+  dst.attribute_storage = src.attribute_storage;
+  CustomData_init_from(&src.vert_data, &dst.vert_data, CD_MASK_MESH.vmask, src.verts_num);
+  CustomData_init_from(&src.edge_data, &dst.edge_data, CD_MASK_MESH.emask, src.edges_num);
+  CustomData_init_from(&src.corner_data, &dst.corner_data, CD_MASK_MESH.lmask, src.corners_num);
+  CustomData_init_from(&src.face_data, &dst.face_data, CD_MASK_MESH.pmask, src.faces_num);
+  implicit_sharing::copy_shared_pointer(src.face_offset_indices,
+                                        src.face_offsets_sharing_info,
+                                        &dst.face_offset_indices,
+                                        &dst.face_offsets_sharing_info);
+  dst.verts_num = src.verts_num;
+  dst.edges_num = src.edges_num;
+  dst.corners_num = src.corners_num;
+  dst.faces_num = src.faces_num;
 }
 
 static void restore_geometry_data(const NodeGeometry *geometry, Mesh *mesh)
@@ -2028,6 +2059,16 @@ static void history_record(Object &ob, const bool topology_changed)
   }
 }
 
+/** Phantom: the history cursor after the step being pushed, for redo. */
+static void history_cursor_store_after(const Object &ob)
+{
+  UndoStack *ustack = ED_undo_stack_get();
+  if (ustack->step_init && ustack->step_init->type == BKE_UNDOSYS_TYPE_SCULPT) {
+    reinterpret_cast<SculptUndoStep *>(ustack->step_init)->history_cursor_after =
+        bke::phantom_history::cursor_get(ob);
+  }
+}
+
 void push_begin_ex(const Scene & /*scene*/, Object &ob, const char *name)
 {
   UndoStack *ustack = ED_undo_stack_get();
@@ -2065,6 +2106,7 @@ void push_begin_ex(const Scene & /*scene*/, Object &ob, const char *name)
     }
   }
   history_begin(ob, name);
+  us->history_cursor_before = bke::phantom_history::cursor_get(ob);
 }
 
 void push_begin(const Scene &scene, Object &ob, const wmOperator *op)
@@ -2149,6 +2191,7 @@ void push_end_ex(Object &ob, const bool use_nested_undo)
   if (step_data->type == Type::Position) {
     history_record(ob, false);
   }
+  history_cursor_store_after(ob);
 
   /* We could remove this and enforce all callers run in an operator using 'OPTYPE_UNDO'. */
   wmWindowManager *wm = G_MAIN->wm.first();
@@ -2255,12 +2298,96 @@ static bool step_encode(bContext * /*C*/, Main *bmain, UndoStep *us_p)
   return true;
 }
 
+/** Phantom: undo and redo put the mesh at a history step; move the timeline there too. */
+static void history_cursor_restore(bContext *C, const int cursor)
+{
+  if (Object *ob = CTX_data_active_object(C)) {
+    bke::phantom_history::cursor_set(*ob, cursor);
+    WM_main_add_notifier(NC_OBJECT | ND_DRAW, ob);
+  }
+}
+
+void history_steps_deleted(const Object &ob)
+{
+  UndoStack *ustack = ED_undo_stack_get();
+  if (ustack->step_active == nullptr) {
+    return;
+  }
+  /* Redo leads into the deleted steps. */
+  BKE_undosys_stack_clear_after(ustack, ustack->step_active);
+
+  /* The history is at its newest step, so any cursor after it is of a deleted step. */
+  const int current = bke::phantom_history::cursor_get(ob);
+  /* After jumps back on the timeline, undo steps lead through the deleted steps. The undo steps
+   * go from one history step to the next, so a run of them that starts and ends at the same step
+   * leaves the mesh in the same shape and can go. Cut out such runs around the steps leading
+   * through deleted ones, latest first, until none are left. Other steps (like masking) stay. */
+  Vector<UndoStep *> steps;
+  for (UndoStep *us = ustack->step_active; us && us->type == BKE_UNDOSYS_TYPE_SCULPT; us = us->prev)
+  {
+    if (reinterpret_cast<const SculptUndoStep *>(us)->data.object_name != ob.id.name) {
+      break;
+    }
+    steps.append(us);
+  }
+  std::reverse(steps.begin(), steps.end());
+  const auto before = [&](const int i) {
+    return reinterpret_cast<const SculptUndoStep *>(steps[i])->history_cursor_before;
+  };
+  const auto after = [&](const int i) {
+    return reinterpret_cast<const SculptUndoStep *>(steps[i])->history_cursor_after;
+  };
+  while (true) {
+    int last = -1;
+    for (int i = steps.size() - 1; i >= 0; i--) {
+      if (before(i) > current || after(i) > current) {
+        last = i;
+        break;
+      }
+    }
+    if (last == -1 || after(last) > current) {
+      break;
+    }
+    int first = -1;
+    for (int i = last; i >= 0; i--) {
+      if (before(i) == after(last)) {
+        first = i;
+        break;
+      }
+    }
+    if (first != -1) {
+      BKE_undosys_stack_remove_range(ustack, steps[first], steps[last]);
+      steps.remove(first, last - first + 1);
+      continue;
+    }
+    /* No run back to the same step: jumps on the timeline went into the deleted steps and out to
+     * another one. Both jumps store the whole mesh, so the jump out can start where the jump in
+     * did, and the steps from the jump in go. */
+    int entry = last;
+    while (entry > 0 && before(entry) > current) {
+      entry--;
+    }
+    SculptUndoStep *us_entry = reinterpret_cast<SculptUndoStep *>(steps[entry]);
+    SculptUndoStep *us_exit = reinterpret_cast<SculptUndoStep *>(steps[last]);
+    if (entry == last || before(entry) > current || us_entry->data.type != Type::Geometry ||
+        us_exit->data.type != Type::Geometry)
+    {
+      break;
+    }
+    copy_geometry_data(us_entry->data.geometry_original, us_exit->data.geometry_original);
+    us_exit->history_cursor_before = us_entry->history_cursor_before;
+    BKE_undosys_stack_remove_range(ustack, steps[entry], steps[last - 1]);
+    steps.remove(entry, last - entry);
+  }
+}
+
 static void step_decode_undo_impl(bContext *C, Depsgraph *depsgraph, SculptUndoStep *us)
 {
   BLI_assert(us->step.is_applied == true);
 
   restore_list(C, depsgraph, us->data);
   us->step.is_applied = false;
+  history_cursor_restore(C, us->history_cursor_before);
 }
 
 static void step_decode_redo_impl(bContext *C, Depsgraph *depsgraph, SculptUndoStep *us)
@@ -2269,6 +2396,7 @@ static void step_decode_redo_impl(bContext *C, Depsgraph *depsgraph, SculptUndoS
 
   restore_list(C, depsgraph, us->data);
   us->step.is_applied = true;
+  history_cursor_restore(C, us->history_cursor_after);
 }
 
 static void step_decode_undo(bContext *C,
@@ -2408,6 +2536,7 @@ void geometry_begin_ex(const Scene & /*scene*/, Object &ob, const char *name)
   save_common_data(ob, us);
   geometry_push(ob);
   history_begin(ob, name);
+  us->history_cursor_before = bke::phantom_history::cursor_get(ob);
 }
 
 static size_t calculate_node_geometry_allocated_size(const NodeGeometry &node_geometry)
@@ -2446,6 +2575,8 @@ void geometry_end(Object &ob)
 {
   geometry_push(ob);
   history_record(ob, true);
+  /* Also after going to a history step (recording paused): undoing it goes back. */
+  history_cursor_store_after(ob);
 
   StepData *step_data = get_step_data();
   step_data->undo_size = estimate_geometry_step_size(*step_data);
