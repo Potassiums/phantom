@@ -459,6 +459,7 @@ class VIEW3D_PT_tools_brush_settings_advanced(Panel, View3DPaintBrushPanel):
 
 
 class VIEW3D_PT_tools_brush_color(Panel, View3DPaintPanel):
+    """Phantom: not registered, the color picker is at the top of Brush Settings."""
     bl_context = ".paint_common"  # dot on purpose (access from topbar)
     bl_parent_id = "VIEW3D_PT_tools_brush_settings"
     bl_label = "Color Picker"
@@ -2594,7 +2595,6 @@ classes = (
     VIEW3D_PT_tools_brush_select,
     VIEW3D_PT_tools_brush_quick,
     VIEW3D_PT_tools_brush_settings,
-    VIEW3D_PT_tools_brush_color,
     VIEW3D_PT_tools_brush_swatches,
     VIEW3D_PT_tools_brush_settings_advanced,
     VIEW3D_PT_tools_brush_clone,

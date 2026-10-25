@@ -4889,11 +4889,12 @@ def radial_control_properties(
 # Radial controls for the paint and sculpt modes.
 
 
-def _template_paint_radial_control(paint, rotation=False, secondary_rotation=False, color=False, zoom=False):
+def _template_paint_radial_control(paint, rotation=False, secondary_rotation=False, color=False, zoom=False,
+                                   size_key='F'):
     items = []
 
     items.extend([
-        ("wm.radial_control", {"type": 'F', "value": 'PRESS'},
+        ("wm.radial_control", {"type": size_key, "value": 'PRESS'},
          radial_control_properties(
              paint, "size",
              secondary_prop="use_unified_size",
@@ -5510,7 +5511,8 @@ def km_sculpt(params):
         ("brush.scale_size", {"type": 'RIGHT_BRACKET', "value": 'PRESS', "repeat": True},
          {"properties": [("scalar", 1.0 / 0.9)]}),
         # Phantom: Ctrl-F is PolyFrame (below), so the texture angle moves to Ctrl-Alt-F.
-        *_template_paint_radial_control("sculpt", rotation="face_sets" not in phantom),
+        # Brush size is on S, like ZBrush's Draw Size (Shift-F stays strength).
+        *_template_paint_radial_control("sculpt", rotation="face_sets" not in phantom, size_key='S'),
         *((
             ("wm.radial_control", {"type": 'F', "value": 'PRESS', "ctrl": True, "alt": True},
              radial_control_properties("sculpt", "texture_slot.angle", secondary_prop=None)),
@@ -5548,11 +5550,7 @@ def km_sculpt(params):
              ("asset_library_type", 'ESSENTIALS'),
              ("relative_asset_identifier", "brushes/essentials_brushes-mesh_sculpt.blend/Brush/Draw"),
          ]}),
-        ("brush.asset_activate", {"type": 'S', "value": 'PRESS'},
-         {"properties": [
-             ("asset_library_type", 'ESSENTIALS'),
-             ("relative_asset_identifier", "brushes/essentials_brushes-mesh_sculpt.blend/Brush/Smooth"),
-         ]}),
+        # Phantom: no S for the Smooth brush: S sets the brush size, and Shift smooths.
         ("brush.asset_activate", {"type": 'P', "value": 'PRESS'},
          {"properties": [
              ("asset_library_type", 'ESSENTIALS'),

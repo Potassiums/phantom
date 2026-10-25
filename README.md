@@ -19,7 +19,7 @@ Phantom is in **alpha** and follows Blender's in-development code (currently 5.4
 - **actions bar:** When masking or isolating polygroups a new contextual bar appears relating to masks or polygroups giving
   users the ability to quickly hide, extract, or split
 - **Polygroups:** face sets are called polygroups throughout the interface, like ZBrush.
-- **Zbrush style hotkeys** Sculpting mode now sports Zbrush style hotkeys for masking, polygroups, and more.
+- **Zbrush style hotkeys** Sculpting mode now sports Zbrush style hotkeys for masking, polygroups, and more (S for brush size).
 - **Garment workspace (experimental, very buggy):** Marvelous Designer-style patterns, sewing and
   cloth simulation (live on the GPU with NVIDIA Newton), with its own **Garment Mode** (Pin and
   Drag tools) and a Garment tab in the Properties editor. Expect bugs and crashes, and save often.
@@ -49,8 +49,11 @@ Phantom is in **alpha** and follows Blender's in-development code (currently 5.4
   merged, detail projected back.
 - **ClayPolish (experimental):** smooth the whole surface at once while keeping creases crisp
   (Properties > Sculpting).
-- **Sculpt history (experimental):** record every sculpt edit of an object and scrub back
-  through them on a timeline at the top of the viewport (Properties > Sculpting > History).
+- **Sculpt history (experimental):** every sculpt edit of an object is recorded; scrub back
+  through them on a timeline docked to any side of the viewport. History in the Sculpt Mode
+  header shows it and holds its settings.
+- **Painter's color picker:** brush colors use a hue ring around a saturation/brightness
+  triangle, at the top of Brush Settings.
 - **Brushes:** the sidebar moves next to the tools with the Brush Asset panel (tool icon and name
   on top) and four quick-brush slots: drag brushes in or out, right-click to replace, remove or
   give a shortcut. A quick-brush shortcut takes over its key (for example C instead of Clay

@@ -2339,7 +2339,8 @@ static void rna_LightLinking_collection_update(Main *bmain, Scene * /*scene*/, P
 
 static bool rna_Object_use_sculpt_history_get(PointerRNA *ptr)
 {
-  return bke::phantom_history::is_recording(*static_cast<const Object *>(ptr->data));
+  const Object &ob = *static_cast<const Object *>(ptr->data);
+  return ob.phantom_history == nullptr || (ob.phantom_history->flag & PHANTOM_HISTORY_RECORD);
 }
 
 static void rna_Object_use_sculpt_history_set(PointerRNA *ptr, const bool value)
@@ -3855,9 +3856,9 @@ static void rna_def_object(BlenderRNA *brna)
       prop, "rna_Object_use_sculpt_history_get", "rna_Object_use_sculpt_history_set");
   RNA_def_property_clear_flag(prop, PROP_ANIMATABLE);
   RNA_def_property_ui_text(prop,
-                           "Sculpt History",
-                           "Record every sculpt edit of the mesh, to go back to any of them on "
-                           "the timeline");
+                           "Record History",
+                           "Record this object's sculpt edits (with the Sculpt History "
+                           "preference on); off pauses its history");
   RNA_def_property_update(prop, NC_OBJECT | ND_DRAW, nullptr);
 
   prop = RNA_def_property(srna, "sculpt_history", PROP_POINTER, PROP_NONE);

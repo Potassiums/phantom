@@ -4,8 +4,8 @@
 
 """
 Phantom: the Properties editor's Sculpting tab (shown in Sculpt Mode, along with a shorter list
-of tabs). It has ClayPolish, and previews Sculpt Layers, still to come, with its tools shown but
-not usable yet.
+of tabs). It has ClayPolish (the sculpt history's settings are in the Sculpt Mode header), and
+previews Sculpt Layers, still to come, with its tools shown but not usable yet.
 """
 
 import bpy
@@ -148,55 +148,6 @@ class PROPERTIES_PT_phantom_claypolish(PhantomSculptingPanel, Panel):
             setattr(props, name, getattr(settings, name))
 
 
-class PROPERTIES_PT_phantom_history(PhantomSculptingPanel, Panel):
-    """Sculpt history: every sculpt edit of the mesh, to scrub back to on the viewport timeline"""
-    bl_label = "History"
-
-    @classmethod
-    def poll(cls, context):
-        ob = context.active_object
-        return ob is not None and ob.type == 'MESH'
-
-    def draw_header(self, context):
-        self.layout.prop(context.active_object, "use_sculpt_history", text="")
-
-    def draw(self, context):
-        layout = self.layout
-        layout.use_property_split = True
-        layout.use_property_decorate = False
-        ob = context.active_object
-        history = ob.sculpt_history
-
-        if history is None:
-            col = layout.column()
-            col.active = False
-            col.label(text="Turn on to record sculpt edits and scrub them on a timeline.")
-            return
-
-        col = layout.column()
-        col.prop(history, "limit")
-        col.prop(history, "use_save")
-
-        steps = len(history.steps)
-        row = layout.row()
-        row.alignment = 'RIGHT'
-        row.active = False
-        if steps:
-            row.label(text="Step {:d} of {:d}, {:.1f} MB".format(
-                history.current + 1, steps, history.memory_size))
-        else:
-            row.label(text="No steps yet: sculpt to record the first one")
-
-        if context.mode == 'SCULPT' and steps > 1:
-            row = layout.row(align=True)
-            row.operator("sculpt.phantom_history_goto", text="", icon='TRIA_LEFT').index = max(
-                history.current - 1, 0)
-            row.operator("sculpt.phantom_history_goto", text="", icon='TRIA_RIGHT').index = min(
-                history.current + 1, steps - 1)
-
-        layout.operator("object.phantom_history_delete", text="Delete History", icon='TRASH')
-
-
 # ClayPolish settings copied onto the operator.
 CLAY_POLISH_SETTINGS = (
     "angle_preservation",
@@ -214,7 +165,6 @@ classes = (
     PROPERTIES_PT_phantom_sculpting,
     PROPERTIES_PT_phantom_sculpt_layers,
     PROPERTIES_PT_phantom_claypolish,
-    PROPERTIES_PT_phantom_history,
 )
 
 

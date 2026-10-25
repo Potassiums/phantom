@@ -642,6 +642,26 @@ struct ColorPicker {
 
   /** Alpha component. */
   bool has_alpha;
+
+  /**
+   * Phantom: show the circle as a hue ring around a saturation/value triangle (for brush colors,
+   * see #color_picker_is_brush_color). Its colors are HSV whatever the picker type.
+   */
+  bool use_triangle;
+};
+
+/**
+ * Phantom: what the triangle picker's drag edits (#eColorTriangleDrag), and its hue (kept while
+ * the color is gray, where the color itself has none). Not in #ColorPicker, which is made anew
+ * each time the block is rebuilt during a drag. One drag at a time, so one of each.
+ */
+extern char color_triangle_drag;
+extern float color_triangle_hue;
+
+/** Phantom: #ColorPicker.triangle_drag. */
+enum eColorTriangleDrag : char {
+  COLOR_TRIANGLE_DRAG_HUE = 1,
+  COLOR_TRIANGLE_DRAG_SV = 2,
 };
 
 struct ColorPickerData {
@@ -914,6 +934,18 @@ void button_v3_get(Button *but, float vec[3]);
 void button_v3_set(Button *but, const float vec[3]);
 void button_v4_get(Button *but, float vec[4]);
 void button_v4_set(Button *but, const float vec[4]);
+
+/** Phantom: whether `ptr` is a brush color (a #Brush, or the unified paint settings). */
+bool color_picker_is_brush_color(const PointerRNA *ptr);
+/**
+ * Phantom: the triangle picker in `rect`: its center, the hue ring's outer and inner radius, and
+ * the triangle's corners: the pure hue pointing right, white at the top, black at the bottom.
+ */
+void hsvtriangle_geometry(
+    const rcti *rect, float r_center[2], float *r_outer, float *r_inner, float r_tri[3][2]);
+/** Phantom: saturation and value at `pos` in the triangle (outside it: its nearest point). */
+void hsvtriangle_sv_from_pos(const float tri[3][2], const float pos[2], float *r_s, float *r_v);
+void hsvtriangle_pos_from_sv(const float tri[3][2], float s, float v, float r_pos[2]);
 
 void hsvcircle_vals_from_pos(
     const rcti *rect, float mx, float my, float *r_val_rad, float *r_val_dist);

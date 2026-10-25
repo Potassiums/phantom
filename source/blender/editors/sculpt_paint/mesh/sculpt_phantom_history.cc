@@ -148,12 +148,15 @@ struct ScrubData {
 
 static int scrub_index(const wmOperator &op, const PhantomHistory &history, const wmEvent &event)
 {
-  const float x_min = RNA_float_get(op.ptr, "x_min");
-  const float x_max = RNA_float_get(op.ptr, "x_max");
-  if (history.steps_num < 2 || x_max <= x_min) {
+  /* The timeline runs from `start` to `end` along x, or y for a bar docked to a side. */
+  const float start = RNA_float_get(op.ptr, "start");
+  const float end = RNA_float_get(op.ptr, "end");
+  const bool vertical = RNA_boolean_get(op.ptr, "vertical");
+  if (history.steps_num < 2 || start == end) {
     return history.current;
   }
-  const float t = std::clamp((float(event.mval[0]) - x_min) / (x_max - x_min), 0.0f, 1.0f);
+  const float pos = float(vertical ? event.mval[1] : event.mval[0]);
+  const float t = std::clamp((pos - start) / (end - start), 0.0f, 1.0f);
   return int(std::round(t * float(history.steps_num - 1)));
 }
 
@@ -244,11 +247,28 @@ void SCULPT_OT_phantom_history_scrub(wmOperatorType *ot)
   /* The undo step is pushed by hand, when the drag ends. */
   ot->flag = OPTYPE_BLOCKING;
 
-  PropertyRNA *prop = RNA_def_float(
-      ot->srna, "x_min", 0.0f, -FLT_MAX, FLT_MAX, "Start", "Timeline start (region x)", 0, 1);
+  PropertyRNA *prop = RNA_def_float(ot->srna,
+                                    "start",
+                                    0.0f,
+                                    -FLT_MAX,
+                                    FLT_MAX,
+                                    "Start",
+                                    "Where the first step is on the timeline (region pixels)",
+                                    0,
+                                    1);
   RNA_def_property_flag(prop, PropertyFlag(PROP_HIDDEN | PROP_SKIP_SAVE));
-  prop = RNA_def_float(
-      ot->srna, "x_max", 1.0f, -FLT_MAX, FLT_MAX, "End", "Timeline end (region x)", 0, 1);
+  prop = RNA_def_float(ot->srna,
+                       "end",
+                       1.0f,
+                       -FLT_MAX,
+                       FLT_MAX,
+                       "End",
+                       "Where the last step is on the timeline (region pixels)",
+                       0,
+                       1);
+  RNA_def_property_flag(prop, PropertyFlag(PROP_HIDDEN | PROP_SKIP_SAVE));
+  prop = RNA_def_boolean(
+      ot->srna, "vertical", false, "Vertical", "The timeline runs along y (docked to a side)");
   RNA_def_property_flag(prop, PropertyFlag(PROP_HIDDEN | PROP_SKIP_SAVE));
 }
 

@@ -913,11 +913,28 @@ class VIEW3D_MT_tools_projectpaint_clone(Menu):
             props.value = i
 
 
+def brush_has_color(context, brush):
+    """Whether the brush paints color in the current paint mode."""
+    mode = UnifiedPaintPanel.get_brush_mode(context)
+    if mode == 'SCULPT':
+        return brush.sculpt_capabilities.has_color
+    if mode in {'PAINT_TEXTURE', 'PAINT_2D'}:
+        return brush.image_paint_capabilities.has_color
+    if mode == 'PAINT_VERTEX':
+        return brush.vertex_paint_capabilities.has_color
+    return False
+
+
 def brush_settings(layout, context, brush, popover=False):
     """ Draw simple brush settings for Sculpt,
         Texture/Vertex/Weight Paint modes, or skip certain settings for the popover """
 
     mode = UnifiedPaintPanel.get_brush_mode(context)
+
+    # Phantom: the color picker leads Brush Settings for brushes that paint color.
+    if not popover and brush_has_color(context, brush):
+        draw_color_settings(context, layout.column(), brush, color_type=mode != 'PAINT_VERTEX')
+        layout.separator()
 
     ### Draw simple settings unique to each paint mode. ###
     brush_shared_settings(layout, context, brush, popover)
@@ -1021,13 +1038,14 @@ def brush_settings(layout, context, brush, popover=False):
             layout.separator()
 
         if capabilities.has_color:
-            ups = UnifiedPaintPanel.paint_settings_from_mode(context, 'SCULPT').unified_paint_settings
-            row = layout.row(align=True)
-            UnifiedPaintPanel.prop_unified_color(row, context, brush, "color", text="")
-            UnifiedPaintPanel.prop_unified_color(row, context, brush, "secondary_color", text="")
-            row.separator()
-            row.operator("paint.brush_colors_flip", icon='FILE_REFRESH', text="", emboss=False)
-            row.prop(brush, "use_unified_color", text="", icon='BRUSHES_ALL')
+            # Phantom: in the panel, the colors are at the top with the picker.
+            if popover:
+                row = layout.row(align=True)
+                UnifiedPaintPanel.prop_unified_color(row, context, brush, "color", text="")
+                UnifiedPaintPanel.prop_unified_color(row, context, brush, "secondary_color", text="")
+                row.separator()
+                row.operator("paint.brush_colors_flip", icon='FILE_REFRESH', text="", emboss=False)
+                row.prop(brush, "use_unified_color", text="", icon='BRUSHES_ALL')
             layout.prop(brush, "blend", text="Blend Mode")
 
         # Per sculpt tool options.
@@ -1630,13 +1648,15 @@ def draw_color_settings(context, layout, brush, color_type=False):
     """Draw color wheel and gradient settings."""
     ups = UnifiedPaintPanel.paint_settings_from_active_tool(context).unified_paint_settings
 
-    if color_type:
-        row = layout.row()
-        row.use_property_split = False
-        row.prop(brush, "color_type", expand=True)
+    def draw_color_type():
+        if color_type:
+            row = layout.row()
+            row.use_property_split = False
+            row.prop(brush, "color_type", expand=True)
 
     # Color wheel
     if brush.color_type == 'COLOR':
+        # Phantom: the picker on top, the primary and secondary colors right under it.
         UnifiedPaintPanel.prop_unified_color_picker(layout, context, brush, "color", value_slider=True)
 
         row = layout.row(align=True)
@@ -1646,11 +1666,13 @@ def draw_color_settings(context, layout, brush, color_type=False):
         row.operator("paint.brush_colors_flip", icon='FILE_REFRESH', text="", emboss=False)
         row.prop(brush, "use_unified_color", text="", icon='BRUSHES_ALL')
 
+        draw_color_type()
         draw_color_jitter_panel(layout, context, brush)
 
     # Gradient
     elif brush.color_type == 'GRADIENT':
         layout.template_color_ramp(brush, "gradient", expand=True)
+        draw_color_type()
 
         layout.use_property_split = True
 

@@ -22,6 +22,7 @@
 #include "BLI_color_types.hh"
 #include "BLI_listbase.hh"
 #include "BLI_math_color_c.hh"
+#include "BLI_math_geom_c.hh"
 #include "BLI_math_vector_c.hh"
 #include "BLI_rect.hh"
 #include "BLI_string.hh"
@@ -32,6 +33,7 @@
 #include "BKE_path_templates.hh"
 
 #include "RNA_access.hh"
+#include "RNA_prototypes.hh"
 
 #include "BLF_api.hh"
 
@@ -3760,6 +3762,200 @@ void hsvcircle_pos_from_vals(
   *r_ypos = centy + sinf(-ang) * rad;
 }
 
+/* -------------------------------------------------------------------- */
+/** \name Phantom: Hue Ring and Saturation/Value Triangle Picker
+ *
+ * The classic painting picker: a hue ring around a triangle whose corners are the pure hue
+ * (pointing right), white (top) and black (bottom); the triangle stays put. Inside it, a point
+ * with barycentric weights (hue a, white b, black c) is a * hue + b * white, so its value is
+ * a + b and its saturation a / (a + b).
+ * \{ */
+
+char color_triangle_drag = 0;
+float color_triangle_hue = 0.0f;
+
+bool color_picker_is_brush_color(const PointerRNA *ptr)
+{
+  return ptr && ptr->type &&
+         (RNA_struct_is_a(ptr->type, RNA_Brush) ||
+          RNA_struct_is_a(ptr->type, RNA_UnifiedPaintSettings));
+}
+
+/** Direction of `hue` on the ring, as #hsvcircle_pos_from_vals places it. */
+static void hsvtriangle_hue_dir(const float hue, float r_dir[2])
+{
+  const float ang = 2.0f * float(M_PI) * hue + float(M_PI_2);
+  r_dir[0] = cosf(-ang);
+  r_dir[1] = sinf(-ang);
+}
+
+void hsvtriangle_geometry(
+    const rcti *rect, float r_center[2], float *r_outer, float *r_inner, float r_tri[3][2])
+{
+  r_center[0] = BLI_rcti_cent_x_fl(rect);
+  r_center[1] = BLI_rcti_cent_y_fl(rect);
+  *r_outer = float(min_ii(BLI_rcti_size_x(rect), BLI_rcti_size_y(rect))) / 2.0f;
+  *r_inner = *r_outer * 0.80f;
+  const float tri_radius = *r_inner * 0.95f;
+  /* Pure hue to the right, white up and black down, 120 degrees apart. */
+  const float corner_angles[3] = {0.0f, 2.0f * float(M_PI) / 3.0f, -2.0f * float(M_PI) / 3.0f};
+  for (int i = 0; i < 3; i++) {
+    r_tri[i][0] = r_center[0] + cosf(corner_angles[i]) * tri_radius;
+    r_tri[i][1] = r_center[1] + sinf(corner_angles[i]) * tri_radius;
+  }
+}
+
+void hsvtriangle_sv_from_pos(const float tri[3][2], const float pos[2], float *r_s, float *r_v)
+{
+  float w[3];
+  barycentric_weights_v2(tri[0], tri[1], tri[2], pos, w);
+  if (w[0] < 0.0f || w[1] < 0.0f || w[2] < 0.0f) {
+    /* Outside: the nearest point on the triangle's edges. */
+    float best[2] = {pos[0], pos[1]};
+    float best_dist = FLT_MAX;
+    for (int i = 0; i < 3; i++) {
+      float close[2];
+      closest_to_line_segment_v2(close, pos, tri[i], tri[(i + 1) % 3]);
+      const float dist = len_squared_v2v2(close, pos);
+      if (dist < best_dist) {
+        best_dist = dist;
+        copy_v2_v2(best, close);
+      }
+    }
+    barycentric_weights_v2(tri[0], tri[1], tri[2], best, w);
+    for (int i = 0; i < 3; i++) {
+      w[i] = std::max(w[i], 0.0f);
+    }
+    const float sum = w[0] + w[1] + w[2];
+    if (sum > 0.0f) {
+      mul_v3_fl(w, 1.0f / sum);
+    }
+  }
+  const float value = clamp_f(w[0] + w[1], 0.0f, 1.0f);
+  *r_v = value;
+  if (value > 1e-5f) {
+    *r_s = clamp_f(w[0] / value, 0.0f, 1.0f);
+  }
+}
+
+void hsvtriangle_pos_from_sv(const float tri[3][2], const float s, const float v, float r_pos[2])
+{
+  const float a = s * v;
+  const float b = v * (1.0f - s);
+  const float c = 1.0f - v;
+  r_pos[0] = a * tri[0][0] + b * tri[1][0] + c * tri[2][0];
+  r_pos[1] = a * tri[0][1] + b * tri[1][1] + c * tri[2][1];
+}
+
+static void draw_but_HSVTRIANGLE(Button *but, const uiWidgetColors *wcol, const rcti *rect)
+{
+  const bool is_color_gamma = button_is_color_gamma(but);
+
+  float rgb[3], rgb_perceptual[3];
+  button_v3_get(but, rgb);
+  copy_v3_v3(rgb_perceptual, rgb);
+  scene_linear_to_perceptual_space(but, rgb_perceptual);
+  float hsv[3] = {color_triangle_hue, 0.0f, 0.0f};
+  rgb_to_hsv_compat_v(rgb_perceptual, hsv);
+  color_triangle_hue = hsv[0];
+  const float hue = hsv[0];
+  const float sat = clamp_f(hsv[1], 0.0f, 1.0f);
+  const float val = clamp_f(hsv[2], 0.0f, 1.0f);
+  if (!is_color_gamma) {
+    block_cm_to_display_space_v3(but->block, rgb);
+  }
+
+  /* An HSV color as it shows on screen. */
+  const auto display_rgb = [&](const float h, const float s, const float v, float r_rgb[3]) {
+    const float color_hsv[3] = {h, s, v};
+    hsv_to_rgb_v(color_hsv, r_rgb);
+    perceptual_to_scene_linear_space(but, r_rgb);
+    if (!is_color_gamma) {
+      block_cm_to_display_space_v3(but->block, r_rgb);
+    }
+  };
+
+  float center[2], outer, inner, tri[3][2];
+  hsvtriangle_geometry(rect, center, &outer, &inner, tri);
+
+  GPUVertFormat *format = immVertexFormat();
+  uint pos = GPU_vertformat_attr_add(format, "pos", gpu::VertAttrType::SFLOAT_32_32);
+  const uint color = GPU_vertformat_attr_add(format, "color", gpu::VertAttrType::SFLOAT_32_32_32);
+  immBindBuiltinProgram(GPU_SHADER_3D_SMOOTH_COLOR);
+
+  /* Hue ring. */
+  const int tot = 96;
+  immBegin(GPU_PRIM_TRI_STRIP, (tot + 1) * 2);
+  for (int a = 0; a <= tot; a++) {
+    const float h = float(a) / float(tot);
+    float dir[2], ring_rgb[3];
+    hsvtriangle_hue_dir(h, dir);
+    display_rgb(h, 1.0f, 1.0f, ring_rgb);
+    immAttr3fv(color, ring_rgb);
+    immVertex2f(pos, center[0] + dir[0] * outer, center[1] + dir[1] * outer);
+    immAttr3fv(color, ring_rgb);
+    immVertex2f(pos, center[0] + dir[0] * inner, center[1] + dir[1] * inner);
+  }
+  immEnd();
+
+  /* Saturation/value triangle. */
+  float corner_rgb[3][3];
+  display_rgb(hue, 1.0f, 1.0f, corner_rgb[0]);
+  display_rgb(hue, 0.0f, 1.0f, corner_rgb[1]);
+  display_rgb(hue, 0.0f, 0.0f, corner_rgb[2]);
+  immBegin(GPU_PRIM_TRIS, 3);
+  for (int i = 0; i < 3; i++) {
+    immAttr3fv(color, corner_rgb[i]);
+    immVertex2fv(pos, tri[i]);
+  }
+  immEnd();
+  immUnbindProgram();
+
+  /* Outlines. */
+  format = immVertexFormat();
+  pos = GPU_vertformat_attr_add(format, "pos", gpu::VertAttrType::SFLOAT_32_32);
+  immBindBuiltinProgram(GPU_SHADER_3D_UNIFORM_COLOR);
+  GPU_blend(GPU_BLEND_ALPHA);
+  GPU_line_smooth(true);
+  immUniformColor3ubv(wcol->outline);
+  imm_draw_circle_wire_2d(pos, center[0], center[1], outer, tot);
+  imm_draw_circle_wire_2d(pos, center[0], center[1], inner, tot);
+  immBegin(GPU_PRIM_LINE_LOOP, 3);
+  for (int i = 0; i < 3; i++) {
+    immVertex2fv(pos, tri[i]);
+  }
+  immEnd();
+  immUnbindProgram();
+  GPU_blend(GPU_BLEND_NONE);
+  GPU_line_smooth(false);
+
+  /* Cursors: the hue on the ring, and the color in the triangle. */
+  const float zoom = 1.0f / but->block->aspect;
+  float dir[2], ring_rgb[3];
+  hsvtriangle_hue_dir(hue, dir);
+  display_rgb(hue, 1.0f, 1.0f, ring_rgb);
+  const float ring_hsv[3] = {hue, 1.0f, 1.0f};
+  const float ring_mid = (outer + inner) / 2.0f;
+  hsv_cursor(center[0] + dir[0] * ring_mid,
+             center[1] + dir[1] * ring_mid,
+             zoom * 0.7f,
+             ring_rgb,
+             ring_hsv,
+             (but->flag & UI_SELECT) && color_triangle_drag == COLOR_TRIANGLE_DRAG_HUE);
+
+  float cursor[2];
+  hsvtriangle_pos_from_sv(tri, sat, val, cursor);
+  const float cursor_hsv[3] = {hue, sat, val};
+  hsv_cursor(cursor[0],
+             cursor[1],
+             zoom,
+             rgb,
+             cursor_hsv,
+             (but->flag & UI_SELECT) && color_triangle_drag == COLOR_TRIANGLE_DRAG_SV);
+}
+
+/** \} */
+
 static void draw_but_HSVCIRCLE(Button *but, const uiWidgetColors *wcol, const rcti *rect)
 {
   /* TODO(merwin): reimplement as shader for pixel-perfect colors */
@@ -3771,6 +3967,10 @@ static void draw_but_HSVCIRCLE(Button *but, const uiWidgetColors *wcol, const rc
   const float radius = float(min_ii(BLI_rcti_size_x(rect), BLI_rcti_size_y(rect))) / 2.0f;
 
   ColorPicker *cpicker = static_cast<ColorPicker *>(but->custom_data);
+  if (cpicker->use_triangle) {
+    draw_but_HSVTRIANGLE(but, wcol, rect);
+    return;
+  }
   float rgb[3], hsv[3], rgb_center[3], rgb_perceptual[3];
   const bool is_color_gamma = button_is_color_gamma(but);
 

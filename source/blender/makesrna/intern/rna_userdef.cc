@@ -5933,6 +5933,14 @@ static void rna_def_userdef_edit(BlenderRNA *brna)
                            "every object");
   RNA_def_property_update(prop, 0, "rna_userdef_update");
 
+  prop = RNA_def_property(srna, "use_sculpt_history", PROP_BOOLEAN, PROP_NONE);
+  RNA_def_property_boolean_negative_sdna(prop, nullptr, "sculpt_history_off", 1);
+  RNA_def_property_ui_text(prop,
+                           "Sculpt History",
+                           "Record every sculpt edit of each mesh object as soon as it is "
+                           "sculpted, to scrub back through on the timeline (experimental)");
+  RNA_def_property_update(prop, 0, "rna_userdef_update");
+
   prop = RNA_def_property(srna, "use_global_undo", PROP_BOOLEAN, PROP_NONE);
   RNA_def_property_boolean_sdna(prop, nullptr, "uiflag", USER_GLOBALUNDO);
   RNA_def_property_ui_text(

@@ -7804,6 +7804,81 @@ static int do_but_HSVCUBE(
   return WM_UI_HANDLER_CONTINUE;
 }
 
+/**
+ * Phantom: the hue ring and saturation/value triangle picker. A drag edits what it started on:
+ * the hue on the ring, or saturation and value in the triangle (keeping the other components of
+ * the color the drag started with).
+ */
+static bool numedit_but_HSVTRIANGLE(Button *but,
+                                    HandleButtonData *data,
+                                    const float mx,
+                                    const float my,
+                                    const eSnapType snap,
+                                    const bool shift,
+                                    const bool use_continuous_grab,
+                                    const bool start_drag)
+{
+  /* The block (and its color picker) is rebuilt while dragging: what the drag edits and the hue
+   * live in #color_triangle_drag and #color_triangle_hue. */
+  float hsv[3] = {color_triangle_hue, 0.0f, 0.0f};
+
+  rcti rect;
+  BLI_rcti_rctf_copy(&rect, &but->rect);
+
+  float rgb[3];
+  copy_v3_v3(rgb, data->origvec);
+  scene_linear_to_perceptual_space(but, rgb);
+  rgb_to_hsv_compat_v(rgb, hsv);
+
+  float center[2], outer, inner, tri[3][2];
+  hsvtriangle_geometry(&rect, center, &outer, &inner, tri);
+
+  if (start_drag) {
+    data->relative_drag.x = mx;
+    data->relative_drag.y = my;
+    const float press[2] = {mx, my};
+    color_triangle_drag = (len_v2v2(press, center) >= inner) ? COLOR_TRIANGLE_DRAG_HUE :
+                                                               COLOR_TRIANGLE_DRAG_SV;
+  }
+  else if (use_continuous_grab || shift) {
+    const float fac = mouse_scale_warp_factor(shift);
+    data->relative_drag.x += (mx - float(data->draglastx)) * fac;
+    data->relative_drag.y += (my - float(data->draglasty)) * fac;
+  }
+  else {
+    data->relative_drag.x = mx;
+    data->relative_drag.y = my;
+  }
+
+  if (color_triangle_drag == COLOR_TRIANGLE_DRAG_HUE) {
+    float dist;
+    hsvcircle_vals_from_pos(&rect, data->relative_drag.x, data->relative_drag.y, &hsv[0], &dist);
+    if (snap != SNAP_OFF) {
+      color_snap_hue(snap, &hsv[0]);
+    }
+  }
+  else {
+    const float drag[2] = {data->relative_drag.x, data->relative_drag.y};
+    hsvtriangle_sv_from_pos(tri, drag, &hsv[1], &hsv[2]);
+    if (use_continuous_grab || shift) {
+      /* Keep the virtual cursor on the triangle, so dragging back in responds at once. */
+      float on_triangle[2];
+      hsvtriangle_pos_from_sv(tri, hsv[1], hsv[2], on_triangle);
+      data->relative_drag.x = on_triangle[0];
+      data->relative_drag.y = on_triangle[1];
+    }
+  }
+
+  color_triangle_hue = hsv[0];
+  hsv_to_rgb_v(hsv, rgb);
+  perceptual_to_scene_linear_space(but, rgb);
+  button_v3_set(but, rgb);
+
+  data->draglastx = mx;
+  data->draglasty = my;
+  return true;
+}
+
 static bool numedit_but_HSVCIRCLE(Button *but,
                                   HandleButtonData *data,
                                   float mx,
@@ -7815,6 +7890,10 @@ static bool numedit_but_HSVCIRCLE(Button *but,
 {
   const bool changed = true;
   ColorPicker *cpicker = static_cast<ColorPicker *>(but->custom_data);
+  if (cpicker->use_triangle) {
+    return numedit_but_HSVTRIANGLE(
+        but, data, mx, my, snap, shift, use_continuous_grab, start_drag);
+  }
   float *hsv = cpicker->hsv_perceptual;
 
   rcti rect;

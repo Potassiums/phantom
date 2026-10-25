@@ -40,7 +40,10 @@ PhantomHistory &ensure(Object &ob);
 void remove(Object &ob);
 void free(PhantomHistory *history);
 
-/** Whether edits of this object are recorded now. */
+/**
+ * Whether edits of this object are recorded now: the sculpt history preference is on, and the
+ * object's history (if it has one yet) isn't paused. The first recorded edit creates it.
+ */
 bool is_recording(const Object &ob);
 
 /**

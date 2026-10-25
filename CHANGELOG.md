@@ -4,6 +4,31 @@ Phantom is a fork of Blender tuned for sculpting. This file lists what Phantom c
 own changes come from the Blender version each release is built on.
 
 
+## 0.4.1 alpha (2026-10-24)
+
+Built on Blender 5.4 alpha, on top of 0.4.0.
+
+- **Sculpt history (still experimental) is on by default:** every mesh object starts recording
+  with its first sculpt edit, nothing to turn on (switch it off in the History dropdown).
+- **History in the Sculpt Mode header:** its checkbox shows or hides the timeline, and its
+  dropdown holds all the history settings: where the timeline is docked (**Top**, **Bottom**,
+  **Left** or **Right** of the viewport, running across or down), **Show Timeline**,
+  **Record**, and the object's own history (record it, step limit, save in the file, delete).
+  The History panel in Properties > Sculpting is gone. **View > History Timeline** also shows
+  or hides it.
+- **The timeline** is always there in Sculpt Mode (it says when there's no history yet), labels
+  its **Start** and **End**, and glides out of the way as the toolbar, sidebar or asset shelf
+  open and close.
+- **Brush size is on S** in Sculpt Mode, like ZBrush's Draw Size (F no longer changes it; S no
+  longer picks the Smooth brush, Shift smooths). Shift-F is still strength.
+- **A painter's color picker for brushes:** a hue ring around a saturation and brightness
+  triangle (pure color pointing right, white at the top, black at the bottom). Drag the ring for
+  the hue and the triangle for the shade; a drag keeps editing what it started on. Used for
+  brush colors only, in Brush Settings and the color popup.
+- **The color picker leads Brush Settings** for brushes that paint color, with the primary and
+  secondary colors right under it; the separate Color Picker panel is merged in.
+
+
 ## 0.4.0 alpha (2026-10-24)
 
 Built on Blender 5.4 alpha, on top of 0.3.2.

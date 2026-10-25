@@ -23,6 +23,8 @@
 namespace blender::ui {
 
 #define WHEEL_SIZE (5 * U.widget_unit)
+/** Phantom: the hue ring and triangle picker for brush colors (it has value built in). */
+#define TRIANGLE_WHEEL_SIZE (8 * U.widget_unit)
 
 void template_color_picker(Layout *layout,
                            PointerRNA *ptr,
@@ -46,6 +48,29 @@ void template_color_picker(Layout *layout,
 
   Layout &col = layout->column(true);
   Layout &row = col.row(true);
+
+  /* Phantom: brush colors get the painting picker, a hue ring around a saturation/value
+   * triangle, which needs no value slider. */
+  if (color_picker_is_brush_color(ptr)) {
+    Button *but = uiDefButR_prop(block,
+                                 ButtonType::HsvCircle,
+                                 "",
+                                 0,
+                                 0,
+                                 TRIANGLE_WHEEL_SIZE,
+                                 TRIANGLE_WHEEL_SIZE,
+                                 ptr,
+                                 prop,
+                                 -1,
+                                 0.0,
+                                 0.0,
+                                 TIP_("Hue (ring), saturation and value (triangle)"));
+    but->custom_data = cpicker;
+    cpicker->use_triangle = true;
+    cpicker->use_color_lock = lock;
+    UNUSED_VARS(value_slider, lock_luminosity, cubic, softmin, softmax);
+    return;
+  }
 
   Button *but = nullptr;
   ButtonHSVCube *hsv_but;

@@ -225,6 +225,10 @@ class VIEW3D_HT_tool_header(Header):
 
         if mode_string == 'SCULPT':
             layout.popover_group(context=".sculpt_mode", **popover_kw)
+            # Phantom: History, a checkbox showing the timeline and its settings dropdown.
+            if hasattr(context.window_manager, "phantom_history_bar_show"):
+                import phantom_history_timeline
+                phantom_history_timeline.draw_header_item(layout, context)
         elif mode_string == 'PAINT_VERTEX':
             layout.popover_group(context=".vertexpaint", **popover_kw)
         elif mode_string == 'PAINT_WEIGHT':

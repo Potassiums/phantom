@@ -19,6 +19,7 @@
 
 #include "DNA_mesh_types.h"
 #include "DNA_object_types.h"
+#include "DNA_userdef_types.h"
 
 #include "BKE_mesh.hh"
 #include "BKE_phantom_history.hh"
@@ -103,8 +104,9 @@ void remove(Object &ob)
 
 bool is_recording(const Object &ob)
 {
-  return ob.phantom_history && (ob.phantom_history->flag & PHANTOM_HISTORY_RECORD) &&
-         ob.type == OB_MESH;
+  /* The preference turns it on for every object; an object's own history can be paused. */
+  return !U.sculpt_history_off && ob.type == OB_MESH &&
+         (ob.phantom_history == nullptr || (ob.phantom_history->flag & PHANTOM_HISTORY_RECORD));
 }
 
 static int keyframe_of(const PhantomHistory &history, const int index)
@@ -212,9 +214,13 @@ void begin_edit(Object &ob, const StringRef /*name*/)
   if (pause_count > 0 || !is_recording(ob)) {
     return;
   }
-  PhantomHistory &history = *ob.phantom_history;
   const Mesh *mesh = object_mesh(ob);
-  if (history.steps_num > 0 || mesh == nullptr) {
+  if (mesh == nullptr) {
+    return;
+  }
+  /* The first edit of an object starts its history. */
+  PhantomHistory &history = ensure(ob);
+  if (history.steps_num > 0) {
     return;
   }
   set_keyframe(append_step(history, IFACE_("Start")), *mesh);
@@ -255,11 +261,11 @@ void record(Object &ob, const StringRef name, bool topology_changed)
   if (pause_count > 0 || !is_recording(ob)) {
     return;
   }
-  PhantomHistory &history = *ob.phantom_history;
   const Mesh *mesh = object_mesh(ob);
   if (mesh == nullptr) {
     return;
   }
+  PhantomHistory &history = ensure(ob);
   if (history.steps_num == 0) {
     /* Nothing to compare to: the mesh as it is now is where the history starts. */
     set_keyframe(append_step(history, name), *mesh);

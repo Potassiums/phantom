@@ -1040,7 +1040,11 @@ struct UserDef {
   char ui_sound_volume = 60;
   /** Phantom: #eUserpref_RemeshMethod, the remesher for Remesh, Ctrl+R and masking empty space. */
   char remesh_method = 0;
-  char _pad8[1] = {};
+  /**
+   * Phantom: don't record a sculpt history (on by default: zero, as preferences saved before
+   * this setting read it, means every sculpted mesh object gets one).
+   */
+  char sculpt_history_off = 0;
   /**
    * Experimental flag for app-templates to make changes to behavior
    * which are outside the scope of typical preferences.

@@ -619,6 +619,30 @@ static void colorpicker_circle(Block *block,
   hsv_but->custom_data = cpicker;
 }
 
+/** Phantom: the hue ring and saturation/value triangle (brush colors), full width. */
+static void colorpicker_triangle(Block *block,
+                                 PointerRNA *ptr,
+                                 PropertyRNA *prop,
+                                 ColorPicker *cpicker)
+{
+  Button *bt = uiDefButR_prop(block,
+                              ButtonType::HsvCircle,
+                              "",
+                              0,
+                              0,
+                              PICKER_TOTAL_W,
+                              PICKER_TOTAL_W,
+                              ptr,
+                              prop,
+                              -1,
+                              0.0,
+                              0.0,
+                              TIP_("Hue (ring), saturation and value (triangle)"));
+  button_func_set(bt, colorpicker_rgba_update_cb, bt, bt);
+  bt->custom_data = cpicker;
+  cpicker->use_triangle = true;
+}
+
 static void colorpicker_square(
     Block *block, PointerRNA *ptr, PropertyRNA *prop, eButGradientType type, ColorPicker *cpicker)
 {
@@ -698,23 +722,28 @@ static void block_colorpicker(const bContext * /*C*/,
     softmax = 1.0f;
   }
 
-  switch (U.color_picker_type) {
-    case USER_CP_SQUARE_SV:
-      colorpicker_square(block, ptr, prop, GRAD_SV, cpicker);
-      break;
-    case USER_CP_SQUARE_HS:
-      colorpicker_square(block, ptr, prop, GRAD_HS, cpicker);
-      break;
-    case USER_CP_SQUARE_HV:
-      colorpicker_square(block, ptr, prop, GRAD_HV, cpicker);
-      break;
+  if (color_picker_is_brush_color(ptr)) {
+    colorpicker_triangle(block, ptr, prop, cpicker);
+  }
+  else {
+    switch (U.color_picker_type) {
+      case USER_CP_SQUARE_SV:
+        colorpicker_square(block, ptr, prop, GRAD_SV, cpicker);
+        break;
+      case USER_CP_SQUARE_HS:
+        colorpicker_square(block, ptr, prop, GRAD_HS, cpicker);
+        break;
+      case USER_CP_SQUARE_HV:
+        colorpicker_square(block, ptr, prop, GRAD_HV, cpicker);
+        break;
 
-    /* user default */
-    case USER_CP_CIRCLE_HSV:
-    case USER_CP_CIRCLE_HSL:
-    default:
-      colorpicker_circle(block, ptr, prop, cpicker);
-      break;
+      /* user default */
+      case USER_CP_CIRCLE_HSV:
+      case USER_CP_CIRCLE_HSL:
+      default:
+        colorpicker_circle(block, ptr, prop, cpicker);
+        break;
+    }
   }
 
   /* mode */
