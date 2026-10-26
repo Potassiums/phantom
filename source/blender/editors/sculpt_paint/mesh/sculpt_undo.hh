@@ -12,10 +12,12 @@
 
 #include "BLI_index_mask_fwd.hh"
 #include "BLI_span.hh"
+#include "BLI_string_ref.hh"
 #include "BLI_vector.hh"
 
 namespace blender {
 
+struct bContext;
 struct Depsgraph;
 struct Mesh;
 struct Object;
@@ -80,10 +82,24 @@ void push_end(Object &ob);
 void push_end_ex(Object &ob, bool use_nested_undo);
 
 /**
- * Phantom: after the sculpt history steps after the current one were deleted, drop the undo steps
- * that lead into them, so undo and redo keep matching the history.
+ * Phantom: after the sculpt history steps after `current` (a #bke::phantom_history::cursor_get)
+ * were deleted, drop the undo steps that lead into them, so undo and redo keep matching the
+ * history.
  */
-void history_steps_deleted(const Object &ob);
+void history_steps_deleted(const Object &ob, int current);
+
+/**
+ * Phantom: an undo step for a jump on the sculpt history timeline. It stores no mesh data: undo
+ * and redo put the mesh back in the history steps it goes between (#history_apply_cursor).
+ * Requires the object's PBVH.
+ */
+void history_jump_begin(const Scene &scene, Object &ob, const wmOperator *op);
+void history_jump_end(Object &ob);
+/**
+ * Phantom: put the active object (if it is `object_name`) in the state of the history step with
+ * `cursor`, updating the sculpt session (in `sculpt_phantom_history.cc`).
+ */
+void history_apply_cursor(bContext *C, StringRef object_name, int cursor);
 
 void restore_from_bmesh_enter_geometry(const StepData &step_data, Mesh &mesh);
 bool has_bmesh_log_entry();

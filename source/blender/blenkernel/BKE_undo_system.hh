@@ -242,7 +242,10 @@ UndoStack *BKE_undosys_stack_create();
 void BKE_undosys_stack_destroy(UndoStack *ustack);
 void BKE_undosys_stack_clear(UndoStack *ustack);
 void BKE_undosys_stack_clear_active(UndoStack *ustack);
-/** Phantom: make `us` the active step and free the steps after it, without decoding anything. */
+/**
+ * Phantom: make `us` the active step and free the steps after it, without decoding anything
+ * (a step being pushed, #UndoStack.step_init, stays).
+ */
 void BKE_undosys_stack_clear_after(UndoStack *ustack, UndoStep *us);
 /**
  * Phantom: free the steps from `first` to `last` (in order), without decoding anything. The steps

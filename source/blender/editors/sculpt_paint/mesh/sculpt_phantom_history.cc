@@ -7,7 +7,8 @@
  *
  * Phantom: operators for the sculpt history (see #BKE_phantom_history.hh): go to a step, scrub
  * the timeline, delete the history. Going to a step is one undo step, like any sculpt edit, and
- * isn't recorded in the history itself.
+ * isn't recorded in the history itself: undoing it puts the mesh back in the step it left
+ * (#undo::history_jump_begin).
  */
 
 #include <fmt/format.h>
@@ -21,6 +22,8 @@
 
 #include "BKE_context.hh"
 #include "BKE_mesh.hh"
+#include "BKE_multires.hh"
+#include "BKE_report.hh"
 #include "BKE_object_types.hh"
 #include "BKE_paint.hh"
 #include "BKE_paint_bvh.hh"
@@ -65,47 +68,102 @@ static bool history_poll(bContext *C)
   }
   const Object &ob = *CTX_data_active_object(C);
   const bke::pbvh::Tree *pbvh = bke::object::pbvh_get(ob);
-  if (pbvh && pbvh->type() != bke::pbvh::Type::Mesh) {
-    CTX_wm_operator_poll_msg_set(C, "The sculpt history doesn't work with Dyntopo or Multires");
+  if (pbvh && pbvh->type() == bke::pbvh::Type::BMesh) {
+    CTX_wm_operator_poll_msg_set(C, "The sculpt history doesn't work with Dyntopo");
     return false;
   }
   return true;
 }
 
-/** Puts the mesh in the state of step `index` and updates the sculpt session for it. */
-static void apply_step(bContext *C, Object &ob, const int index)
+/**
+ * Puts the mesh (or its Multires grids) in the state of step `index` and updates the sculpt
+ * session for it. False when the step can't be shown now (another subdivision level).
+ */
+static bool apply_step(bContext *C, Object &ob, int index)
 {
+  using bke::phantom_history::ApplyResult;
   bke::phantom_history::ScopedPause pause;
-  Mesh &mesh = *id_cast<Mesh *>(ob.data);
-  const bool replaced = bke::phantom_history::apply_step(ob, index);
+  PhantomHistory &history = *ob.phantom_history;
+  index = std::clamp(index, 0, history.steps_num - 1);
+  Depsgraph &depsgraph = *CTX_data_ensure_evaluated_depsgraph(C);
+  SculptSession *ss = ob.runtime->sculpt_session;
+  if (ss && ss->subdiv_ccg && ss->subdiv_ccg->masks.is_empty() &&
+      bke::phantom_history::step_has_mask(history, index))
+  {
+    /* The grids get a mask layer to hold the step's mask. */
+    if (MultiresModifierData *mmd = BKE_sculpt_multires_active(CTX_data_scene(C), &ob)) {
+      BKE_sculpt_mask_layers_ensure(&depsgraph, CTX_data_main(C), &ob, mmd);
+    }
+  }
 
+  const ApplyResult result = bke::phantom_history::apply_step(ob, index);
+  if (result == ApplyResult::Failed) {
+    return false;
+  }
+  Mesh &mesh = *id_cast<Mesh *>(ob.data);
   bke::pbvh::Tree *pbvh = bke::object::pbvh_get(ob);
-  const SculptSession *ss = ob.runtime->sculpt_session;
+  ss = ob.runtime->sculpt_session;
   /* With deform modifiers or shape keys, the sculpted positions aren't the mesh's own. */
-  const bool positions_only = !replaced && pbvh && ss && !ss->deform_modifiers_active &&
-                              ss->shapekey_active == nullptr;
-  if (positions_only) {
-    const Depsgraph &depsgraph = *CTX_data_depsgraph_pointer(C);
+  const bool in_place = result == ApplyResult::Positions && pbvh && ss &&
+                        (pbvh->type() == bke::pbvh::Type::Grids ||
+                         (!ss->deform_modifiers_active && ss->shapekey_active == nullptr));
+  if (in_place) {
     IndexMaskMemory memory;
     const IndexMask node_mask = bke::pbvh::all_leaf_nodes(*pbvh, memory);
+    if (pbvh->type() == bke::pbvh::Type::Grids) {
+      bke::pbvh::update_mask_grids(*ss->subdiv_ccg, node_mask, *pbvh);
+      multires_mark_as_modified(&depsgraph, &ob, MULTIRES_COORDS_MODIFIED);
+    }
+    else {
+      bke::pbvh::update_mask_mesh(mesh, node_mask, *pbvh);
+    }
     pbvh->tag_positions_changed(node_mask);
+    pbvh->tag_masks_changed(node_mask);
     pbvh->update_bounds(depsgraph, ob);
     flush_update_step(C, UpdateType::Position);
     flush_update_done(C, ob, UpdateType::Position);
-    return;
+    flush_update_step(C, UpdateType::Mask);
+    flush_update_done(C, ob, UpdateType::Mask);
+    return true;
   }
   BKE_sculptsession_free_pbvh(ob);
   BKE_mesh_batch_cache_dirty_tag(&mesh, BKE_MESH_BATCH_DIRTY_ALL);
   DEG_id_tag_update(&ob.id, ID_RECALC_GEOMETRY);
   WM_event_add_notifier(C, NC_GEOM | ND_DATA, &mesh);
+  return true;
 }
 
-static void end_undo_step(Object &ob)
+static void report_other_level(wmOperator *op)
 {
-  /* The undo step is for the change of step, not a new step of the history. */
-  bke::phantom_history::ScopedPause pause;
-  undo::geometry_end(ob);
+  BKE_report(op->reports,
+             RPT_WARNING,
+             "That history step was sculpted at another Multires level (or without Multires)");
 }
+
+/** Starts the undo step of a jump on the timeline. */
+static void jump_begin(bContext *C, Object &ob, const wmOperator *op)
+{
+  /* The undo step needs the sculpt session's PBVH. */
+  bke::object::pbvh_ensure(*CTX_data_ensure_evaluated_depsgraph(C), ob);
+  undo::history_jump_begin(*CTX_data_scene(C), ob, op);
+}
+
+namespace undo {
+
+void history_apply_cursor(bContext *C, const StringRef object_name, const int cursor)
+{
+  Object *ob = CTX_data_active_object(C);
+  if (ob == nullptr || StringRef(ob->id.name) != object_name || ob->phantom_history == nullptr) {
+    return;
+  }
+  const int index = bke::phantom_history::find_cursor(*ob->phantom_history, cursor);
+  if (index != -1) {
+    apply_step(C, *ob, index);
+    WM_main_add_notifier(NC_OBJECT | ND_DRAW, ob);
+  }
+}
+
+}  // namespace undo
 
 /* -------------------------------------------------------------------- */
 /** \name Go to Step
@@ -113,16 +171,18 @@ static void end_undo_step(Object &ob)
 
 static wmOperatorStatus history_goto_exec(bContext *C, wmOperator *op)
 {
-  const Scene &scene = *CTX_data_scene(C);
   Object &ob = *CTX_data_active_object(C);
   PhantomHistory &history = *ob.phantom_history;
   const int index = std::clamp(RNA_int_get(op->ptr, "index"), 0, history.steps_num - 1);
   if (index == history.current) {
     return OPERATOR_CANCELLED;
   }
-  undo::geometry_begin(scene, ob, op);
-  apply_step(C, ob, index);
-  end_undo_step(ob);
+  jump_begin(C, ob, op);
+  const bool applied = apply_step(C, ob, index);
+  undo::history_jump_end(ob);
+  if (!applied) {
+    report_other_level(op);
+  }
   WM_event_add_notifier(C, NC_OBJECT | ND_DRAW, &ob);
   return OPERATOR_FINISHED;
 }
@@ -178,7 +238,7 @@ static void scrub_status(bContext *C, const PhantomHistory &history)
 static void scrub_end(bContext *C, wmOperator *op)
 {
   Object &ob = *CTX_data_active_object(C);
-  end_undo_step(ob);
+  undo::history_jump_end(ob);
   ED_area_status_text(CTX_wm_area(C), nullptr);
   MEM_delete(static_cast<ScrubData *>(op->customdata));
   op->customdata = nullptr;
@@ -186,7 +246,6 @@ static void scrub_end(bContext *C, wmOperator *op)
 
 static wmOperatorStatus history_scrub_invoke(bContext *C, wmOperator *op, const wmEvent *event)
 {
-  const Scene &scene = *CTX_data_scene(C);
   Object &ob = *CTX_data_active_object(C);
   PhantomHistory &history = *ob.phantom_history;
 
@@ -194,10 +253,10 @@ static wmOperatorStatus history_scrub_invoke(bContext *C, wmOperator *op, const 
   data->start_index = history.current;
   op->customdata = data;
 
-  undo::geometry_begin(scene, ob, op);
+  jump_begin(C, ob, op);
   const int index = scrub_index(*op, history, *event);
-  if (index != history.current) {
-    apply_step(C, ob, index);
+  if (index != history.current && !apply_step(C, ob, index)) {
+    report_other_level(op);
   }
   scrub_status(C, history);
   WM_event_add_modal_handler(C, op);
@@ -211,8 +270,7 @@ static wmOperatorStatus history_scrub_modal(bContext *C, wmOperator *op, const w
   switch (event->type) {
     case MOUSEMOVE: {
       const int index = scrub_index(*op, history, *event);
-      if (index != history.current) {
-        apply_step(C, ob, index);
+      if (index != history.current && apply_step(C, ob, index)) {
         scrub_status(C, history);
         WM_event_add_notifier(C, NC_OBJECT | ND_DRAW, &ob);
       }
@@ -335,8 +393,9 @@ static wmOperatorStatus history_truncate_exec(bContext *C, wmOperator * /*op*/)
   if (history.current >= history.steps_num - 1) {
     return OPERATOR_CANCELLED;
   }
+  const int current = bke::phantom_history::cursor_get(ob);
   bke::phantom_history::truncate_after_current(history);
-  undo::history_steps_deleted(ob);
+  undo::history_steps_deleted(ob, current);
   WM_event_add_notifier(C, NC_OBJECT | ND_DRAW, &ob);
   WM_file_tag_modified();
   return OPERATOR_FINISHED;

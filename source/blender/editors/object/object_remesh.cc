@@ -38,6 +38,8 @@
 #include "BKE_modifier.hh"
 #include "BKE_object.hh"
 #include "BKE_object_types.hh"
+#include "BLI_hash_c.hh"
+#include "BLI_time.hh"
 #include "BKE_paint.hh"
 #include "BKE_report.hh"
 #include "BKE_screen.hh"
@@ -1410,6 +1412,10 @@ static void auto_remesh_apply(AutoRemeshJob *job)
   }
   BKE_mesh_nomain_to_mesh(new_mesh, mesh, ob);
   bke::mesh_smooth_set(*mesh, job->smooth_normals);
+  /* Phantom: a new random polygroup color. No polygroup is the default (0 isn't used), and the
+   * part of the seed choosing the hue always changes. */
+  mesh->face_sets_color_default = 0;
+  mesh->face_sets_color_seed += 1 + int(BLI_hash_int(uint(BLI_time_now_seconds() * 1000.0)) % 9);
   if (ob->mode == OB_MODE_SCULPT) {
     sculpt_paint::undo::geometry_end(*ob);
     BKE_sculptsession_free_pbvh(*ob);

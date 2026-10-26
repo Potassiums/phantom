@@ -9,10 +9,12 @@
  *
  * Phantom: per-object sculpt history (#Object.phantom_history), scrubbed on a timeline.
  *
- * Every sculpt edit of a mesh (each stroke, filter, remesh...) adds a step. The first step and
- * every step that changes the topology (remesh) are keyframes holding the whole mesh shape; other
- * steps hold only the vertices that moved, with their exact new positions. Any step is rebuilt
- * bit-exactly from the keyframe before it and the deltas after that.
+ * Every sculpt edit of a mesh (each stroke, mask, filter, remesh...) adds a step. The first step
+ * and every step that changes the topology (remesh, another Multires level) are keyframes holding
+ * the whole shape and mask; other steps hold only the points that moved and the points whose mask
+ * changed, with their exact new values. Any step is rebuilt bit-exactly from the keyframe before
+ * it and the deltas after that. The points are the mesh's vertices, or with Multires in Sculpt
+ * Mode the grid points at the level being sculpted.
  *
  * Making a step current (scrubbing) and then editing drops the steps after it. The history is
  * saved in the .blend file (optional), and an unreadable history is dropped with a warning
@@ -79,20 +81,40 @@ class ScopedPause {
   ~ScopedPause();
 };
 
-/** The mesh shape at a step. */
+/** The shape and mask at a step. */
 struct StepShape {
   Array<float3> positions;
+  Array<float> masks;
   /** The keyframe the step builds on, which has its topology. */
   int keyframe = 0;
 };
 StepShape step_shape(const PhantomHistory &history, int index);
 
+/** Whether anything is masked at step `index`. */
+bool step_has_mask(const PhantomHistory &history, int index);
+
+/** The index of the step with this cursor (#cursor_get), or -1 when it is gone. */
+int find_cursor(const PhantomHistory &history, int cursor);
+
+enum class ApplyResult {
+  /** The step's positions and masks were written in place (the caller updates the session). */
+  Positions,
+  /** The mesh was replaced (attributes other than positions and masks are lost, like after a
+   * remesh). */
+  Topology,
+  /**
+   * Nothing changed: the step is of Multires grids at another subdivision level, or of the mesh
+   * while Multires is sculpted (or the other way around), or it is masked and the grids have no
+   * mask layer yet.
+   */
+  Failed,
+};
+
 /**
- * Put the mesh in the state of step `index` and make it current. Returns true when the topology
- * was replaced (attributes other than positions are then lost, like after a remesh), false when
- * only positions were written (the caller updates the sculpt session either way).
+ * Put the mesh (or, for Multires in Sculpt Mode, its grids) in the state of step `index` and make
+ * it current.
  */
-bool apply_step(Object &ob, int index);
+ApplyResult apply_step(Object &ob, int index);
 
 /** Delete the steps after the current one (sculpting from an older step replaces them). */
 void truncate_after_current(PhantomHistory &history);

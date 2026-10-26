@@ -682,10 +682,11 @@ struct Object {
 
 /**
  * Phantom: one step of an object's sculpt history (see `BKE_phantom_history.hh`). A keyframe
- * holds the whole mesh shape; any other step holds the vertices that moved since the step before.
+ * holds the whole shape and mask; any other step holds the points that moved and the points whose
+ * mask changed since the step before. Points are mesh vertices, or Multires grid points.
  */
 struct PhantomHistoryStep {
-  /** Keyframe: positions (`verts_num * 3`) and faces. Null for deltas. */
+  /** Keyframe: positions (`verts_num * 3`) and faces (none for grids). Null for deltas. */
   float *positions = nullptr;
   int *face_offsets = nullptr;
   int *corner_verts = nullptr;
@@ -704,6 +705,20 @@ struct PhantomHistoryStep {
   int number = 0;
   /** What made the step (operator or brush name). */
   char name[/*MAX_NAME*/ 64] = "";
+
+  /** Keyframe: the mask of each point (`verts_num`), null when nothing is masked. */
+  float *masks = nullptr;
+  /** Delta: the points whose mask changed and their new values (`mask_delta_num`). */
+  int *mask_delta_indices = nullptr;
+  float *mask_delta_values = nullptr;
+  int mask_delta_num = 0;
+  /**
+   * Keyframe of Multires grids (sculpted at a subdivision level): the number of grids and their
+   * size; `verts_num` is then the number of grid points. 0 for a mesh keyframe.
+   */
+  int grids_num = 0;
+  int grid_size = 0;
+  char _pad1[4] = {};
 };
 
 /** #PhantomHistoryStep.flag */

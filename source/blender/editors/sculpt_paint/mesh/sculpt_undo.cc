@@ -471,6 +471,11 @@ struct SculptUndoStep {
    */
   int history_cursor_before;
   int history_cursor_after;
+  /**
+   * Phantom: a jump on the timeline (#history_jump_begin): it holds no data, undo and redo put
+   * the mesh back in the history steps it went between.
+   */
+  bool history_jump;
 };
 
 size_t step_memory_size_get(UndoStep *step)
@@ -955,29 +960,6 @@ static void store_geometry_data(NodeGeometry *geometry, const Object &object)
   geometry->faces_num = mesh->faces_num;
 }
 
-static void geometry_free_data(NodeGeometry *geometry);
-
-/** Phantom: replace `dst` with a copy of `src`. */
-static void copy_geometry_data(const NodeGeometry &src, NodeGeometry &dst)
-{
-  BLI_assert(src.is_initialized);
-  geometry_free_data(&dst);
-  dst.is_initialized = true;
-  dst.attribute_storage = src.attribute_storage;
-  CustomData_init_from(&src.vert_data, &dst.vert_data, CD_MASK_MESH.vmask, src.verts_num);
-  CustomData_init_from(&src.edge_data, &dst.edge_data, CD_MASK_MESH.emask, src.edges_num);
-  CustomData_init_from(&src.corner_data, &dst.corner_data, CD_MASK_MESH.lmask, src.corners_num);
-  CustomData_init_from(&src.face_data, &dst.face_data, CD_MASK_MESH.pmask, src.faces_num);
-  implicit_sharing::copy_shared_pointer(src.face_offset_indices,
-                                        src.face_offsets_sharing_info,
-                                        &dst.face_offset_indices,
-                                        &dst.face_offsets_sharing_info);
-  dst.verts_num = src.verts_num;
-  dst.edges_num = src.edges_num;
-  dst.corners_num = src.corners_num;
-  dst.faces_num = src.faces_num;
-}
-
 static void restore_geometry_data(const NodeGeometry *geometry, Mesh *mesh)
 {
   PRF_scope(ProfileCategory::Editor);
@@ -1323,6 +1305,9 @@ static void restore_list(bContext *C, Depsgraph *depsgraph, StepData &step_data)
             exec_mode::grain_size(1));
         bke::pbvh::update_mask_grids(*ss.subdiv_ccg, changed_nodes, pbvh);
         pbvh.tag_masks_changed(changed_nodes);
+        /* Phantom: the grids must be written back to the modifier on leaving Sculpt Mode, or the
+         * mask from before the undo comes back. */
+        multires_mark_as_modified(depsgraph, &object, MULTIRES_COORDS_MODIFIED);
       }
       else {
         MutableSpan<bke::pbvh::MeshNode> nodes = pbvh.nodes<bke::pbvh::MeshNode>();
@@ -2037,8 +2022,9 @@ static bool history_applies(const Object &ob)
     return false;
   }
   /* Dyntopo and Multires don't edit the mesh itself. */
+  /* Dyntopo edits a BMesh, not the mesh. */
   if (const bke::pbvh::Tree *pbvh = bke::object::pbvh_get(ob)) {
-    return pbvh->type() == bke::pbvh::Type::Mesh;
+    return pbvh->type() != bke::pbvh::Type::BMesh;
   }
   const SculptSession *ss = ob.runtime->sculpt_session;
   return ss == nullptr || ss->bm == nullptr;
@@ -2054,8 +2040,16 @@ static void history_begin(Object &ob, const char *name)
 
 static void history_record(Object &ob, const bool topology_changed)
 {
-  if (history_applies(ob)) {
-    bke::phantom_history::record(ob, history_step_name(), topology_changed);
+  if (!history_applies(ob)) {
+    return;
+  }
+  const PhantomHistory *history = ob.phantom_history;
+  const bool had_later = history && history->current < history->steps_num - 1;
+  const int before = bke::phantom_history::cursor_get(ob);
+  bke::phantom_history::record(ob, history_step_name(), topology_changed);
+  if (had_later && bke::phantom_history::cursor_get(ob) != before) {
+    /* An edit on an older step deleted the steps after it: undo must not lead into them. */
+    history_steps_deleted(ob, before);
   }
 }
 
@@ -2188,7 +2182,7 @@ void push_end_ex(Object &ob, const bool use_nested_undo)
         std::plus<size_t>());
   }
 
-  if (step_data->type == Type::Position) {
+  if (ELEM(step_data->type, Type::Position, Type::Mask)) {
     history_record(ob, false);
   }
   history_cursor_store_after(ob);
@@ -2291,7 +2285,7 @@ static bool step_encode(bContext * /*C*/, Main *bmain, UndoStep *us_p)
   us->step.is_applied = true;
 
   /* We do not flush data when entering sculpt mode - this is currently indicated by Type::None */
-  if (us->data.type != Type::None) {
+  if (us->data.type != Type::None || us->history_jump) {
     bmain->is_memfile_undo_flush_needed = true;
   }
 
@@ -2307,7 +2301,7 @@ static void history_cursor_restore(bContext *C, const int cursor)
   }
 }
 
-void history_steps_deleted(const Object &ob)
+void history_steps_deleted(const Object &ob, const int current)
 {
   UndoStack *ustack = ED_undo_stack_get();
   if (ustack->step_active == nullptr) {
@@ -2316,8 +2310,8 @@ void history_steps_deleted(const Object &ob)
   /* Redo leads into the deleted steps. */
   BKE_undosys_stack_clear_after(ustack, ustack->step_active);
 
-  /* The history is at its newest step, so any cursor after it is of a deleted step. */
-  const int current = bke::phantom_history::cursor_get(ob);
+  /* The steps after `current` were deleted, so any cursor after it is of a deleted step (the one
+   * of an edit being pushed now isn't in the stack yet). */
   /* After jumps back on the timeline, undo steps lead through the deleted steps. The undo steps
    * go from one history step to the next, so a run of them that starts and ends at the same step
    * leaves the mesh in the same shape and can go. Cut out such runs around the steps leading
@@ -2360,22 +2354,18 @@ void history_steps_deleted(const Object &ob)
       steps.remove(first, last - first + 1);
       continue;
     }
-    /* No run back to the same step: jumps on the timeline went into the deleted steps and out to
-     * another one. Both jumps store the whole mesh, so the jump out can start where the jump in
-     * did, and the steps from the jump in go. */
+    /* No run back to the same step: the timeline went into the deleted steps and jumped out to
+     * another one. A jump only holds the history steps it goes between, so it can start where the
+     * way into the deleted steps did, and the steps from there go. */
     int entry = last;
     while (entry > 0 && before(entry) > current) {
       entry--;
     }
-    SculptUndoStep *us_entry = reinterpret_cast<SculptUndoStep *>(steps[entry]);
     SculptUndoStep *us_exit = reinterpret_cast<SculptUndoStep *>(steps[last]);
-    if (entry == last || before(entry) > current || us_entry->data.type != Type::Geometry ||
-        us_exit->data.type != Type::Geometry)
-    {
+    if (entry == last || before(entry) > current || !us_exit->history_jump) {
       break;
     }
-    copy_geometry_data(us_entry->data.geometry_original, us_exit->data.geometry_original);
-    us_exit->history_cursor_before = us_entry->history_cursor_before;
+    us_exit->history_cursor_before = before(entry);
     BKE_undosys_stack_remove_range(ustack, steps[entry], steps[last - 1]);
     steps.remove(entry, last - entry);
   }
@@ -2385,7 +2375,12 @@ static void step_decode_undo_impl(bContext *C, Depsgraph *depsgraph, SculptUndoS
 {
   BLI_assert(us->step.is_applied == true);
 
-  restore_list(C, depsgraph, us->data);
+  if (us->history_jump) {
+    history_apply_cursor(C, us->data.object_name, us->history_cursor_before);
+  }
+  else {
+    restore_list(C, depsgraph, us->data);
+  }
   us->step.is_applied = false;
   history_cursor_restore(C, us->history_cursor_before);
 }
@@ -2394,9 +2389,28 @@ static void step_decode_redo_impl(bContext *C, Depsgraph *depsgraph, SculptUndoS
 {
   BLI_assert(us->step.is_applied == false);
 
-  restore_list(C, depsgraph, us->data);
+  if (us->history_jump) {
+    history_apply_cursor(C, us->data.object_name, us->history_cursor_after);
+  }
+  else {
+    restore_list(C, depsgraph, us->data);
+  }
   us->step.is_applied = true;
   history_cursor_restore(C, us->history_cursor_after);
+}
+
+void history_jump_begin(const Scene &scene, Object &ob, const wmOperator *op)
+{
+  push_begin(scene, ob, op);
+  UndoStack *ustack = ED_undo_stack_get();
+  reinterpret_cast<SculptUndoStep *>(ustack->step_init)->history_jump = true;
+}
+
+void history_jump_end(Object &ob)
+{
+  /* The undo step is for the change of step, not a new step of the history. */
+  bke::phantom_history::ScopedPause pause;
+  push_end(ob);
 }
 
 static void step_decode_undo(bContext *C,

@@ -16,7 +16,9 @@ The Sculpt Mode header has History: its checkbox shows or hides the bar, and its
 every history setting: where the bar is docked (top, bottom, left or right of the viewport),
 showing it, recording, the step limit and saving in files (for every object), and deleting the
 active object's history. Undo and redo move along the timeline too. Starting to sculpt from an
-older step slides a warning out from under it: the steps after it will be replaced. The bar keeps
+older step deletes the steps after it; when that is more than 25 steps, a warning in the middle of
+the viewport asks first. It can stop asking until Phantom is closed or for good (Ask Before
+Sculpting on Older Steps). Masking is part of the history too. The bar keeps
 clear of the headers, toolbar and sidebar, gliding along as they open and close. Its own settings
 are remembered between sessions (``phantom_history_bar.json`` in the user config).
 """
@@ -62,7 +64,17 @@ DOCKS = (
     ('RIGHT', "Right", "Dock the timeline along the right side of the viewport", 'TRIA_RIGHT'),
 )
 
-_settings = {"show": True, "dock": 'TOP'}
+ASK_MODES = (
+    ('ALWAYS', "Always", "Ask before a stroke on an older step deletes the later steps"),
+    ('SESSION', "Not This Session",
+     "Sculpt on older steps without asking until Phantom is closed (the later steps are deleted)"),
+    ('NEVER', "Never", "Sculpt on older steps without asking (the later steps are deleted)"),
+)
+
+# "ask_older": whether to ask before sculpting on an older step (False: never, remembered).
+_settings = {"show": True, "dock": 'TOP', "ask_older": True}
+# Asking was turned off until Phantom is closed.
+_ask_off_this_session = False
 _draw_handle = None
 _addon_keymaps = []
 # The step index under the cursor, or None.
@@ -88,6 +100,8 @@ def _load_settings():
         _settings["show"] = data["show"]
     if data.get("dock") in {dock[0] for dock in DOCKS}:
         _settings["dock"] = data["dock"]
+    if isinstance(data.get("ask_older"), bool):
+        _settings["ask_older"] = data["ask_older"]
 
 
 def _save_settings():
@@ -125,6 +139,25 @@ def _set_dock(_self, value):
     _settings["dock"] = DOCKS[value][0]
     _save_settings()
     _redraw_views()
+
+
+def _asks_older():
+    return _settings["ask_older"] and not _ask_off_this_session
+
+
+def _get_ask(_self):
+    if not _settings["ask_older"]:
+        return 2
+    return 1 if _ask_off_this_session else 0
+
+
+def _set_ask(_self, value):
+    global _ask_off_this_session
+    mode = ASK_MODES[value][0]
+    _ask_off_this_session = mode == 'SESSION'
+    if _settings["ask_older"] != (mode != 'NEVER'):
+        _settings["ask_older"] = mode != 'NEVER'
+        _save_settings()
 
 
 # -----------------------------------------------------------------------------
@@ -329,20 +362,26 @@ def _status_text(context, history, index):
 # -----------------------------------------------------------------------------
 # Warning: sculpting on an older step
 
-WARNING_SLIDE = 0.16
-WARNING_PAD = 8
+# Sculpting on an older step deletes the steps after it: ask first only when it deletes more than
+# this many (fewer go without asking).
+ASK_ABOVE_STEPS = 25
+WARNING_FADE = 0.14
+WARNING_PAD = 14
+LINE_GAP = 6
 BUTTON_W = 110
-BUTTON_H = 20
+BUTTON_H = 22
+WARNING_BORDER_COLOR = (1.0, 1.0, 1.0, 0.14)
 CONTINUE_COLOR = (1.0, 0.62, 0.34, 0.30)
 CONTINUE_HOVER_COLOR = (1.0, 0.62, 0.34, 0.50)
 CANCEL_COLOR = (1.0, 1.0, 1.0, 0.08)
 CANCEL_HOVER_COLOR = (1.0, 1.0, 1.0, 0.16)
 
-# A stroke on an older step is held back, and the warning slides out from under the timeline
-# asking what to do: Keep Sculpting (strokes then go ahead, the first one deleting the later
-# steps) or Cancel. `t` slides toward `target`; `key` is the history state it asked about (it
-# goes away when that changes); `buttons` are where its buttons were last drawn.
-_warning = {"t": 0.0, "target": 0.0, "last": 0.0, "text": "", "key": None, "buttons": []}
+# A stroke on an older step is held back, and the warning fades in at the middle of the viewport
+# asking what to do: Keep Sculpting (the later steps are deleted and strokes go ahead), Yes, Don't
+# Ask Again (the same, without asking again this session) or Cancel. `t` moves toward `target`;
+# `later` is how many steps would go; `key` is the history state it asked about (it goes away
+# when that changes); `buttons` are where its buttons were last drawn.
+_warning = {"t": 0.0, "target": 0.0, "last": 0.0, "later": 0, "key": None, "buttons": []}
 # The history state the user agreed to sculpt from.
 _confirmed_key = None
 
@@ -354,7 +393,7 @@ def _history_key(ob, history):
 def _warning_tick():
     w = _warning
     now = time.perf_counter()
-    step = (now - w["last"]) / WARNING_SLIDE
+    step = (now - w["last"]) / WARNING_FADE
     w["last"] = now
     if w["t"] < w["target"]:
         w["t"] = min(w["target"], w["t"] + step)
@@ -375,83 +414,90 @@ def _set_warning(open_):
         bpy.app.timers.register(_warning_tick, first_interval=0.0)
 
 
+def later_steps(history):
+    return len(history.steps) - 1 - history.current
+
+
 def ask_older_step(ob, history):
-    """Hold back a stroke on an older step: slide out the warning and its question."""
-    later = len(history.steps) - 1 - history.current
-    _warning["text"] = "This is an older step: sculpting here deletes the {:d} later step{:s}.".format(
-        later, "" if later == 1 else "s")
+    """Hold back a stroke on an older step: show the warning and its question."""
+    _warning["later"] = later_steps(history)
     _warning["key"] = _history_key(ob, history)
     _set_warning(True)
 
 
-def _stroke_needs_asking(context, event, ob, history):
-    """A brush stroke about to start on an older step, not agreed to yet."""
-    if (event.ctrl or not context.preferences.edit.use_sculpt_history or history is None or
+def _stroke_on_older_step(context, event, ob, history):
+    """A brush or mask stroke about to start on an older step, not agreed to yet."""
+    if (not context.preferences.edit.use_sculpt_history or history is None or
             history.current >= len(history.steps) - 1):
         return False
     if _confirmed_key == _history_key(ob, history):
         return False
-    # Only brush strokes: masking (Ctrl) and tools like Transpose don't change the history.
+    # Ctrl+Shift picks polygroups, which the history doesn't keep.
+    if event.ctrl and event.shift:
+        return False
+    # Only brush and mask strokes: tools like Transpose make their own steps.
     tool = context.workspace.tools.from_space_view3d_mode(context.mode, create=False)
     return tool is not None and tool.idname == "builtin.brush"
 
 
-def _draw_warning(shader, lay, s):
-    """The warning box, slid `t` of the way out from under the bar's inner edge."""
+def _faded(color, t):
+    return (*color[:3], color[3] * t)
+
+
+def _draw_warning(shader, region, s):
+    """The warning box, fading in (`t`) at the middle of the viewport."""
     t = _warning["t"]
     _warning["buttons"] = []
     if t <= 0.0:
         return
-    text = _warning["text"]
-    tw, _th = blf.dimensions(0, text)
+    later = str(_warning["later"])
+    lines = [
+        [("The current active Undo History is not the latest one.", TEXT_COLOR)],
+        [("Storing this action to the Undo History will remove ", TEXT_COLOR),
+         (later, KEYFRAME_COLOR),
+         (" Undo History entries.", TEXT_COLOR)],
+        [("Press 'Keep Sculpting' to continue or 'Cancel' to abort.", TEXT_COLOR)],
+    ]
     cap = blf.dimensions(0, "H")[1]
     pad = WARNING_PAD * s
-    bw_, bh_ = BUTTON_W * s, BUTTON_H * s
-    w = max(tw, 2 * bw_ + pad) + 2 * pad
-    h = cap + bh_ + 3 * pad
-    bx, by, bw, bh = lay.bar
-    dock = _settings["dock"]
-    if dock == 'TOP':
-        edge, inward = by, (0, -1)
-        rect = [bx + (bw - w) / 2, edge - h, w, h]
-    elif dock == 'BOTTOM':
-        edge, inward = by + bh, (0, 1)
-        rect = [bx + (bw - w) / 2, edge, w, h]
-    elif dock == 'LEFT':
-        edge, inward = bx + bw, (1, 0)
-        rect = [edge, by + (bh - h) / 2, w, h]
-    else:
-        edge, inward = bx, (-1, 0)
-        rect = [edge - w, by + (bh - h) / 2, w, h]
-    extent = h if inward[1] else w
-    rect[0] -= inward[0] * (1.0 - t) * extent
-    rect[1] -= inward[1] * (1.0 - t) * extent
-    # Only what is past the bar's edge shows: it comes out from underneath.
-    x0, y0, x1, y1 = rect[0], rect[1], rect[0] + w, rect[1] + h
-    if inward[1] < 0:
-        y1 = min(y1, edge)
-    elif inward[1] > 0:
-        y0 = max(y0, edge)
-    elif inward[0] > 0:
-        x0 = max(x0, edge)
-    else:
-        x1 = min(x1, edge)
-    if x1 - x0 <= 0.5 or y1 - y0 <= 0.5:
-        return
-    _draw(shader, 'TRIS', _rect(x0, y0, x1 - x0, y1 - y0), BAR_COLOR)
-    # The text and buttons once the box is all the way out.
+    gap = LINE_GAP * s
+    line_h = cap + gap
+    bh_ = BUTTON_H * s
+    buttons = [("CONTINUE", "Keep Sculpting", CONTINUE_COLOR, CONTINUE_HOVER_COLOR),
+               ("CONTINUE_SESSION", "Yes, Don't Ask Again", CONTINUE_COLOR,
+                CONTINUE_HOVER_COLOR),
+               ("CANCEL", "Cancel", CANCEL_COLOR, CANCEL_HOVER_COLOR)]
+    widths = [max(BUTTON_W * s, blf.dimensions(0, label)[0] + pad)
+              for _id, label, _c, _h in buttons]
+    buttons_w = sum(widths) + gap * (len(buttons) - 1)
+    text_w = max(sum(blf.dimensions(0, text)[0] for text, _c in line) for line in lines)
+    w = max(text_w, buttons_w) + 2 * pad
+    # Lines with a blank line between them, like the paragraphs of a message.
+    h = pad + len(lines) * line_h + (len(lines) - 1) * line_h + gap + bh_ + pad
+    # It grows a little as it fades in.
+    grow = 0.94 + 0.06 * t
+    cx, cy = region.width / 2, region.height / 2
+    x0, y0 = cx - w * grow / 2, cy - h * grow / 2
+    b = 1 * s
+    _draw(shader, 'TRIS', _rect(x0 - b, y0 - b, w * grow + 2 * b, h * grow + 2 * b),
+          _faded(WARNING_BORDER_COLOR, t))
+    _draw(shader, 'TRIS', _rect(x0, y0, w * grow, h * grow), _faded((*BAR_COLOR[:3], 0.96), t))
     if t < 1.0:
         return
-    _text(text, rect[0] + w / 2, rect[1] + h - pad - cap / 2, 'CENTER', 'MIDDLE', KEYFRAME_COLOR)
-    buttons_x = rect[0] + (w - (2 * bw_ + pad)) / 2
-    buttons = [("CONTINUE", "Keep Sculpting", (buttons_x, rect[1] + pad, bw_, bh_),
-                CONTINUE_COLOR, CONTINUE_HOVER_COLOR),
-               ("CANCEL", "Cancel", (buttons_x + bw_ + pad, rect[1] + pad, bw_, bh_),
-                CANCEL_COLOR, CANCEL_HOVER_COLOR)]
-    for identifier, label, brect, color, hover_color in buttons:
+    y = y0 + h - pad - cap / 2
+    for line in lines:
+        x = x0 + pad
+        for text, color in line:
+            _text(text, x, y, 'LEFT', 'MIDDLE', color)
+            x += blf.dimensions(0, text)[0]
+        y -= 2 * line_h
+    x = x0 + w - pad - buttons_w
+    for (identifier, label, color, hover_color), bw_ in zip(buttons, widths):
+        brect = (x, y0 + pad, bw_, bh_)
         _draw(shader, 'TRIS', _rect(*brect), hover_color if _hover == identifier else color)
         _text(label, brect[0] + bw_ / 2, brect[1] + bh_ / 2, 'CENTER', 'MIDDLE', TEXT_COLOR)
         _warning["buttons"].append((identifier, brect))
+        x += bw_ + gap
 
 
 def draw_callback():
@@ -471,8 +517,6 @@ def draw_callback():
     # The question is about one history state: once that changes (undo, scrub...), it's moot.
     if _warning["key"] is not None and _warning["key"] != _history_key(ob, history):
         _set_warning(False)
-    # The warning first, so it comes out from underneath the bar.
-    _draw_warning(shader, lay, s)
     _draw(shader, 'TRIS', _rect(*lay.bar), BAR_COLOR)
     a, b = lay.track
     _draw(shader, 'TRIS', _across(lay, (a + b) / 2, abs(b - a) / 2, 1 * s), TRACK_COLOR)
@@ -498,12 +542,13 @@ def draw_callback():
 
     _text("Start", *lay.start_label, DIM_TEXT_COLOR)
     _text("End", *lay.end_label, DIM_TEXT_COLOR)
-    if _warning["t"] == 0.0:
-        index = _hover if isinstance(_hover, int) and _hover < count else (
-            history.current if count else 0)
-        text, color = _status_text(context, history, index)
-        _text(text, *lay.status, color)
+    index = _hover if isinstance(_hover, int) and _hover < count else (
+        history.current if count else 0)
+    text, color = _status_text(context, history, index)
+    _text(text, *lay.status, color)
 
+    # The warning last, over everything.
+    _draw_warning(shader, context.region, s)
     gpu.state.blend_set('NONE')
 
 
@@ -521,23 +566,30 @@ class VIEW3D_OT_phantom_history_timeline_click(Operator):
         return _visible(context)
 
     def invoke(self, context, event):
-        global _confirmed_key
+        global _confirmed_key, _ask_off_this_session
         lay = Layout(context.area, context.region)
         mx, my = event.mouse_region_x, event.mouse_region_y
         # The warning's answer buttons.
         if _warning["t"] >= 1.0:
             for identifier, rect in _warning["buttons"]:
                 if _hit(rect, mx, my):
-                    if identifier == "CONTINUE":
+                    if identifier in {"CONTINUE", "CONTINUE_SESSION"}:
                         # Agreed: the later steps (and the redo steps into them) go right away.
                         bpy.ops.sculpt.phantom_history_truncate()
                         _confirmed_key = None
+                    if identifier == "CONTINUE_SESSION":
+                        _ask_off_this_session = True
                     _set_warning(False)
                     return {'FINISHED'}
         if not _hit(lay.bar, mx, my):
             ob = timeline_object(context)
             history = ob.sculpt_history
-            if _stroke_needs_asking(context, event, ob, history):
+            if _stroke_on_older_step(context, event, ob, history):
+                if not _asks_older() or later_steps(history) <= ASK_ABOVE_STEPS:
+                    # Not asking (turned off, or only a few steps would go): the later steps go
+                    # and the stroke starts from here.
+                    bpy.ops.sculpt.phantom_history_truncate()
+                    return {'PASS_THROUGH'}
                 # Hold the stroke back until the user agrees to delete the later steps.
                 ask_older_step(ob, history)
                 return {'FINISHED'}
@@ -588,7 +640,7 @@ class VIEW3D_PT_phantom_history(Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'HEADER'
     bl_label = "Sculpt History"
-    bl_ui_units_x = 13
+    bl_ui_units_x = 15
 
     def draw(self, context):
         layout = self.layout
@@ -612,6 +664,11 @@ class VIEW3D_PT_phantom_history(Panel):
         row.use_property_split = False
         row.column().prop(edit, "sculpt_history_limit", text="Limit")
         row.column().prop(edit, "use_sculpt_history_save", text="Save in File")
+        # Sculpting on an older step deletes the later steps: ask first?
+        col = layout.column(align=True)
+        col.use_property_split = False
+        col.label(text="Ask Before Sculpting on Older Steps")
+        col.row(align=True).prop(wm, "phantom_history_ask", expand=True)
 
         layout.separator()
         ob = context.active_object
@@ -664,6 +721,12 @@ def register():
         name="Dock", description="Where the sculpt history timeline sits in the viewport",
         items=[(i, l, d, icon, n) for n, (i, l, d, icon) in enumerate(DOCKS)],
         get=_get_dock, set=_set_dock)
+    WM.phantom_history_ask = bpy.props.EnumProperty(
+        name="Ask Before Sculpting on Older Steps",
+        description="Whether a stroke on an older step of the sculpt history asks before it "
+        "deletes the later steps",
+        items=[(i, l, d, n) for n, (i, l, d) in enumerate(ASK_MODES)],
+        get=_get_ask, set=_set_ask)
     for cls in classes:
         bpy.utils.register_class(cls)
     bpy.types.VIEW3D_MT_view.append(_draw_view_menu)
@@ -695,3 +758,4 @@ def unregister():
         bpy.utils.unregister_class(cls)
     del bpy.types.WindowManager.phantom_history_bar_show
     del bpy.types.WindowManager.phantom_history_bar_dock
+    del bpy.types.WindowManager.phantom_history_ask

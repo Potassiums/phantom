@@ -465,12 +465,8 @@ static void fill_mask_mesh(const Depsgraph &depsgraph,
   });
 }
 
-static void fill_mask_grids(Main &bmain,
-                            const Scene &scene,
-                            Depsgraph &depsgraph,
-                            Object &object,
-                            const float value,
-                            const IndexMask &node_mask)
+static void fill_mask_grids(
+    Main &bmain, const Scene &scene, Depsgraph &depsgraph, Object &object, const float value)
 {
   SculptSession &ss = *object.runtime->sculpt_session;
 
@@ -482,7 +478,11 @@ static void fill_mask_grids(Main &bmain,
   MultiresModifierData &mmd = *BKE_sculpt_multires_active(&scene, &object);
   BKE_sculpt_mask_layers_ensure(&depsgraph, &bmain, &object, &mmd);
 
+  /* Phantom: adding the mask layer re-evaluates the object, which rebuilds the PBVH, so take its
+   * nodes only now (nodes taken before were freed). */
   bke::pbvh::Tree &pbvh = *bke::object::pbvh_get(object);
+  IndexMaskMemory node_memory;
+  const IndexMask node_mask = bke::pbvh::all_leaf_nodes(pbvh, node_memory);
   MutableSpan<bke::pbvh::GridsNode> nodes = pbvh.nodes<bke::pbvh::GridsNode>();
   SubdivCCG &subdiv_ccg = *ss.subdiv_ccg;
   const CCGKey key = BKE_subdiv_ccg_key_top_level(subdiv_ccg);
@@ -600,7 +600,7 @@ static void fill_mask(
       fill_mask_mesh(depsgraph, object, value, node_mask);
       break;
     case bke::pbvh::Type::Grids:
-      fill_mask_grids(bmain, scene, depsgraph, object, value, node_mask);
+      fill_mask_grids(bmain, scene, depsgraph, object, value);
       break;
     case bke::pbvh::Type::BMesh:
       fill_mask_bmesh(depsgraph, object, value, node_mask);
@@ -611,17 +611,19 @@ static void fill_mask(
 static void invert_mask_grids(Main &bmain,
                               const Scene &scene,
                               Depsgraph &depsgraph,
-                              Object &object,
-                              const IndexMask &node_mask)
+                              Object &object)
 {
   SculptSession &ss = *object.runtime->sculpt_session;
 
   MultiresModifierData &mmd = *BKE_sculpt_multires_active(&scene, &object);
   BKE_sculpt_mask_layers_ensure(&depsgraph, &bmain, &object, &mmd);
 
+  /* Phantom: adding the mask layer rebuilds the PBVH, so take its nodes only now. */
+  bke::pbvh::Tree &pbvh = *bke::object::pbvh_get(object);
+  IndexMaskMemory node_memory;
+  const IndexMask node_mask = bke::pbvh::all_leaf_nodes(pbvh, node_memory);
   undo::push_nodes(depsgraph, object, node_mask, undo::Type::Mask);
 
-  bke::pbvh::Tree &pbvh = *bke::object::pbvh_get(object);
   MutableSpan<bke::pbvh::GridsNode> nodes = pbvh.nodes<bke::pbvh::GridsNode>();
   SubdivCCG &subdiv_ccg = *ss.subdiv_ccg;
   const BitGroupVector<> &grid_hidden = subdiv_ccg.grid_hidden;
@@ -694,7 +696,7 @@ static void invert_mask(Main &bmain, const Scene &scene, Depsgraph &depsgraph, O
           });
       break;
     case bke::pbvh::Type::Grids:
-      invert_mask_grids(bmain, scene, depsgraph, object, node_mask);
+      invert_mask_grids(bmain, scene, depsgraph, object);
       break;
     case bke::pbvh::Type::BMesh:
       invert_mask_bmesh(depsgraph, object, node_mask);

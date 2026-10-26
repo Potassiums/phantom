@@ -1278,14 +1278,8 @@ BLI_NOINLINE static void update_face_sets_mesh(const Object &object,
           for (const int face : nodes[node_index].faces()) {
             const int id = face_sets[face];
 
-            uchar4 fset_color(UCHAR_MAX);
-            if (id != color_default) {
-              BKE_paint_face_set_overlay_color_get(id, color_seed, fset_color);
-            }
-            else {
-              /* Skip for the default color face set to render it white. */
-              fset_color[0] = fset_color[1] = fset_color[2] = UCHAR_MAX;
-            }
+            uchar4 fset_color;
+            BKE_paint_face_set_color_get(id, color_default, color_seed, fset_color);
 
             const int face_size = faces[face].size();
             std::fill_n(data, face_size, fset_color);
@@ -1297,12 +1291,15 @@ BLI_NOINLINE static void update_face_sets_mesh(const Object &object,
         exec_mode::grain_size(1));
   }
   else {
+    /* Phantom: without polygroups the mesh is all in polygroup 1. */
+    uchar4 color;
+    BKE_paint_face_set_color_get(1, color_default, color_seed, color);
     node_mask.foreach_index(
         [&](const int node_index, const int scratch_index) {
           scratch_vbo->data<uchar4>()
               .slice(scratch_offsets.offsets[scratch_index],
                      vbo.acquired[node_index] ? vbo.sizes[node_index] : 0)
-              .fill(uchar4(255));
+              .fill(color);
         },
         exec_mode::grain_size(64));
   }
@@ -1602,11 +1599,9 @@ BLI_NOINLINE static void update_face_sets_grids(const Object &object,
                          scratch_offsets.offsets[scratch_index];
           uchar4 *data_start = data;
           for (const int j : grids.index_range()) {
-            uchar4 color{UCHAR_MAX};
+            uchar4 color;
             const int fset = face_sets[grid_to_face_map[grids[j]]];
-            if (fset != color_default) {
-              BKE_paint_face_set_overlay_color_get(fset, color_seed, color);
-            }
+            BKE_paint_face_set_color_get(fset, color_default, color_seed, color);
 
             std::fill_n(data, verts_per_grid, color);
             data += verts_per_grid;
@@ -1617,12 +1612,14 @@ BLI_NOINLINE static void update_face_sets_grids(const Object &object,
         exec_mode::grain_size(1));
   }
   else {
+    uchar4 color;
+    BKE_paint_face_set_color_get(1, color_default, color_seed, color);
     node_mask.foreach_index(
         [&](const int node_index, const int scratch_index) {
           scratch_vbo->data<uchar4>()
               .slice(scratch_offsets.offsets[scratch_index],
                      vbo.acquired[node_index] ? vbo.sizes[node_index] : 0)
-              .fill(uchar4{UCHAR_MAX});
+              .fill(color);
         },
         exec_mode::grain_size(1));
   }
@@ -2589,11 +2586,9 @@ BLI_NOINLINE static void update_face_sets_bmesh(const Object &object,
             if (BM_elem_flag_test(face, BM_ELEM_HIDDEN)) {
               continue;
             }
-            uchar4 color{UCHAR_MAX};
+            uchar4 color;
             const int fset = bmesh_cd_face_get<int>(*face, offset);
-            if (fset != color_default) {
-              BKE_paint_face_set_overlay_color_get(fset, color_seed, color);
-            }
+            BKE_paint_face_set_color_get(fset, color_default, color_seed, color);
             std::fill_n(data, 3, color);
             data += 3;
           }
@@ -2606,9 +2601,11 @@ BLI_NOINLINE static void update_face_sets_bmesh(const Object &object,
     node_mask.foreach_index(
         [&](const int node_index, const int scratch_index) {
           const int64_t dst_len = vbo.acquired[node_index] ? vbo.sizes[node_index] : 0;
+          uchar4 color;
+          BKE_paint_face_set_color_get(1, color_default, color_seed, color);
           scratch_vbo->data<uchar4>()
               .slice(scratch_offsets.offsets[scratch_index], dst_len)
-              .fill(uchar4(255));
+              .fill(color);
         },
         exec_mode::grain_size(64));
   }

@@ -188,9 +188,9 @@ class Sculpts : Overlay {
     switch (pbvh->type()) {
       case bke::pbvh::Type::Mesh: {
         const Mesh &mesh = DRW_object_get_data_for_drawing<Mesh>(*object_orig);
-        if (!mesh.attributes().contains(".sculpt_face_set") &&
-            !mesh.attributes().contains(".sculpt_mask"))
-        {
+        /* Phantom: shown polygroups always draw (without any, the mesh is in its default, scarlet
+         * one); otherwise only a mask does. */
+        if (!show_face_set_ && !mesh.attributes().contains(".sculpt_mask")) {
           return;
         }
         break;
@@ -198,15 +198,15 @@ class Sculpts : Overlay {
       case bke::pbvh::Type::Grids: {
         const SubdivCCG &subdiv_ccg = *sculpt_session->subdiv_ccg;
         const Mesh &base_mesh = DRW_object_get_data_for_drawing<Mesh>(*object_orig);
-        if (subdiv_ccg.masks.is_empty() && !base_mesh.attributes().contains(".sculpt_face_set")) {
+        UNUSED_VARS(base_mesh);
+        if (!show_face_set_ && subdiv_ccg.masks.is_empty()) {
           return;
         }
         break;
       }
       case bke::pbvh::Type::BMesh: {
         const BMesh &bm = *sculpt_session->bm;
-        if (!CustomData_has_layer_named(&bm.pdata, CD_PROP_FLOAT, ".sculpt_face_set") &&
-            !CustomData_has_layer_named(&bm.vdata, CD_PROP_FLOAT, ".sculpt_mask"))
+        if (!show_face_set_ && !CustomData_has_layer_named(&bm.vdata, CD_PROP_FLOAT, ".sculpt_mask"))
         {
           return;
         }

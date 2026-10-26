@@ -415,6 +415,39 @@ void WM_init(bContext *C, int argc, const char **argv)
   wm_homefile_read_post(C, params_file_read_post);
 }
 
+/**
+ * Phantom: the base mesh picker opens instead of the splash when it is set to show at startup
+ * ("Show at startup" in the picker, `phantom_start.json` in the user config folder).
+ */
+static bool phantom_start_picker_on_startup()
+{
+  const std::optional<std::string> config = BKE_appdir_folder_id(BLENDER_USER_CONFIG, nullptr);
+  if (!config) {
+    return false;
+  }
+  char filepath[FILE_MAX];
+  BLI_path_join(filepath, sizeof(filepath), config->c_str(), "phantom_start.json");
+  size_t size = 0;
+  char *text = static_cast<char *>(BLI_file_read_text_as_mem(filepath, 1, &size));
+  if (text == nullptr) {
+    return false;
+  }
+  text[size] = '\0';
+  bool show = false;
+  if (const char *key = strstr(text, "\"show_at_startup\"")) {
+    const char *value = strchr(key, ':');
+    if (value) {
+      value++;
+      while (*value == ' ' || *value == '\t' || *value == '\r' || *value == '\n') {
+        value++;
+      }
+      show = STRPREFIX(value, "true");
+    }
+  }
+  MEM_delete(text);
+  return show;
+}
+
 static bool wm_init_splash_show_on_startup_check()
 {
   if (U.uiflag & USER_SPLASH_DISABLE) {
@@ -425,8 +458,8 @@ static bool wm_init_splash_show_on_startup_check()
 
   const char *blendfile_path = BKE_main_blendfile_path_from_global();
   if (blendfile_path[0] == '\0') {
-    /* Common case, no file is loaded, show the splash. */
-    use_splash = true;
+    /* Common case, no file is loaded, show the splash, unless the base mesh picker opens. */
+    use_splash = !phantom_start_picker_on_startup();
   }
   else {
     /* A less common case, if there is no user preferences, show the splash screen

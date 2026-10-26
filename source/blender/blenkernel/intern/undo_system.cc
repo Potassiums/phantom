@@ -336,14 +336,13 @@ static void undosys_stack_clear_all_last(UndoStack *ustack, UndoStep *us)
 
 void BKE_undosys_stack_clear_after(UndoStack *ustack, UndoStep *us)
 {
-  BLI_assert(us != nullptr && ustack->step_init == nullptr);
+  BLI_assert(us != nullptr);
   ustack->step_active = us;
   undosys_stack_clear_all_last(ustack, us->next);
 }
 
 void BKE_undosys_stack_remove_range(UndoStack *ustack, UndoStep *first, UndoStep *last)
 {
-  BLI_assert(ustack->step_init == nullptr);
   for (UndoStep *us = first;; us = us->next) {
     if (us == ustack->step_active) {
       ustack->step_active = first->prev;

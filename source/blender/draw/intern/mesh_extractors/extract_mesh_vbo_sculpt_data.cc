@@ -54,13 +54,11 @@ gpu::VertBufPtr extract_sculpt_data(const MeshRenderData &mr)
         const BMFace &face = *BM_face_at_index(&const_cast<BMesh &>(bm), face_index);
         const IndexRange face_range(BM_elem_index_get(BM_FACE_FIRST_LOOP(&face)), face.len);
 
-        uchar4 face_set_color(UCHAR_MAX);
-        if (face_set_offset != -1) {
-          const int face_set_id = BM_ELEM_CD_GET_INT(&face, face_set_offset);
-          if (face_set_id != default_face_set) {
-            BKE_paint_face_set_overlay_color_get(face_set_id, face_set_seed, face_set_color);
-          }
-        }
+        uchar4 face_set_color;
+        const int face_set_id = face_set_offset != -1 ?
+                                    BM_ELEM_CD_GET_INT(&face, face_set_offset) :
+                                    1;
+        BKE_paint_face_set_color_get(face_set_id, default_face_set, face_set_seed, face_set_color);
         if (mask_offset == -1) {
           vbo_data.slice(face_range).fill(gpuSculptData{face_set_color, 0.0f});
           continue;
@@ -82,13 +80,9 @@ gpu::VertBufPtr extract_sculpt_data(const MeshRenderData &mr)
     threading::parallel_for(faces.index_range(), 1024, [&](const IndexRange range) {
       for (const int face_index : range) {
         const IndexRange face = faces[face_index];
-        uchar4 face_set_color(UCHAR_MAX);
-        if (!face_set.is_empty()) {
-          const int face_set_id = face_set[face_index];
-          if (face_set_id != default_face_set) {
-            BKE_paint_face_set_overlay_color_get(face_set_id, face_set_seed, face_set_color);
-          }
-        }
+        uchar4 face_set_color;
+        const int face_set_id = face_set.is_empty() ? 1 : face_set[face_index];
+        BKE_paint_face_set_color_get(face_set_id, default_face_set, face_set_seed, face_set_color);
         if (mask.is_empty()) {
           vbo_data.slice(face).fill(gpuSculptData{face_set_color, 0.0f});
           continue;
@@ -146,7 +140,11 @@ gpu::VertBufPtr extract_sculpt_data_subdiv(const MeshRenderData &mr,
   MutableSpan face_set_vbo_data = face_set_vbo->data<gpuFaceSet>();
   const VArraySpan face_sets = *attributes.lookup<int>(".sculpt_face_set", bke::AttrDomain::Face);
   if (face_sets.is_empty()) {
-    face_set_vbo_data.fill({uchar4{UCHAR_MAX}});
+    /* Phantom: without polygroups the mesh is all in polygroup 1. */
+    uchar4 color;
+    BKE_paint_face_set_color_get(
+        1, coarse_mesh.face_sets_color_default, coarse_mesh.face_sets_color_seed, color);
+    face_set_vbo_data.fill({color});
   }
   else {
     const Span<int> subdiv_loop_face_index(subdiv_cache.subdiv_loop_face_index,
@@ -157,12 +155,9 @@ gpu::VertBufPtr extract_sculpt_data_subdiv(const MeshRenderData &mr,
       for (const int i : range) {
         const int face_index = subdiv_loop_face_index[i];
 
-        uchar4 face_set_color(UCHAR_MAX);
+        uchar4 face_set_color;
         const int face_set_id = face_sets[face_index];
-        /* Skip for the default color face set to render it white. */
-        if (face_set_id != default_face_set) {
-          BKE_paint_face_set_overlay_color_get(face_set_id, face_set_seed, face_set_color);
-        }
+        BKE_paint_face_set_color_get(face_set_id, default_face_set, face_set_seed, face_set_color);
 
         copy_v3_v3_uchar(face_set_vbo_data[i].color, face_set_color);
       }

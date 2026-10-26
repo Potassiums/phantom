@@ -43,7 +43,7 @@ BAR_HEIGHT = 28
 BAR_MARGIN = 14
 BUTTON_PAD_X = 12
 BUTTON_GAP = 2
-CORNER = 8
+CORNER = 4
 TEXT_SIZE = 11
 SLIDE = 12
 FADE_TIME = 0.16
@@ -99,9 +99,10 @@ CATALOGS = {
                {"action": 'HIDE'}, description="Hide the masked area"),
         Action(**_UNHIDE),
         Action(**_SPLIT),
-        Action('EXTRACT', "Extract", "New Objects", 'MASK', "sculpt.paint_mask_extract",
+        Action('EXTRACT', "Extract", "New Objects", 'MASK', "sculpt.phantom_extract",
                invoke=True, accent=True,
-               description="Make a new object from the masked area, with a thickness"),
+               description="Make a new object from the masked area and shape it: scale, "
+               "inflate, thickness and smoothness"),
         Action('SLICE', "Slice", "New Objects", 'MASK', "sculpt.paint_mask_slice",
                {"new_object": True}, accent=True,
                description="Cut the masked area off into its own object, filling the holes"),
@@ -453,6 +454,9 @@ def _rounded_rect(x, y, w, h, r, segments=6):
 
 
 def _draw_shape(shader, kind, coords, color):
+    if kind == 'LINE_LOOP':
+        # Closed by hand: the GPU module doesn't draw a loop's closing segment.
+        kind, coords = 'LINE_STRIP', list(coords) + [coords[0]]
     batch = batch_for_shader(shader, kind, {"pos": coords})
     shader.uniform_float("color", color)
     batch.draw(shader)

@@ -2778,22 +2778,50 @@ bool BKE_sculptsession_use_pbvh_draw(const Object *ob, const RegionView3D *rv3d)
   return true;
 }
 
-/* Returns the face set random color for rendering in the overlay given its ID and a color seed. */
+/* Returns the face set random color for rendering in the overlay given its ID and a color seed.
+ * Phantom: always a vivid color (never grey, white or black), and never near scarlet, which is
+ * the default polygroup's (#BKE_paint_face_set_color_get). `phantom_extract.py` mirrors the hue. */
 #define GOLDEN_RATIO_CONJUGATE 0.618033988749895f
 void BKE_paint_face_set_overlay_color_get(const int face_set, const int seed, uchar r_color[4])
 {
   float rgba[4];
   float random_mod_hue = GOLDEN_RATIO_CONJUGATE * (face_set + (seed % 10));
   random_mod_hue = random_mod_hue - floorf(random_mod_hue);
+  /* Out of the red around scarlet. */
+  float from_scarlet = random_mod_hue - PHANTOM_FACE_SET_DEFAULT_HUE;
+  from_scarlet -= floorf(from_scarlet + 0.5f);
+  if (fabsf(from_scarlet) < PHANTOM_FACE_SET_RED_BAND) {
+    random_mod_hue += from_scarlet < 0.0f ? -2.0f * PHANTOM_FACE_SET_RED_BAND :
+                                            2.0f * PHANTOM_FACE_SET_RED_BAND;
+    random_mod_hue -= floorf(random_mod_hue);
+  }
   const float random_mod_sat = BLI_hash_int_01(face_set + seed + 1);
   const float random_mod_val = BLI_hash_int_01(face_set + seed + 2);
   hsv_to_rgb(random_mod_hue,
-             0.6f + (random_mod_sat * 0.25f),
-             1.0f - (random_mod_val * 0.35f),
+             0.65f + (random_mod_sat * 0.3f),
+             1.0f - (random_mod_val * 0.2f),
              &rgba[0],
              &rgba[1],
              &rgba[2]);
+  rgba[3] = 1.0f;
   rgba_float_to_uchar(r_color, rgba);
+}
+
+void BKE_paint_face_set_color_get(const int face_set,
+                                  const int default_face_set,
+                                  const int seed,
+                                  uchar r_color[4])
+{
+  if (face_set == default_face_set) {
+    /* Scarlet as it shows: the warm clay shading moves a color about 10 degrees toward orange,
+     * so this is a little redder than scarlet itself (255, 36, 0). */
+    r_color[0] = 255;
+    r_color[1] = 8;
+    r_color[2] = 10;
+    r_color[3] = 255;
+    return;
+  }
+  BKE_paint_face_set_overlay_color_get(face_set, seed, r_color);
 }
 
 }  // namespace blender

@@ -4,6 +4,37 @@ Phantom is a fork of Blender tuned for sculpting. This file lists what Phantom c
 own changes come from the Blender version each release is built on.
 
 
+## 0.4.3 alpha (2026-10-26)
+
+Built on Blender 5.4 alpha, on top of 0.4.2. An incremental update: Extract, polygroup colors,
+and the sculpt history (**still experimental**).
+
+- **Extract stays in Sculpt Mode and shapes the piece live:** Extract on the mask actions bar
+  makes the new object right away and opens a panel in the viewport (it no longer closes when the
+  mouse button comes up, or switches to Edit Mode) with **Scale**, **Inflate**, **Thickness**
+  (outward, or inward below zero; 0 is a single-sided surface) and **Smoothness** (smooths the
+  edge, or sharpens it below zero). Every slider starts in the middle with nothing applied; click
+  a value to type an exact one. **Accept** keeps it as a plain mesh, **Cancel** deletes it, and
+  Ctrl+Z after accepting takes it back. Not on Multires meshes yet.
+- **Extracted meshes get polygroups:** one for all of it, or with a thickness one each for the
+  outside, the inside and the rim, in colors that are never the masked mesh's.
+- **Polygroup colors:** a mesh's default polygroup is scarlet red (also on meshes with no
+  polygroups, when polygroups are shown), and the others are always vivid colors, never grey,
+  white, black or close to scarlet. Quad Remesh gives the new mesh a new random color.
+- **Sculpt history works on Multires** (the human starter meshes) **and keeps masking:** mask
+  edits are steps on the timeline too, and undo, redo and the timeline restore them.
+- **Sculpting on an older step:** the question now comes up in the middle of the viewport, only
+  when more than 25 later steps would be deleted, worded like ZBrush's. **Yes, Don't Ask Again**
+  stops asking for the session, and **Ask Before Sculpting on Older Steps** in the History
+  dropdown chooses Always, Not This Session or Never (remembered).
+- **Show at startup** (the base mesh picker) now replaces the splash screen; picking a mesh goes
+  straight to sculpting it.
+- The mask actions bar and the Extract panel have outlines all the way around and evenly squared
+  corners.
+- Fixes: masking a Multires mesh for the first time (from the Skull starter mesh) could crash;
+  undoing a mask on Multires brought it back after leaving Sculpt Mode; histories saved without a
+  mask failed to load.
+
 ## 0.4.2 alpha (2026-10-25)
 
 Built on Blender 5.4 alpha, on top of 0.4.1. An incremental update to sculpt history, which is

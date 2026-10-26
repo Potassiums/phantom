@@ -278,6 +278,15 @@ bool BKE_paint_is_bmesh_face_hidden(const BMFace *f);
 float BKE_paint_grid_paint_mask(const GridPaintMask *gpm, uint level, uint x, uint y);
 
 void BKE_paint_face_set_overlay_color_get(int face_set, int seed, uchar r_color[4]);
+/**
+ * Phantom: the overlay color of polygroup `face_set` of a mesh (whose default polygroup is
+ * #Mesh.face_sets_color_default): scarlet for the default one, a vivid color for the others.
+ * A mesh without polygroups is all in polygroup 1.
+ */
+void BKE_paint_face_set_color_get(int face_set, int default_face_set, int seed, uchar r_color[4]);
+/** Phantom: the hue of scarlet, and how far around it other polygroups' hues stay away. */
+#define PHANTOM_FACE_SET_DEFAULT_HUE 0.0235f
+#define PHANTOM_FACE_SET_RED_BAND 0.06f
 
 /* Stroke related. */
 
