@@ -2735,6 +2735,8 @@ void template_icon_view(Layout *layout,
  * new ("new!" badge), by identifier. Each argument is a newline-separated list.
  */
 void template_icon_view_tags_set(StringRef favorites, StringRef new_items);
+/// clears the static icons set to prevent memory leak on exit
+void clear_icon_view_set();
 /**
  * Phantom: an operator button showing a preview icon (e.g. a matcap) filling it, `scale` times
  * the normal button height. Returns the operator properties to set.

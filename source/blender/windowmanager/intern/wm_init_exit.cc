@@ -831,6 +831,7 @@ void WM_exit_ex(bContext *C, const bool do_python_exit, const bool do_user_exit_
 
 void WM_exit(bContext *C, const int exit_code)
 {
+  ui::clear_icon_view_set();
   const bool do_user_exit_actions = G.background ? false : (exit_code == EXIT_SUCCESS);
   WM_exit_ex(C, true, do_user_exit_actions);
 

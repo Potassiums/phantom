@@ -72,6 +72,12 @@ static void icon_view_tags_parse(const StringRef text, Set<std::string> &r_set)
 /** Phantom: the grid popup last opened (may have closed since: only compared, never read). */
 static const ARegion *icon_view_popup_region = nullptr;
 
+void clear_icon_view_set()
+{
+  icon_view_favorites = Set<std::string>();
+  icon_view_new = Set<std::string>();
+}
+
 void template_icon_view_tags_set(const StringRef favorites, const StringRef new_items)
 {
   icon_view_tags_parse(favorites, icon_view_favorites);
