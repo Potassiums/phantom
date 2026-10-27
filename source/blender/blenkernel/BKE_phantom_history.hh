@@ -93,6 +93,13 @@ StepShape step_shape(const PhantomHistory &history, int index);
 /** Whether anything is masked at step `index`. */
 bool step_has_mask(const PhantomHistory &history, int index);
 
+/**
+ * Whether the mesh (or its Multires grids in Sculpt Mode) is exactly in the shape and mask of the
+ * current step. Undo can put it elsewhere: reloading a whole-scene step from before the history
+ * moved without undo steps.
+ */
+bool is_at_current(const Object &ob);
+
 /** The index of the step with this cursor (#cursor_get), or -1 when it is gone. */
 int find_cursor(const PhantomHistory &history, int cursor);
 

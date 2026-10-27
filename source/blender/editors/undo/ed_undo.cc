@@ -209,6 +209,10 @@ static void ed_undo_step_post(bContext *C,
   Main *bmain = CTX_data_main(C);
   Scene *scene = CTX_data_scene(C);
 
+  /* Phantom: the sculpted mesh in the shape of its history step, even when undo reloaded a
+   * whole-scene step from before the history moved. */
+  sculpt_paint::undo::history_sync(C);
+
   /* App-Handlers (post). */
   {
     wm->op_undo_depth++;
@@ -717,6 +721,12 @@ static wmOperatorStatus ed_undo_exec(bContext *C, wmOperator *op)
 {
   /* "last operator" should disappear, later we can tie this with undo stack nicer */
   WM_operator_stack_clear(CTX_wm_manager(C));
+  /* Phantom: through the sculpt history where the undo stack doesn't follow it (a file just
+   * opened has its history but no undo steps). */
+  if (ed::sculpt_paint::undo::history_step(C, false)) {
+    WM_ui_sound_play(WMUISound::Undo);
+    return OPERATOR_FINISHED;
+  }
   wmOperatorStatus ret = ed_undo_step_direction(C, STEP_UNDO, op->reports);
   if (ret & OPERATOR_FINISHED) {
     ed_undo_refresh_for_op(C);
@@ -744,6 +754,10 @@ static wmOperatorStatus ed_undo_push_exec(bContext *C, wmOperator *op)
 
 static wmOperatorStatus ed_redo_exec(bContext *C, wmOperator *op)
 {
+  if (ed::sculpt_paint::undo::history_step(C, true)) {
+    WM_ui_sound_play(WMUISound::Redo);
+    return OPERATOR_FINISHED;
+  }
   wmOperatorStatus ret = ed_undo_step_direction(C, STEP_REDO, op->reports);
   if (ret & OPERATOR_FINISHED) {
     ed_undo_refresh_for_op(C);
@@ -802,7 +816,8 @@ static bool ed_undo_poll(bContext *C)
     return false;
   }
   UndoStack *undo_stack = CTX_wm_manager(C)->runtime->undo_stack;
-  return (undo_stack->step_active != nullptr) && (undo_stack->step_active->prev != nullptr);
+  return ((undo_stack->step_active != nullptr) && (undo_stack->step_active->prev != nullptr)) ||
+         ed::sculpt_paint::undo::history_step_instead(C, false);
 }
 
 void ED_OT_undo(wmOperatorType *ot)
@@ -845,7 +860,8 @@ static bool ed_redo_poll(bContext *C)
     return false;
   }
   UndoStack *undo_stack = CTX_wm_manager(C)->runtime->undo_stack;
-  return (undo_stack->step_active != nullptr) && (undo_stack->step_active->next != nullptr);
+  return ((undo_stack->step_active != nullptr) && (undo_stack->step_active->next != nullptr)) ||
+         ed::sculpt_paint::undo::history_step_instead(C, true);
 }
 
 void ED_OT_redo(wmOperatorType *ot)

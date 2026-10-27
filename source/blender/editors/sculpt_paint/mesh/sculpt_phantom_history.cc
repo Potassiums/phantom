@@ -115,6 +115,14 @@ static bool apply_step(bContext *C, Object &ob, int index)
       multires_mark_as_modified(&depsgraph, &ob, MULTIRES_COORDS_MODIFIED);
     }
     else {
+      /* Sculpting reads (and its undo steps keep) the evaluated positions, which are separate
+       * from the mesh's own after the file is loaded: they must be the step's too. */
+      MutableSpan<float3> positions_eval = bke::pbvh::vert_positions_eval_for_write(depsgraph,
+                                                                                   ob);
+      const Span<float3> positions = mesh.vert_positions();
+      if (positions_eval.data() != positions.data()) {
+        positions_eval.copy_from(positions);
+      }
       bke::pbvh::update_mask_mesh(mesh, node_mask, *pbvh);
     }
     pbvh->tag_positions_changed(node_mask);

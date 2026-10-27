@@ -416,32 +416,32 @@ void WM_init(bContext *C, int argc, const char **argv)
 }
 
 /**
- * Phantom: the base mesh picker opens instead of the splash when it is set to show at startup
- * ("Show at startup" in the picker, `phantom_start.json` in the user config folder).
+ * Phantom: whether the start picker shows at startup instead of the splash screen. It does unless
+ * `"startup_screen": "SPLASH"` was chosen (in the picker's settings, saved in `phantom_start.json`).
  */
 static bool phantom_start_picker_on_startup()
 {
   const std::optional<std::string> config = BKE_appdir_folder_id(BLENDER_USER_CONFIG, nullptr);
   if (!config) {
-    return false;
+    return true;
   }
   char filepath[FILE_MAX];
   BLI_path_join(filepath, sizeof(filepath), config->c_str(), "phantom_start.json");
   size_t size = 0;
   char *text = static_cast<char *>(BLI_file_read_text_as_mem(filepath, 1, &size));
   if (text == nullptr) {
-    return false;
+    return true;
   }
   text[size] = '\0';
-  bool show = false;
-  if (const char *key = strstr(text, "\"show_at_startup\"")) {
+  bool show = true;
+  if (const char *key = strstr(text, "\"startup_screen\"")) {
     const char *value = strchr(key, ':');
     if (value) {
       value++;
       while (*value == ' ' || *value == '\t' || *value == '\r' || *value == '\n') {
         value++;
       }
-      show = STRPREFIX(value, "true");
+      show = !STRPREFIX(value, "\"SPLASH\"");
     }
   }
   MEM_delete(text);

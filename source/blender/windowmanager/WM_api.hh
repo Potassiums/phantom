@@ -595,6 +595,11 @@ bool WM_file_recover_last_session(bContext *C,
                                   const bool use_scripts_autoexec_check,
                                   ReportList *reports);
 void WM_file_tag_modified();
+/**
+ * Phantom: the folder new files are saved in (the start picker's projects folder), or empty to
+ * suggest the folder of the most recent file, as Blender does.
+ */
+void WM_phantom_projects_folder_set(const char *folder);
 
 /**
  * \note `scene` (and related `view_layer` and `v3d`) pointers may be NULL,

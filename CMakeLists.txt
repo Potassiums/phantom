@@ -167,9 +167,11 @@ if(WIN32)
   add_definitions(
     # This is the app ID used for file registration, given it's used from several modules
     # there really is no nice way to get this information consistent without a global define.
-    -DBLENDER_WIN_APPID="blender.${BLENDER_VERSION_MAJOR}.${BLENDER_VERSION_MINOR}"
+    # Phantom: its own, so opening .blend files with Phantom doesn't take over Blender's
+    # registration (and its windows aren't grouped with Blender's on the taskbar).
+    -DBLENDER_WIN_APPID="phantom.${BLENDER_VERSION_MAJOR}.${BLENDER_VERSION_MINOR}"
     # This is the name that will be shown in the taskbar and OpenWith windows UI
-    -DBLENDER_WIN_APPID_FRIENDLY_NAME="Blender ${BLENDER_VERSION_MAJOR}.${BLENDER_VERSION_MINOR}"
+    -DBLENDER_WIN_APPID_FRIENDLY_NAME="Phantom"
   )
 endif()
 

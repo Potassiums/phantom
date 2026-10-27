@@ -17,6 +17,8 @@
 #include "BLI_array_utils.hh"
 #include "BLI_enumerable_thread_specific.hh"
 #include "BLI_index_range.hh"
+#include "BLI_map.hh"
+#include "BLI_math_geom_c.hh"
 #include "BLI_math_vector_c.hh"
 #include "BLI_span.hh"
 #include "BLI_task.hh"
@@ -154,7 +156,6 @@ Mesh *BKE_mesh_remesh_autoremesher(const Mesh *mesh,
   }
 
   autoremesher::Params params;
-  params.target_quads = settings.target_quads;
   params.edge_scaling = settings.edge_scaling;
   params.adaptivity = settings.adaptivity;
   params.anisotropy = settings.anisotropy;
@@ -162,17 +163,129 @@ Mesh *BKE_mesh_remesh_autoremesher(const Mesh *mesh,
   params.smooth_normal_degrees = settings.smooth_normal_degrees;
   params.hard_surface = settings.hard_surface;
 
+  /* Phantom: each separate piece (like the two ears of a mirrored object) is remeshed on its own,
+   * with its share of the quads by area but never fewer than #MIN_PIECE_QUADS: sharing one target
+   * across the pieces let small ones collapse and vanish. A piece that fails is tried again with
+   * more quads, and kept as it was if it still fails, so no piece is ever lost. */
+  constexpr int MIN_PIECE_QUADS = 300;
+  /* With more pieces than this (scattered bits), the whole mesh is remeshed at once. */
+  constexpr int MAX_PIECES = 32;
+
+  std::vector<int> root(positions.size());
+  for (const int i : IndexRange(int(positions.size()))) {
+    root[i] = i;
+  }
+  const auto find = [&](int v) {
+    while (root[v] != v) {
+      root[v] = root[root[v]];
+      v = root[v];
+    }
+    return v;
+  };
+  for (const std::array<int, 3> &tri : triangles) {
+    for (const int k : {1, 2}) {
+      const int a = find(tri[0]);
+      const int b = find(tri[k]);
+      if (a != b) {
+        root[b] = a;
+      }
+    }
+  }
+  Map<int, int> piece_of_root;
+  std::vector<std::vector<int>> pieces;
+  for (const int t : IndexRange(int(triangles.size()))) {
+    const int r = find(triangles[t][0]);
+    const int piece = piece_of_root.lookup_or_add_cb(r, [&]() {
+      pieces.emplace_back();
+      return int(pieces.size()) - 1;
+    });
+    pieces[piece].push_back(t);
+  }
+  if (pieces.size() > MAX_PIECES) {
+    pieces.assign(1, {});
+    for (const int t : IndexRange(int(triangles.size()))) {
+      pieces[0].push_back(t);
+    }
+  }
+
+  const auto tri_area = [&](const std::array<int, 3> &tri) {
+    return area_tri_v3(input_positions[tri[0]], input_positions[tri[1]], input_positions[tri[2]]);
+  };
+  std::vector<double> areas(pieces.size(), 0.0);
+  double total_area = 0.0;
+  for (const int i : IndexRange(int(pieces.size()))) {
+    for (const int t : pieces[i]) {
+      areas[i] += tri_area(triangles[t]);
+    }
+    total_area += areas[i];
+  }
+
   autoremesher::Result result;
-  const autoremesher::Status status = autoremesher::remesh(
-      positions,
-      triangles,
-      params,
-      [&](const float progress, const char *name) {
-        return update_cb ? update_cb(update_cb_data, progress, name) : true;
-      },
-      result);
-  if (status != autoremesher::Status::Success) {
-    *r_canceled = status == autoremesher::Status::Canceled;
+  double done_area = 0.0;
+  for (const int i : IndexRange(int(pieces.size()))) {
+    /* The piece's own positions and triangles. */
+    std::vector<std::array<float, 3>> piece_positions;
+    std::vector<std::array<int, 3>> piece_triangles;
+    Map<int, int> vert_map;
+    for (const int t : pieces[i]) {
+      std::array<int, 3> tri;
+      for (const int k : IndexRange(3)) {
+        tri[k] = vert_map.lookup_or_add_cb(triangles[t][k], [&]() {
+          piece_positions.push_back(positions[triangles[t][k]]);
+          return int(piece_positions.size()) - 1;
+        });
+      }
+      piece_triangles.push_back(tri);
+    }
+
+    const double share = total_area > 0.0 ? areas[i] / total_area : 1.0 / pieces.size();
+    const float progress_start = float(total_area > 0.0 ? done_area / total_area : 0.0);
+    const float progress_end = float(total_area > 0.0 ? (done_area + areas[i]) / total_area : 1.0);
+    done_area += areas[i];
+    int target = std::max(MIN_PIECE_QUADS, int(std::lround(settings.target_quads * share)));
+
+    autoremesher::Result piece_result;
+    autoremesher::Status status = autoremesher::Status::Failed;
+    for (int attempt = 0; attempt < 3; attempt++, target *= 3) {
+      piece_result = {};
+      params.target_quads = target;
+      status = autoremesher::remesh(
+          piece_positions,
+          piece_triangles,
+          params,
+          [&](const float progress, const char *name) {
+            const float overall = progress_start + (progress_end - progress_start) * progress;
+            return update_cb ? update_cb(update_cb_data, overall, name) : true;
+          },
+          piece_result);
+      if (status == autoremesher::Status::Canceled) {
+        *r_canceled = true;
+        return nullptr;
+      }
+      if (status == autoremesher::Status::Success && !piece_result.face_sizes.empty()) {
+        break;
+      }
+    }
+    if (status != autoremesher::Status::Success || piece_result.face_sizes.empty()) {
+      /* Keep the piece as it was rather than lose it. */
+      piece_result = {};
+      piece_result.positions = piece_positions;
+      for (const std::array<int, 3> &tri : piece_triangles) {
+        piece_result.face_sizes.push_back(3);
+        piece_result.corner_verts.insert(piece_result.corner_verts.end(), tri.begin(), tri.end());
+      }
+    }
+
+    const int vert_offset = int(result.positions.size());
+    result.positions.insert(
+        result.positions.end(), piece_result.positions.begin(), piece_result.positions.end());
+    result.face_sizes.insert(
+        result.face_sizes.end(), piece_result.face_sizes.begin(), piece_result.face_sizes.end());
+    for (const int vert : piece_result.corner_verts) {
+      result.corner_verts.push_back(vert + vert_offset);
+    }
+  }
+  if (result.face_sizes.empty()) {
     return nullptr;
   }
 

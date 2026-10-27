@@ -84,6 +84,20 @@ void push_multires_mesh_end(bContext *C, const char *str);
 
 size_t step_memory_size_get(UndoStep *step);
 
+/**
+ * Phantom: whether undo (or `redo`) should step the active object's sculpt history directly,
+ * because the undo stack doesn't follow it there (a file just opened has a history but no undo
+ * steps for it, or the next undo step starts from another history step).
+ */
+bool history_step_instead(const bContext *C, bool redo);
+/** Phantom: step the sculpt history back (or forward with `redo`), without an undo step. */
+bool history_step(bContext *C, bool redo);
+/**
+ * Phantom: after undo or redo, put the active object back in the shape of its current history
+ * step if undo left it elsewhere (a whole-scene step from before the history moved).
+ */
+void history_sync(bContext *C);
+
 }  // namespace undo
 
 namespace face_set {

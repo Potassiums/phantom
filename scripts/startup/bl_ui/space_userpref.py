@@ -830,12 +830,15 @@ class USERPREF_PT_system_os_settings(SystemPanel, CenterAlignMixIn, Panel):
 
     def draw_centered(self, context, layout):
         if self._draw_associate_supported_or_label(context, layout):
-            layout.label(text="Open blend files with this Blender version")
+            layout.label(text="Open .blend files with Phantom")
             split = layout.split(factor=0.5)
             split.alignment = 'LEFT'
             split.operator("preferences.associate_blend", text="Register")
             split.operator("preferences.unassociate_blend", text="Unregister")
             layout.prop(bpy.context.preferences.system, "register_all_users", text="For All Users")
+            # Phantom: what Explorer shows for .blend files (its icon, or previews of them).
+            if hasattr(bpy.types.WindowManager, "phantom_blend_previews"):
+                layout.prop(bpy.context.window_manager, "phantom_blend_previews")
 
 
 class USERPREF_PT_system_network(SystemPanel, CenterAlignMixIn, Panel):

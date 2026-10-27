@@ -4016,6 +4016,14 @@ static void save_set_compress(wmOperator *op)
   }
 }
 
+/** Phantom: see #WM_phantom_projects_folder_set. */
+static std::string phantom_projects_folder;
+
+void WM_phantom_projects_folder_set(const char *folder)
+{
+  phantom_projects_folder = folder ? folder : "";
+}
+
 static void save_set_filepath(bContext *C, wmOperator *op)
 {
   Main *bmain = CTX_data_main(C);
@@ -4027,7 +4035,18 @@ static void save_set_filepath(bContext *C, wmOperator *op)
     const char *blendfile_path = BKE_main_blendfile_path(bmain);
     /* If not saved before, get the name of the most recently used `.blend` file. */
     if (blendfile_path[0] == '\0') {
-      STRNCPY(filepath, wm_recent_filepath_get(bmain).c_str());
+      if (!phantom_projects_folder.empty() &&
+          (BLI_is_dir(phantom_projects_folder.c_str()) ||
+           BLI_dir_create_recursive(phantom_projects_folder.c_str())))
+      {
+        /* Phantom: new files go in the projects folder. */
+        /* The trailing slash keeps the folder: `wm_filepath_default` replaces the file name. */
+        STRNCPY(filepath, phantom_projects_folder.c_str());
+        BLI_path_slash_ensure(filepath, sizeof(filepath));
+      }
+      else {
+        STRNCPY(filepath, wm_recent_filepath_get(bmain).c_str());
+      }
     }
     else {
       STRNCPY(filepath, blendfile_path);
@@ -4514,6 +4533,96 @@ void WM_OT_clear_recent_projects(wmOperatorType *ot)
   /* props */
   ot->prop = RNA_def_enum(
       ot->srna, "remove", prop_clear_recent_types, CLEAR_RECENT_ALL, "Remove", "");
+}
+
+/* Phantom: the start picker renames, duplicates and deletes recent files, and keeps the list in
+ * step (the list in memory is what gets written back, so the file alone can't be edited). */
+
+enum PhantomRecentEdit {
+  PHANTOM_RECENT_REMOVE = 0,
+  PHANTOM_RECENT_REPLACE = 1,
+  PHANTOM_RECENT_ADD_AFTER = 2,
+};
+
+static const EnumPropertyItem prop_phantom_recent_edit_types[] = {
+    {PHANTOM_RECENT_REMOVE, "REMOVE", 0, "Remove", "Remove the file from the list"},
+    {PHANTOM_RECENT_REPLACE, "REPLACE", 0, "Replace", "Put the new file in the file's place"},
+    {PHANTOM_RECENT_ADD_AFTER,
+     "ADD_AFTER",
+     0,
+     "Add After",
+     "Add the new file after the file (first, when the file isn't listed)"},
+    {0, nullptr, 0, nullptr, nullptr},
+};
+
+static wmOperatorStatus wm_phantom_recent_file_edit_exec(bContext * /*C*/, wmOperator *op)
+{
+  const PhantomRecentEdit action = PhantomRecentEdit(RNA_enum_get(op->ptr, "action"));
+  const std::string filepath = RNA_string_get(op->ptr, "filepath");
+  const std::string new_filepath = RNA_string_get(op->ptr, "new_filepath");
+  if (action != PHANTOM_RECENT_REMOVE && new_filepath.empty()) {
+    BKE_report(op->reports, RPT_ERROR, "No new file path");
+    return OPERATOR_CANCELLED;
+  }
+
+  RecentFile *recent = wm_file_history_find(filepath.c_str());
+  if (action != PHANTOM_RECENT_REMOVE) {
+    /* The new file only once in the list. */
+    RecentFile *existing = wm_file_history_find(new_filepath.c_str());
+    if (existing && existing != recent) {
+      wm_history_file_free(existing);
+    }
+  }
+  switch (action) {
+    case PHANTOM_RECENT_REMOVE:
+      if (recent) {
+        wm_history_file_free(recent);
+      }
+      break;
+    case PHANTOM_RECENT_REPLACE:
+      if (recent) {
+        MEM_delete(recent->filepath);
+        recent->filepath = BLI_strdup(new_filepath.c_str());
+      }
+      break;
+    case PHANTOM_RECENT_ADD_AFTER: {
+      RecentFile *added = wm_history_file_new(new_filepath.c_str());
+      if (recent) {
+        BLI_insertlinkafter(&G.recent_files, recent, added);
+      }
+      else {
+        BLI_addhead(&G.recent_files, added);
+      }
+      /* Keep to the length set in the Preferences. */
+      while (BLI_listbase_count(&G.recent_files) > U.recent_files) {
+        wm_history_file_free(G.recent_files.last());
+      }
+      break;
+    }
+  }
+
+  wm_history_file_write();
+  return OPERATOR_FINISHED;
+}
+
+void WM_OT_phantom_recent_file_edit(wmOperatorType *ot)
+{
+  ot->name = "Edit Recent Files List";
+  ot->idname = "WM_OT_phantom_recent_file_edit";
+  ot->description = "Remove a file from the recent files list, or put a new file in it";
+
+  ot->exec = wm_phantom_recent_file_edit_exec;
+
+  ot->flag = OPTYPE_INTERNAL;
+
+  RNA_def_enum(ot->srna,
+               "action",
+               prop_phantom_recent_edit_types,
+               PHANTOM_RECENT_REMOVE,
+               "Action",
+               "");
+  RNA_def_string_file_path(ot->srna, "filepath", nullptr, FILE_MAX, "File Path", "A listed file");
+  RNA_def_string_file_path(ot->srna, "new_filepath", nullptr, FILE_MAX, "New File Path", "");
 }
 
 /** \} */

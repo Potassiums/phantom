@@ -167,7 +167,9 @@ static bool register_blender_prog_id(const char *prog_id,
                            &dwd);
 
   if (lresult == ERROR_SUCCESS) {
-    const size_t buffer_len = SNPRINTF_RLEN(buffer, "\"%s\", 1", executable);
+    /* Phantom: no space after the comma: Explorer didn't read `"path", 1` and showed the
+     * program's icon instead of the file icon. */
+    const size_t buffer_len = SNPRINTF_RLEN(buffer, "\"%s\",1", executable);
     lresult = RegSetValueEx(hkey_progid, nullptr, 0, REG_SZ, (BYTE *)buffer, buffer_len + 1);
     RegCloseKey(hkey_progid);
   }
@@ -202,11 +204,12 @@ bool BLI_windows_register_blend_extension(const bool all_users)
   }
 
   /* Replace the actual app name with the wrapper. */
-  blender_app = strstr(blender_path, "blender.exe");
+  /* Phantom: its executable and launcher are `phantom.exe` and `phantom-launcher.exe`. */
+  blender_app = strstr(blender_path, "phantom.exe");
   if (!blender_app) {
     return false;
   }
-  strcpy(blender_app, "blender-launcher.exe");
+  strcpy(blender_app, "phantom-launcher.exe");
 
   if (!open_registry_hive(all_users, &root)) {
     return false;
@@ -259,18 +262,9 @@ bool BLI_windows_register_blend_extension(const bool all_users)
     return false;
   }
 
-#  ifdef WITH_BLENDER_THUMBNAILER
-  {
-    char reg_cmd[MAX_PATH * 2];
-    char install_dir[FILE_MAXDIR];
-    char system_dir[FILE_MAXDIR];
-    BLI_windows_get_executable_dir(install_dir);
-    GetSystemDirectory(system_dir, sizeof(system_dir));
-    const char *thumbnail_handler = "BlendThumb.dll";
-    SNPRINTF(reg_cmd, "%s\\regsvr32 /s \"%s\\%s\"", system_dir, install_dir, thumbnail_handler);
-    system(reg_cmd);
-  }
-#  endif
+  /* Phantom: .blend files show Phantom's file icon. Previews of their contents in Explorer (the
+   * thumbnail handler, `BlendThumb.dll`) are an option of their own: "Show previews of .blend
+   * files" (`phantom_start_assets.py`). */
 
   RegCloseKey(root);
   char message[256];

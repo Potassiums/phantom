@@ -2413,6 +2413,87 @@ void history_jump_end(Object &ob)
   push_end(ob);
 }
 
+/** The history step undo (or redo) should go to directly, or -1 when the undo stack does it. */
+static int history_step_target(const bContext *C, const bool redo)
+{
+  const Object *ob = CTX_data_active_object(C);
+  if (ob == nullptr || ob->type != OB_MESH || !(ob->mode & OB_MODE_SCULPT) ||
+      ob->phantom_history == nullptr || ob->phantom_history->steps_num == 0)
+  {
+    return -1;
+  }
+  if (const bke::pbvh::Tree *pbvh = bke::object::pbvh_get(*ob)) {
+    if (pbvh->type() == bke::pbvh::Type::BMesh) {
+      return -1;
+    }
+  }
+  const PhantomHistory &history = *ob->phantom_history;
+  const int target = history.current + (redo ? 1 : -1);
+  if (target < 0 || target >= history.steps_num) {
+    return -1;
+  }
+  /* The undo step that would run: when it is this object's and starts (for redo) or ends (for
+   * undo) at the current history step, undo and the history agree and the undo stack goes on. */
+  UndoStack *ustack = ED_undo_stack_get();
+  if (ustack == nullptr) {
+    return -1;
+  }
+  const UndoStep *us = ustack->step_active;
+  if (redo && us) {
+    us = us->next;
+  }
+  /* (Undo can't undo the first step of the stack.) */
+  const bool undo_can_run = us && (redo || us->prev != nullptr);
+  if (undo_can_run && us->type != BKE_UNDOSYS_TYPE_SCULPT) {
+    /* Another kind of step (an Extract, a new object...): the undo stack undoes that. */
+    return -1;
+  }
+  if (undo_can_run) {
+    const SculptUndoStep *sus = reinterpret_cast<const SculptUndoStep *>(us);
+    const int cursor = bke::phantom_history::cursor_get(*ob);
+    if (sus->data.object_name == ob->id.name &&
+        (redo ? sus->history_cursor_before : sus->history_cursor_after) == cursor)
+    {
+      return -1;
+    }
+  }
+  return target;
+}
+
+bool history_step_instead(const bContext *C, const bool redo)
+{
+  return history_step_target(C, redo) != -1;
+}
+
+void history_sync(bContext *C)
+{
+  Object *ob = CTX_data_active_object(C);
+  if (ob == nullptr || ob->type != OB_MESH || !(ob->mode & OB_MODE_SCULPT) ||
+      ob->phantom_history == nullptr || ob->phantom_history->steps_num == 0)
+  {
+    return;
+  }
+  if (const bke::pbvh::Tree *pbvh = bke::object::pbvh_get(*ob)) {
+    if (pbvh->type() == bke::pbvh::Type::BMesh) {
+      return;
+    }
+  }
+  if (!bke::phantom_history::is_at_current(*ob)) {
+    history_apply_cursor(C, ob->id.name, bke::phantom_history::cursor_get(*ob));
+  }
+}
+
+bool history_step(bContext *C, const bool redo)
+{
+  const int target = history_step_target(C, redo);
+  if (target == -1) {
+    return false;
+  }
+  Object &ob = *CTX_data_active_object(C);
+  history_apply_cursor(C, ob.id.name, ob.phantom_history->steps[target].number + 1);
+  return true;
+}
+
 static void step_decode_undo(bContext *C,
                              Depsgraph *depsgraph,
                              SculptUndoStep *us,

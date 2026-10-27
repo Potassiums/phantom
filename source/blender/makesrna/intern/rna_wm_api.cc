@@ -18,6 +18,8 @@
 
 #include "ED_screen.hh"
 
+#include "GPU_state.hh"
+
 #include "UI_interface_c.hh"
 #include "UI_interface_icons.hh"
 #include "UI_interface_types.hh"
@@ -983,6 +985,27 @@ static int rna_WindowManager_phantom_asset_preview_icon(bContext *C,
  * Phantom: index of the active edit mesh's vertex that a click at `mouse_x, mouse_y` (region
  * pixels) would select, or -1: the same search, pick distance and occlusion as click-select.
  */
+/**
+ * Phantom: draw an interface icon in a Python draw handler (region pixels, `size` pixels high),
+ * for overlays drawn with the GPU module that want Blender's own icons.
+ */
+static void rna_WindowManager_phantom_projects_folder_set(const char *folder)
+{
+  WM_phantom_projects_folder_set(folder);
+}
+
+static void rna_WindowManager_phantom_draw_icon(
+    const int icon, const float x, const float y, const float size, const float alpha)
+{
+  if (size <= 0.0f || icon == ICON_NONE) {
+    return;
+  }
+  const uchar white[4] = {255, 255, 255, 255};
+  GPU_blend(GPU_BLEND_ALPHA);
+  ui::icon_draw_ex(
+      x, y, icon, float(ICON_DEFAULT_HEIGHT) / size, alpha, 0.0f, white, false, nullptr);
+}
+
 /** Flags for #rna_WindowManager_phantom_sculpt_mask_state. */
 enum {
   PHANTOM_SCULPT_HAS_MASK = 1 << 0,
@@ -1246,6 +1269,29 @@ void RNA_api_wm(StructRNA *srna)
   RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
   parm = RNA_def_int(func, "icon", 0, 0, INT_MAX, "Icon", "", 0, INT_MAX);
   RNA_def_function_return(func, parm);
+
+  func = RNA_def_function(
+      srna, "phantom_projects_folder_set", "rna_WindowManager_phantom_projects_folder_set");
+  RNA_def_function_flag(func, FUNC_NO_SELF);
+  RNA_def_function_ui_description(
+      func, "Set the folder new files are saved in (empty: the most recent file's folder)");
+  parm = RNA_def_string_dir_path(func, "folder", nullptr, FILE_MAX, "Folder", "");
+  RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
+
+  func = RNA_def_function(srna, "phantom_draw_icon", "rna_WindowManager_phantom_draw_icon");
+  RNA_def_function_flag(func, FUNC_NO_SELF);
+  RNA_def_function_ui_description(
+      func, "Draw an interface icon from a draw handler (region pixels, its height in pixels)");
+  parm = RNA_def_property(func, "icon", PROP_ENUM, PROP_NONE);
+  RNA_def_property_enum_items(parm, rna_enum_icon_items);
+  RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
+  parm = RNA_def_float(func, "x", 0.0f, -FLT_MAX, FLT_MAX, "X", "", -FLT_MAX, FLT_MAX);
+  RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
+  parm = RNA_def_float(func, "y", 0.0f, -FLT_MAX, FLT_MAX, "Y", "", -FLT_MAX, FLT_MAX);
+  RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
+  parm = RNA_def_float(func, "size", 16.0f, 0.0f, FLT_MAX, "Size", "", 0.0f, FLT_MAX);
+  RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
+  RNA_def_float(func, "alpha", 1.0f, 0.0f, 1.0f, "Alpha", "", 0.0f, 1.0f);
 
   func = RNA_def_function(
       srna, "phantom_sculpt_mask_state", "rna_WindowManager_phantom_sculpt_mask_state");

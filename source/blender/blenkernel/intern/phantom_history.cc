@@ -614,6 +614,27 @@ ApplyResult apply_step(Object &ob, int index)
   return result;
 }
 
+bool is_at_current(const Object &ob)
+{
+  PhantomHistory *history = ob.phantom_history;
+  State state;
+  if (history == nullptr || history->steps_num == 0 || !read_state(ob, state)) {
+    return true;
+  }
+  const Runtime &runtime = ensure_runtime(*history);
+  if (state.layout != runtime.layout) {
+    return false;
+  }
+  const Span<float3> positions = state.positions;
+  if (memcmp(positions.data(), runtime.positions.data(), positions.size_in_bytes()) != 0) {
+    return false;
+  }
+  if (state.masks.is_empty()) {
+    return !any_masked(runtime.masks);
+  }
+  return memcmp(state.masks.data(), runtime.masks.data(), state.masks.size_in_bytes()) == 0;
+}
+
 int find_cursor(const PhantomHistory &history, const int cursor)
 {
   for (const int i : IndexRange(history.steps_num)) {

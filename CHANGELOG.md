@@ -4,6 +4,44 @@ Phantom is a fork of Blender tuned for sculpting. This file lists what Phantom c
 own changes come from the Blender version each release is built on.
 
 
+## 0.4.4 alpha (2026-10-27)
+
+Built on Blender 5.4 alpha, on top of 0.4.3. An incremental update: the start picker, .blend
+files on Windows, Quad Remesh and the sculpt history (**still experimental**).
+
+- **The start picker is what Phantom opens with** (the splash screen is a choice in its settings),
+  and it is laid out like a start screen: Phantom's splash image, "Where would you like to
+  start?", a search field with a blinking cursor, Open... and Import..., the **New File** choices
+  with their icons, and the base meshes.
+- **Recent Files and Project Files** down the right side: the last 3 recent files, and the .blend
+  files in the projects folder. **View All** shows every one of them in place of the base meshes,
+  as cards with the picture saved in each (the search filters them); the arrow at the top left,
+  or Esc, goes back.
+- **Projects folder:** Documents\Phantom Projects by default (made the first time it's needed).
+  Saving a file that was never saved starts there; Save As can still save it anywhere, and
+  **Change...** in the picker's settings picks another folder.
+- **File actions:** a file in the lists or View All has a trash can on hover (it asks first, and
+  the file goes to the Recycle Bin), and right-clicking it gives Open, Open File Location,
+  Rename..., Duplicate, Remove from Recent Files and Delete.... The recent files list (and File >
+  Open Recent) follows. The file that is open can't be renamed or deleted.
+- **Settings** behind the cogwheel at the bottom left: what shows at startup (Start Picker or
+  Splash Screen), **Open .blend files with Phantom**, **Show previews of .blend files** and the
+  projects folder.
+- **.blend files on Windows:** Phantom's own file icon (the ghost on a folded page). **Open .blend
+  files with Phantom** (also in Preferences > System) now works, and no longer mixes Phantom up
+  with an installed Blender. Explorer shows the icon by default; **Show previews of .blend
+  files** shows the picture saved in each instead.
+- **Quad Remesh** remeshes each separate piece of a mesh on its own, so small pieces (mirrored
+  ears, for one) are no longer dropped or collapsed into the rest.
+- **Sculpt history:** Ctrl+Z and Ctrl+Shift+Z step through the history of a file that was just
+  opened (they did nothing before), and undo after opening a file no longer brings back the
+  mesh as it was saved.
+- Import... in the picker keeps its menu open after a click (it closed unless the mouse button
+  was held), and closing the picker by clicking off it makes a softer sound.
+- **Brushes are remembered** (by Dioinecail): sculpt brush settings are kept between sessions,
+  and the brush that was selected is selected again when Phantom starts.
+- Fix (by Dioinecail): a crash when quitting with 5 or more matcaps installed.
+
 ## 0.4.3 alpha (2026-10-26)
 
 Built on Blender 5.4 alpha, on top of 0.4.2. An incremental update: Extract, polygroup colors,
