@@ -1052,7 +1052,12 @@ struct UserDef {
   short sculpt_history_limit = 0;
   /** Phantom: leave sculpt histories out of .blend files (zero, the default, saves them). */
   char sculpt_history_nosave = 0;
-  char _pad9[5] = {};
+  /**
+   * Phantom: don't remember sculpt brush settings and the selected brush between sessions (zero,
+   * the default, remembers them, also for preferences saved before this setting existed).
+   */
+  char show_silhouette_always_disabled = 0;
+  char _pad9[4] = {};
   /**
    * Experimental flag for app-templates to make changes to behavior
    * which are outside the scope of typical preferences.

@@ -73,6 +73,11 @@ _fade_last_time = 0.0
 # -----------------------------------------------------------------------------
 # Persistent settings
 
+def _always_enabled():
+    """Whether Phantom should remember brushes (the preference added for this feature)."""
+    prefs = getattr(bpy.context, "preferences", None)
+    return bool(getattr(prefs, "show_silhouette_always", False))
+
 def _settings_path():
     return os.path.join(bpy.utils.user_resource('CONFIG'), "phantom_silhouette.json")
 
@@ -138,7 +143,10 @@ def _ui_scale():
 
 
 def _enabled(context):
-    return context.mode == 'SCULPT' and _settings["enabled"]
+    if _always_enabled():
+        _settings["enabled"]
+    else:
+        return context.mode == 'SCULPT' and _settings["enabled"]
 
 
 def _docked():
@@ -502,8 +510,10 @@ class VIEW3D_OT_phantom_silhouette_drag(Operator):
 
 
 def draw_header_toggle(self, context):
-    if context.mode != 'SCULPT':
-        return
+    if not _always_enabled():
+        if context.mode != 'SCULPT':
+            return
+
     wm = context.window_manager
     self.layout.prop(
         wm, "phantom_silhouette", text="",

@@ -8438,6 +8438,14 @@ void RNA_def_userdef(BlenderRNA *brna)
   RNA_def_property_ui_text(prop, "Dirty", "Preferences have changed");
   RNA_def_property_update(prop, 0, "rna_userdef_ui_update");
 
+  /* Phantom: remember brush settings between sessions. */
+  prop = RNA_def_property(srna, "show_silhouette_always", PROP_BOOLEAN, PROP_NONE);
+  RNA_def_property_boolean_negative_sdna(prop, nullptr, "show_silhouette_always_disabled", 1);
+  RNA_def_property_ui_text(prop,
+                           "Silhouette Preview Always Enabled",
+                           "Silhouette Toggle (Ghost icon) is going to be always present, allowing you to show Silhouette Preview if desired");
+  RNA_def_property_update(prop, 0, "rna_userdef_update");
+
   rna_def_userdef_view(brna);
   rna_def_userdef_edit(brna);
   rna_def_userdef_input(brna);
