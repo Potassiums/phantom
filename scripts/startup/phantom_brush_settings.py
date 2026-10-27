@@ -9,7 +9,8 @@ A brush's settings live in the .blend file, and Phantom usually starts from a ne
 changes to a brush (size, strength, spacing, falloff, alpha, ...) are lost when Phantom is
 closed. This module mirrors the settings of every sculpt brush into
 ``phantom_brush_settings.json`` in the user config directory, and puts them back as brushes are
-loaded, so a brush feels the same in every file.
+loaded, so a brush feels the same in every file. The brush selected when Phantom was closed is
+remembered too, and selected again once Sculpt Mode is entered.
 
 Only simple values are stored (numbers, booleans, text, choices and their small arrays), plus
 the brush's texture slots and the names of their textures. Everything else in a brush (its
@@ -30,6 +31,9 @@ FORMAT_VERSION = 1
 # is written (a slider drag changes the brush on every mouse move).
 POLL_INTERVAL = 0.5
 SAVE_DELAY = 2.0
+# How many polls to wait for brush assets to finish loading before giving up on restoring the
+# selected brush (about ten seconds at the poll interval above).
+RESTORE_ATTEMPTS = 20
 
 # The brush's identity, and data owned by Blender rather than the user.
 _SKIP_PROPS = {
@@ -50,11 +54,17 @@ _SIMPLE_TYPES = {'BOOLEAN', 'INT', 'FLOAT', 'ENUM', 'STRING'}
 _TOOLS_PROPS = { 'use_unified_size', 'size', 'strength' }
 
 _data = {}
-_tools = { "loaded" : False }
+_tools = {"loaded": False}
 _seen = {}
 _dirty = False
 _last_save = 0.0
 _settings_path = None
+# The brush that was selected when Phantom closed. Tracking starts once an attempt to select it
+# has been made, so that the brush of a file loaded at startup doesn't replace it first.
+_active = None
+_active_seen = None
+_active_ready = False
+_active_attempts = 0
 
 
 # -----------------------------------------------------------------------------
@@ -64,14 +74,13 @@ def _path():
     global _settings_path
     if _settings_path is None:
         _settings_path = os.path.join(bpy.utils.user_resource('CONFIG'), FILE_NAME)
-    
-    print(_settings_path)
     return _settings_path
 
 
 def _load():
     global _data
     global _tools
+    global _active
     try:
         with open(_path(), encoding="utf-8") as fh:
             payload = json.load(fh)
@@ -90,18 +99,21 @@ def _load():
         }
 
     tools = payload.get("tool_settings")
-
     if isinstance(tools, dict):
-        _tools = { }
-        
-        for key, value in tools.items():
-            _tools[key] = value
-            print(key, value)
+        _tools = {key: value for key, value in tools.items() if key in _TOOLS_PROPS}
         _tools["loaded"] = False
+
+    _active = _valid_active(payload.get("active_brush"))
+
 
 def _save():
     global _dirty
-    payload = { "version": FORMAT_VERSION, "brushes": _data, "tool_settings": _tools }
+    payload = {
+        "version": FORMAT_VERSION,
+        "brushes": _data,
+        "tool_settings": {key: value for key, value in _tools.items() if key != "loaded"},
+        "active_brush": _active,
+    }
     path = _path()
     temp = path + ".tmp"
     try:
@@ -243,13 +255,128 @@ def _apply(brush, settings):
 
 
 # -----------------------------------------------------------------------------
+# The selected brush
+
+def _valid_active(value):
+    """A saved active brush as stored data, or None when it can't be used."""
+    if not isinstance(value, dict):
+        return None
+    name = value.get("name")
+    if not isinstance(name, str):
+        return None
+    asset = value.get("asset")
+    if isinstance(asset, dict):
+        asset = {
+            "type": asset.get("type"),
+            "identifier": asset.get("identifier"),
+            "relative": asset.get("relative"),
+        }
+        if (isinstance(asset["type"], str) and isinstance(asset["identifier"], str) and
+                isinstance(asset["relative"], str) and asset["relative"]):
+            return {"name": name, "asset": asset}
+        return None
+    return {"name": name}
+
+
+def _current_active():
+    """The active sculpt brush as stored data, or None outside Sculpt Mode."""
+    try:
+        sculpt = bpy.context.tool_settings.sculpt
+        brush = sculpt.brush
+    except AttributeError:
+        return None
+    if brush is None:
+        return None
+    entry = {"name": brush.name}
+    try:
+        ref = sculpt.brush_asset_reference
+    except AttributeError:
+        ref = None
+    if ref is not None and ref.relative_asset_identifier:
+        entry["asset"] = {
+            "type": ref.asset_library_type,
+            "identifier": ref.asset_library_identifier,
+            "relative": ref.relative_asset_identifier,
+        }
+    return entry
+
+
+def _restore_active():
+    """Select the brush saved last session, once Sculpt Mode and its assets are ready."""
+    global _active_ready
+    global _active_seen
+    global _active_attempts
+
+    if _active_ready:
+        return
+    asset = _active.get("asset") if isinstance(_active, dict) else None
+    if asset is None:
+        # Nothing selectable to restore (first run, or the brush isn't an asset).
+        _active_ready = True
+        _active_seen = _current_active()
+        return
+    if bpy.context.mode != 'SCULPT':
+        return
+    if _active_attempts >= RESTORE_ATTEMPTS:
+        print("Phantom: could not restore the sculpt brush:", _active.get("name", ""))
+        _active_ready = True
+        _active_seen = _current_active()
+        return
+
+    current = _current_active()
+    if current is not None and current.get("asset") == asset:
+        _active_ready = True
+        _active_seen = current
+        return
+
+    _active_attempts += 1
+    try:
+        bpy.ops.brush.asset_activate(
+            asset_library_type=asset["type"],
+            asset_library_identifier=asset["identifier"],
+            relative_asset_identifier=asset["relative"],
+        )
+    except RuntimeError as ex:
+        # The brush assets may still be loading; try again on the next poll.
+        if "loading is unfinished" in str(ex):
+            return
+        print("Phantom: could not restore the sculpt brush:", ex)
+        _active_ready = True
+        _active_seen = _current_active()
+        return
+
+    current = _current_active()
+    if current is not None and current.get("asset") == asset:
+        _active_ready = True
+        _active_seen = current
+
+
+def _update_active():
+    global _active
+    global _active_seen
+    global _active_ready
+    global _dirty
+
+    if not _active_ready:
+        _restore_active()
+        return
+    current = _current_active()
+    if current is None:
+        return
+    if _active_seen is None:
+        # The first brush after startup (or a file load) isn't a choice the user made.
+        _active_seen = current
+        return
+    if current != _active_seen:
+        _active_seen = current
+        _active = current
+        _dirty = True
+
+
+# -----------------------------------------------------------------------------
 # Keeping the JSON in step with the brushes in the app
 
 def _sculpt_brushes():
-    # for brush in bpy.data.brushes:
-    #     json_formatted_str = json.dumps(brush.__dict__)
-    #     print(json_formatted_str)
-        
     return [brush for brush in bpy.data.brushes if brush.use_paint_sculpt]
 
 
@@ -279,21 +406,25 @@ def _update_brushes():
             del _seen[name]
 
 def _update_tool_settings():
-    if "loaded" not in _tools or _tools["loaded"] == False:
+    global _dirty
+    if not _tools.get("loaded"):
         return
-    
+    settings = bpy.context.scene.tool_settings.sculpt.unified_paint_settings
     for key in _TOOLS_PROPS:
-        _tools[key] = getattr(bpy.context.scene.tool_settings.sculpt.unified_paint_settings, key)
+        value = getattr(settings, key)
+        if _tools.get(key) != value:
+            _tools[key] = value
+            _dirty = True
 
 
 def _load_tool_settings():
     if not hasattr(bpy.context, 'scene'):
         return 1.0
 
+    settings = bpy.context.scene.tool_settings.sculpt.unified_paint_settings
     for key in _TOOLS_PROPS:
         if key in _tools:
-            value = _tools[key]
-            setattr(bpy.context.scene.tool_settings.sculpt.unified_paint_settings, key, value)
+            setattr(settings, key, _tools[key])
 
     _tools["loaded"] = True
     bpy.app.timers.unregister(_load_tool_settings)
@@ -307,25 +438,30 @@ def _tick():
 
     try:
         _update_tool_settings()
-    except Exception as ex: 
-        print("Phantom: could not update tool settings", ex)
+    except Exception as ex:
+        print("Phantom: could not update tool settings:", ex)
+
+    try:
+        _update_active()
+    except Exception as ex:
+        print("Phantom: could not update the selected brush:", ex)
 
     now = time.monotonic()
 
     if _dirty and now - _last_save >= SAVE_DELAY:
-        # _save()
         _last_save = now
-    
-    # for property in dir(bpy.data.brushes):
-    #     print(property)
+        _save()
 
     return POLL_INTERVAL
 
 
-# @persistent
-# def _on_load(*_args):
+@persistent
+def _on_load(*_args):
+    global _active_seen
     # Brushes of the file that just loaded are new to this session: restore their settings.
-    # _seen.clear()
+    _seen.clear()
+    # Loading a file changes the active brush, but that isn't a choice the user made.
+    _active_seen = _current_active()
 
 
 @persistent
@@ -334,25 +470,29 @@ def _on_exit():
 
 
 def register():
+    global _active_ready
+    global _active_seen
+    global _active_attempts
+
     _load()
     _seen.clear()
-    # bpy.app.handlers.load_post.append(_on_load)
+    _active_ready = False
+    _active_seen = None
+    _active_attempts = 0
+    bpy.app.handlers.load_post.append(_on_load)
     atexit.register(_on_exit)
     if not bpy.app.background:
         bpy.app.timers.register(_tick, first_interval=POLL_INTERVAL, persistent=True)
-    
-    if not bpy.app.background:
-        bpy.app.timers.register(_load_tool_settings, first_interval = 1.0, persistent = False)
+        bpy.app.timers.register(_load_tool_settings, first_interval=1.0, persistent=False)
 
 
 def unregister():
     if bpy.app.timers.is_registered(_tick):
         bpy.app.timers.unregister(_tick)
-
     if bpy.app.timers.is_registered(_load_tool_settings):
         bpy.app.timers.unregister(_load_tool_settings)
-    # if _on_load in bpy.app.handlers.load_post:
-    #     bpy.app.handlers.load_post.remove(_on_load)
+    if _on_load in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.remove(_on_load)
     # Phantom calls unregister() on exit, before atexit runs: save what the last timer tick
     # may not have written yet.
     _save()
