@@ -233,6 +233,14 @@ class USERPREF_PT_interface_sounds(InterfacePanel, CenterAlignMixIn, Panel):
         col.prop(view, "ui_sound_volume", text="Volume", slider=True)
 
 
+class USERPREF_PT_interface_sculpting(InterfacePanel, CenterAlignMixIn, Panel):
+    """Phantom: Sculpting Options."""
+    bl_label = "Sculpting"
+
+    def draw_centered(self, context, layout):
+        layout.prop(context.preferences, "show_silhouette_always")
+
+
 class USERPREF_PT_interface_display(InterfacePanel, CenterAlignMixIn, Panel):
     bl_label = "Display"
 
@@ -3133,6 +3141,7 @@ classes = (
 
     USERPREF_PT_interface_display,
     USERPREF_PT_interface_sounds,
+    USERPREF_PT_interface_sculpting,
     USERPREF_PT_interface_editors,
     USERPREF_PT_interface_temporary_windows,
     USERPREF_PT_interface_statusbar,

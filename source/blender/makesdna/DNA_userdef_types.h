@@ -1053,10 +1053,10 @@ struct UserDef {
   /** Phantom: leave sculpt histories out of .blend files (zero, the default, saves them). */
   char sculpt_history_nosave = 0;
   /**
-   * Phantom: don't remember sculpt brush settings and the selected brush between sessions (zero,
-   * the default, remembers them, also for preferences saved before this setting existed).
+   * Phantom: don't show silhouette toggle by default, but show a toggle in Preferences 
+   * that allows to show the silhouette preview outside of Sculpt mode
    */
-  char show_silhouette_always_disabled = 0;
+  char show_silhouette_always_disabled = 1;
   char _pad9[4] = {};
   /**
    * Experimental flag for app-templates to make changes to behavior

@@ -144,7 +144,7 @@ def _ui_scale():
 
 def _enabled(context):
     if _always_enabled():
-        _settings["enabled"]
+        return _settings["enabled"]
     else:
         return context.mode == 'SCULPT' and _settings["enabled"]
 
