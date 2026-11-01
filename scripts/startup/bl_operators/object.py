@@ -283,30 +283,35 @@ class SubdivisionSet(Operator):
         if not relative and level < 0:
             self.level = level = 0
 
+        def object_mode_level(obj, level):
+            # Phantom: past about 33 million faces, Object Mode can't draw a mesh (its draw buffers
+            # hold every face corner); Sculpt Mode draws any level.
+            corners = len(obj.data.loops)
+            while level > 0 and corners * 4 ** (level - 1) > (1 << 25):
+                level -= 1
+            return level
+
         def set_object_subd(obj):
             for mod in obj.modifiers:
                 if mod.type == 'MULTIRES':
+                    # Phantom: one level, like ZBrush. The level shown in Object Mode is the one
+                    # sculpted in Sculpt Mode, so the Viewport and Sculpt levels change together.
                     if not relative:
                         if level > mod.total_levels:
                             sub = level - mod.total_levels
                             for _ in range(sub):
-                                bpy.ops.object.multires_subdivide(modifier="Multires")
-
-                        if obj.mode == 'SCULPT':
-                            if mod.sculpt_levels != level:
-                                mod.sculpt_levels = level
-                        elif obj.mode == 'OBJECT':
-                            if mod.levels != level:
-                                mod.levels = level
-                        return
+                                bpy.ops.object.multires_subdivide(modifier=mod.name)
+                        new_level = level
                     else:
-                        if obj.mode == 'SCULPT':
-                            if mod.sculpt_levels + level <= mod.total_levels:
-                                mod.sculpt_levels += level
-                        elif obj.mode == 'OBJECT':
-                            if mod.levels + level <= mod.total_levels:
-                                mod.levels += level
-                        return
+                        current = mod.sculpt_levels if obj.mode == 'SCULPT' else mod.levels
+                        new_level = current + level
+                        if not 0 <= new_level <= mod.total_levels:
+                            return
+                    if mod.sculpt_levels != new_level:
+                        mod.sculpt_levels = new_level
+                    if mod.levels != object_mode_level(obj, new_level):
+                        mod.levels = object_mode_level(obj, new_level)
+                    return
 
                 elif mod.type == 'SUBSURF':
                     if relative:
@@ -324,7 +329,9 @@ class SubdivisionSet(Operator):
                         mod = obj.modifiers.new("Multires", 'MULTIRES')
                         if level > 0:
                             for _ in range(level):
-                                bpy.ops.object.multires_subdivide(modifier="Multires")
+                                bpy.ops.object.multires_subdivide(modifier=mod.name)
+                        # Phantom: show the sculpted level in Object Mode too.
+                        mod.levels = mod.sculpt_levels
                     else:
                         mod = obj.modifiers.new("Subdivision", 'SUBSURF')
                         mod.levels = level

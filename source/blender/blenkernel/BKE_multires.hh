@@ -110,6 +110,16 @@ void multiresModifier_del_levels(MultiresModifierData *mmd,
                                  Object *object,
                                  int direction);
 
+/**
+ * Phantom: delete the levels below `level`, like ZBrush's Del Lower. The mesh at `level` becomes
+ * the base mesh and the levels above it stay, each with the same shape. False (nothing changed)
+ * when the grids can't be mapped.
+ */
+bool multiresModifier_del_lower_levels(Depsgraph *depsgraph,
+                                       Object *object,
+                                       MultiresModifierData *mmd,
+                                       int level);
+
 enum class ApplyBaseMode : int8_t {
   Base,
   ForSubdivision,

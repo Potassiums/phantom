@@ -11,12 +11,17 @@
  * (#undo::history_jump_begin).
  */
 
+#include <cmath>
+
 #include <fmt/format.h>
 
 #include "MEM_guardedalloc.h"
 
 #include "DNA_mesh_types.h"
+#include "DNA_modifier_types.h"
 #include "DNA_object_types.h"
+
+#include "BLI_listbase_iterator.hh"
 
 #include "BLT_translation.hh"
 
@@ -76,8 +81,71 @@ static bool history_poll(bContext *C)
 }
 
 /**
+ * With Multires: sculpt at the subdivision level step `index` was sculpted at, or on the base mesh
+ * (level 0) for steps from before the mesh was divided, like going down and up levels in ZBrush.
+ * For a step of the grids, the base mesh gets the positions it had then, from the last step of the
+ * base mesh before it. False when the step can't be shown: the modifier no longer has the level,
+ * or the step's mesh has other faces (replacing the mesh would lose the Multires levels).
+ */
+static bool show_step_level(bContext *C, Object &ob, const int index)
+{
+  MultiresModifierData *mmd = nullptr;
+  for (ModifierData &md : ob.modifiers) {
+    if (md.type == eModifierType_Multires) {
+      mmd = reinterpret_cast<MultiresModifierData *>(&md);
+      break;
+    }
+  }
+  if (mmd == nullptr || mmd->totlvl == 0) {
+    return true;
+  }
+  const PhantomHistory &history = *ob.phantom_history;
+  const int grid_size = bke::phantom_history::step_grid_size(history, index);
+  /* Grids of level `n` have `2 ^ (n - 1) + 1` points along each side. */
+  const int level = grid_size > 1 ? 1 + int(std::log2(grid_size - 1)) : 0;
+  if (level > mmd->totlvl) {
+    return false;
+  }
+  Mesh &mesh = *id_cast<Mesh *>(ob.data);
+  if (level == 0 && !bke::phantom_history::step_topology_matches(history, index, mesh)) {
+    return false;
+  }
+  /* Grids of another base mesh (from before Delete Lower or a remesh): checked before changing
+   * the level, which would otherwise change for nothing. */
+  if (level > 0 && bke::phantom_history::step_grids_num(history, index) != mesh.corners_num) {
+    return false;
+  }
+  bool base_moved = false;
+  if (level > 0) {
+    const int base_step = bke::phantom_history::last_mesh_step(history, index);
+    if (base_step != -1 && bke::phantom_history::step_topology_matches(history, base_step, mesh)) {
+      base_moved = bke::phantom_history::write_mesh_positions(history, base_step, mesh);
+    }
+  }
+  if (level == mmd->sculptlvl && !base_moved) {
+    return true;
+  }
+  /* Like setting the level in the modifier (Phantom keeps the viewport level the same, up to what
+   * Object Mode can draw: see #object_mode_level in Python). */
+  mmd->sculptlvl = char(level);
+  int viewport_level = level;
+  while (viewport_level > 0 &&
+         (int64_t(mesh.corners_num) << (2 * (viewport_level - 1))) > (int64_t(1) << 25))
+  {
+    viewport_level--;
+  }
+  mmd->lvl = char(viewport_level);
+  DEG_id_tag_update(&ob.id, ID_RECALC_GEOMETRY);
+  WM_main_add_notifier(NC_OBJECT | ND_MODIFIER, &ob);
+  Depsgraph &depsgraph = *CTX_data_ensure_evaluated_depsgraph(C);
+  BKE_sculptsession_update_for_edit(&depsgraph, &ob, false);
+  bke::object::pbvh_ensure(depsgraph, ob);
+  return true;
+}
+
+/**
  * Puts the mesh (or its Multires grids) in the state of step `index` and updates the sculpt
- * session for it. False when the step can't be shown now (another subdivision level).
+ * session for it. False when the step can't be shown now (see #show_step_level).
  */
 static bool apply_step(bContext *C, Object &ob, int index)
 {
@@ -85,6 +153,9 @@ static bool apply_step(bContext *C, Object &ob, int index)
   bke::phantom_history::ScopedPause pause;
   PhantomHistory &history = *ob.phantom_history;
   index = std::clamp(index, 0, history.steps_num - 1);
+  if (!show_step_level(C, ob, index)) {
+    return false;
+  }
   Depsgraph &depsgraph = *CTX_data_ensure_evaluated_depsgraph(C);
   SculptSession *ss = ob.runtime->sculpt_session;
   if (ss && ss->subdiv_ccg && ss->subdiv_ccg->masks.is_empty() &&

@@ -11,6 +11,7 @@
 #include "draw_view.bsl.hh"
 #include "gpu_shader_common_hash.bsl.hh"
 #include "gpu_shader_math_base.bsl.hh"
+#include "gpu_shader_math_vector_safe.bsl.hh"
 #include "workbench_common.bsl.hh"
 #include "workbench_image.bsl.hh"
 #include "workbench_matcap.bsl.hh"
@@ -174,6 +175,97 @@ struct MeshIn {
       custom_id, v_in.ac.rgb, v_out.color, v_out.alpha, v_out.roughness, v_out.metallic);
 
   v_out.matcap_layer = materials.matcap_layer_get(custom_id);
+}
+
+/**
+ * Phantom: sculpt mode shades every face flat at every resolution, like ZBrush: the normal is the
+ * plane of each triangle, worked out in the fragment shader, so sculpt batches need no normals.
+ *
+ * The polygroup colors and the mask tint the surface color here too, instead of the overlay
+ * engine drawing every triangle again to multiply the image by them (#sculpt_tint_in_workbench).
+ * Batches without them read zero, which the opacities (zero when not shown) make no tint.
+ */
+struct VertOutSculpt {
+  [[smooth]] float3 view_position;
+  [[smooth]] float3 color;
+  [[smooth]] float3 tint;
+  [[smooth]] float2 uv;
+  [[smooth]] float alpha;
+  [[flat]] int object_id;
+  [[flat]] float roughness;
+  [[flat]] float metallic;
+  [[flat]] int matcap_layer;
+};
+
+struct SculptIn {
+  [[attribute(0)]] float3 pos;
+  [[attribute(1)]] float4 ac;
+  [[attribute(2)]] float2 au;
+  [[attribute(3)]] float3 fset;
+  [[attribute(4)]] float msk;
+};
+
+struct SculptTint {
+  [[push_constant]] const float sculpt_mask_opacity;
+  [[push_constant]] const float sculpt_face_sets_opacity;
+};
+
+[[vertex]] void vert_sculpt([[resource_table]] color::Materials &materials,
+                            [[resource_table]] draw::View &views,
+                            [[resource_table]] draw::Model &models,
+                            [[resource_table]] draw::ResourceCustomID &resources,
+                            [[resource_table]] const Clipping &clip,
+                            [[resource_table]] const SculptTint &tint,
+                            [[clip_distance]] [[condition(use_clipping)]] float (&clip_distances)[6],
+                            [[instance_index]] const int inst_id,
+                            [[in]] const SculptIn &v_in,
+                            [[out]] VertOutSculpt &v_out,
+                            [[position]] float4 &out_position)
+{
+  int custom_id = int(resources.get_custom_id(inst_id));
+
+  draw::ID id = resources.get(inst_id);
+  ViewMatrices view = views.get(id.view_id<1>());
+  ObjectMatrices obj = models.get(id.resource_id<1>());
+
+  float3 world_pos = obj.point_object_to_world(v_in.pos);
+  out_position = view.point_world_to_homogenous(world_pos);
+  v_out.view_position = view.point_world_to_view(world_pos);
+
+  if (clip.constants.use_clipping) [[static_branch]] {
+    clip.set_clipping_distances(world_pos,
+                                clip_distances[0],
+                                clip_distances[1],
+                                clip_distances[2],
+                                clip_distances[3],
+                                clip_distances[4],
+                                clip_distances[5]);
+  }
+
+  v_out.uv = v_in.au;
+  v_out.object_id = int(id.resource_id<1>() & 0xFFFFu) + 1;
+
+  /* Same as the overlay's sculpt mask shader. */
+  v_out.tint = mix(float3(1.0f), v_in.fset, tint.sculpt_face_sets_opacity) *
+               (1.0f - v_in.msk * tint.sculpt_mask_opacity);
+
+  materials.material_data_get(
+      custom_id, v_in.ac.rgb, v_out.color, v_out.alpha, v_out.roughness, v_out.metallic);
+
+  v_out.matcap_layer = materials.matcap_layer_get(custom_id);
+}
+
+/**
+ * The view space normal of the triangle a sculpt fragment belongs to, oriented like a vertex
+ * normal would be: towards the viewer on front faces, away from it on back faces.
+ */
+float3 sculpt_face_normal(const ViewMatrices &view, float3 vP, bool facing)
+{
+  float3 N = safe_normalize(cross(gpu_dfdx(vP), gpu_dfdy(vP)));
+  if (dot(N, view.view_incident_vector(vP)) < 0.0f) {
+    N = -N;
+  }
+  return facing ? N : -N;
 }
 
 struct Curves {
@@ -410,6 +502,29 @@ struct OpaqueOut {
   }
 }
 
+[[fragment]] void frag_opaque_sculpt([[resource_table]] Resources &srt,
+                                     [[resource_table]] draw::View &views,
+                                     [[in]] const VertOutSculpt &v_out,
+                                     [[front_facing]] const bool facing,
+                                     [[out]] OpaqueOut &frag_out)
+{
+  const ViewMatrices view = views.get(0);
+  frag_out.object_id = uint(v_out.object_id);
+  frag_out.normal = normal_encode(facing, sculpt_face_normal(view, v_out.view_position, facing));
+
+  frag_out.material = float4(v_out.color, float_pair_encode(v_out.roughness, v_out.metallic));
+
+  if (srt.use_texture) [[static_branch]] {
+    frag_out.material.rgb = color::image_color(srt.texture, v_out.uv);
+  }
+  frag_out.material.rgb *= v_out.tint;
+
+  if (srt.lighting_mode == WORKBENCH_LIGHTING_MATCAP) [[static_branch]] {
+    /* See #frag_opaque. */
+    frag_out.material.a = float(facing) + 2.0f * float(v_out.matcap_layer);
+  }
+}
+
 struct TransparentOut {
   [[frag_color(0)]] float4 transparent_accum;
   [[frag_color(1)]] float4 revealage_accum;
@@ -460,6 +575,51 @@ struct TransparentOut {
     /* Listing 4. */
     alpha = v_out.alpha * world.world_data.xray_alpha;
   }
+  float weight = calculate_transparent_weight(frag_co.z, view.winmat) * alpha;
+
+  frag_out.transparent_accum = float4(shaded_color * weight, alpha);
+  frag_out.revealage_accum = float4(weight);
+
+  frag_out.object_id = uint(v_out.object_id);
+}
+
+[[fragment]] void frag_transparent_sculpt([[resource_table]] Resources &srt,
+                                          [[resource_table]] World &world,
+                                          [[resource_table]] draw::View &views,
+                                          [[frag_coord]] const float4 frag_co,
+                                          [[in]] const VertOutSculpt &v_out,
+                                          [[front_facing]] const bool facing,
+                                          [[out]] TransparentOut &frag_out)
+{
+  const ViewMatrices view = views.get(0);
+  /* Normal and Incident vector are in view-space. Lighting is evaluated in view-space. */
+  float2 uv_viewport = frag_co.xy * world.world_data.viewport_size_inv;
+  float3 vP = view.point_screen_to_view(float3(uv_viewport, 0.5f));
+  float3 I = view.view_incident_vector(vP);
+  float3 N = sculpt_face_normal(view, v_out.view_position, facing);
+
+  float3 color = v_out.color;
+
+  if (srt.use_texture) [[static_branch]] {
+    color = color::image_color(srt.texture, v_out.uv);
+  }
+  color *= v_out.tint;
+
+  float3 shaded_color = float3(0.0f, 1.0f, 1.0f);
+  if (srt.lighting_mode == WORKBENCH_LIGHTING_MATCAP) [[static_branch]] {
+    shaded_color = get_matcap_lighting(world, srt.matcap_tx, v_out.matcap_layer, color, N, I);
+  }
+  else if (srt.lighting_mode == WORKBENCH_LIGHTING_STUDIO) [[static_branch]] {
+    shaded_color = get_world_lighting(world, color, v_out.roughness, v_out.metallic, N, I);
+  }
+  else if (srt.lighting_mode == WORKBENCH_LIGHTING_FLAT) [[static_branch]] {
+    shaded_color = color;
+  }
+
+  shaded_color *= get_shadow(world, N, srt.force_shadowing);
+
+  /* Listing 4. */
+  float alpha = v_out.alpha * world.world_data.xray_alpha;
   float weight = calculate_transparent_weight(frag_co.z, view.winmat) * alpha;
 
   frag_out.transparent_accum = float4(shaded_color * weight, alpha);
@@ -565,6 +725,31 @@ PipelineGraphic gsplat_transparent_flat_material_clip(       vert_gsplat,     fr
 PipelineGraphic gsplat_transparent_flat_material_no_clip(    vert_gsplat,     frag_transparent, Resources{.lighting_mode = 2 /* WORKBENCH_LIGHTING_FLAT */,   .use_texture = false, .use_gsplat = true},  ClippingConstant{.use_clipping = false});
 PipelineGraphic gsplat_transparent_flat_texture_clip(        vert_gsplat,     frag_transparent, Resources{.lighting_mode = 2 /* WORKBENCH_LIGHTING_FLAT */,   .use_texture = true,  .use_gsplat = true},  ClippingConstant{.use_clipping = true });
 PipelineGraphic gsplat_transparent_flat_texture_no_clip(     vert_gsplat,     frag_transparent, Resources{.lighting_mode = 2 /* WORKBENCH_LIGHTING_FLAT */,   .use_texture = true,  .use_gsplat = true},  ClippingConstant{.use_clipping = false});
+/* Phantom: flat shaded sculpt meshes (#vert_sculpt). */
+PipelineGraphic sculpt_opaque_studio_material_clip(          vert_sculpt,     frag_opaque_sculpt,       Resources{.lighting_mode = 0 /* WORKBENCH_LIGHTING_STUDIO */, .use_texture = false, .use_gsplat = false}, ClippingConstant{.use_clipping = true });
+PipelineGraphic sculpt_opaque_studio_material_no_clip(       vert_sculpt,     frag_opaque_sculpt,       Resources{.lighting_mode = 0 /* WORKBENCH_LIGHTING_STUDIO */, .use_texture = false, .use_gsplat = false}, ClippingConstant{.use_clipping = false});
+PipelineGraphic sculpt_opaque_studio_texture_clip(           vert_sculpt,     frag_opaque_sculpt,       Resources{.lighting_mode = 0 /* WORKBENCH_LIGHTING_STUDIO */, .use_texture = true,  .use_gsplat = false}, ClippingConstant{.use_clipping = true });
+PipelineGraphic sculpt_opaque_studio_texture_no_clip(        vert_sculpt,     frag_opaque_sculpt,       Resources{.lighting_mode = 0 /* WORKBENCH_LIGHTING_STUDIO */, .use_texture = true,  .use_gsplat = false}, ClippingConstant{.use_clipping = false});
+PipelineGraphic sculpt_opaque_matcap_material_clip(          vert_sculpt,     frag_opaque_sculpt,       Resources{.lighting_mode = 1 /* WORKBENCH_LIGHTING_MATCAP */, .use_texture = false, .use_gsplat = false}, ClippingConstant{.use_clipping = true });
+PipelineGraphic sculpt_opaque_matcap_material_no_clip(       vert_sculpt,     frag_opaque_sculpt,       Resources{.lighting_mode = 1 /* WORKBENCH_LIGHTING_MATCAP */, .use_texture = false, .use_gsplat = false}, ClippingConstant{.use_clipping = false});
+PipelineGraphic sculpt_opaque_matcap_texture_clip(           vert_sculpt,     frag_opaque_sculpt,       Resources{.lighting_mode = 1 /* WORKBENCH_LIGHTING_MATCAP */, .use_texture = true,  .use_gsplat = false}, ClippingConstant{.use_clipping = true });
+PipelineGraphic sculpt_opaque_matcap_texture_no_clip(        vert_sculpt,     frag_opaque_sculpt,       Resources{.lighting_mode = 1 /* WORKBENCH_LIGHTING_MATCAP */, .use_texture = true,  .use_gsplat = false}, ClippingConstant{.use_clipping = false});
+PipelineGraphic sculpt_opaque_flat_material_clip(            vert_sculpt,     frag_opaque_sculpt,       Resources{.lighting_mode = 2 /* WORKBENCH_LIGHTING_FLAT */, .use_texture = false, .use_gsplat = false}, ClippingConstant{.use_clipping = true });
+PipelineGraphic sculpt_opaque_flat_material_no_clip(         vert_sculpt,     frag_opaque_sculpt,       Resources{.lighting_mode = 2 /* WORKBENCH_LIGHTING_FLAT */, .use_texture = false, .use_gsplat = false}, ClippingConstant{.use_clipping = false});
+PipelineGraphic sculpt_opaque_flat_texture_clip(             vert_sculpt,     frag_opaque_sculpt,       Resources{.lighting_mode = 2 /* WORKBENCH_LIGHTING_FLAT */, .use_texture = true,  .use_gsplat = false}, ClippingConstant{.use_clipping = true });
+PipelineGraphic sculpt_opaque_flat_texture_no_clip(          vert_sculpt,     frag_opaque_sculpt,       Resources{.lighting_mode = 2 /* WORKBENCH_LIGHTING_FLAT */, .use_texture = true,  .use_gsplat = false}, ClippingConstant{.use_clipping = false});
+PipelineGraphic sculpt_transparent_studio_material_clip(     vert_sculpt,     frag_transparent_sculpt,  Resources{.lighting_mode = 0 /* WORKBENCH_LIGHTING_STUDIO */, .use_texture = false, .use_gsplat = false}, ClippingConstant{.use_clipping = true });
+PipelineGraphic sculpt_transparent_studio_material_no_clip(  vert_sculpt,     frag_transparent_sculpt,  Resources{.lighting_mode = 0 /* WORKBENCH_LIGHTING_STUDIO */, .use_texture = false, .use_gsplat = false}, ClippingConstant{.use_clipping = false});
+PipelineGraphic sculpt_transparent_studio_texture_clip(      vert_sculpt,     frag_transparent_sculpt,  Resources{.lighting_mode = 0 /* WORKBENCH_LIGHTING_STUDIO */, .use_texture = true,  .use_gsplat = false}, ClippingConstant{.use_clipping = true });
+PipelineGraphic sculpt_transparent_studio_texture_no_clip(   vert_sculpt,     frag_transparent_sculpt,  Resources{.lighting_mode = 0 /* WORKBENCH_LIGHTING_STUDIO */, .use_texture = true,  .use_gsplat = false}, ClippingConstant{.use_clipping = false});
+PipelineGraphic sculpt_transparent_matcap_material_clip(     vert_sculpt,     frag_transparent_sculpt,  Resources{.lighting_mode = 1 /* WORKBENCH_LIGHTING_MATCAP */, .use_texture = false, .use_gsplat = false}, ClippingConstant{.use_clipping = true });
+PipelineGraphic sculpt_transparent_matcap_material_no_clip(  vert_sculpt,     frag_transparent_sculpt,  Resources{.lighting_mode = 1 /* WORKBENCH_LIGHTING_MATCAP */, .use_texture = false, .use_gsplat = false}, ClippingConstant{.use_clipping = false});
+PipelineGraphic sculpt_transparent_matcap_texture_clip(      vert_sculpt,     frag_transparent_sculpt,  Resources{.lighting_mode = 1 /* WORKBENCH_LIGHTING_MATCAP */, .use_texture = true,  .use_gsplat = false}, ClippingConstant{.use_clipping = true });
+PipelineGraphic sculpt_transparent_matcap_texture_no_clip(   vert_sculpt,     frag_transparent_sculpt,  Resources{.lighting_mode = 1 /* WORKBENCH_LIGHTING_MATCAP */, .use_texture = true,  .use_gsplat = false}, ClippingConstant{.use_clipping = false});
+PipelineGraphic sculpt_transparent_flat_material_clip(       vert_sculpt,     frag_transparent_sculpt,  Resources{.lighting_mode = 2 /* WORKBENCH_LIGHTING_FLAT */, .use_texture = false, .use_gsplat = false}, ClippingConstant{.use_clipping = true });
+PipelineGraphic sculpt_transparent_flat_material_no_clip(    vert_sculpt,     frag_transparent_sculpt,  Resources{.lighting_mode = 2 /* WORKBENCH_LIGHTING_FLAT */, .use_texture = false, .use_gsplat = false}, ClippingConstant{.use_clipping = false});
+PipelineGraphic sculpt_transparent_flat_texture_clip(        vert_sculpt,     frag_transparent_sculpt,  Resources{.lighting_mode = 2 /* WORKBENCH_LIGHTING_FLAT */, .use_texture = true,  .use_gsplat = false}, ClippingConstant{.use_clipping = true });
+PipelineGraphic sculpt_transparent_flat_texture_no_clip(     vert_sculpt,     frag_transparent_sculpt,  Resources{.lighting_mode = 2 /* WORKBENCH_LIGHTING_FLAT */, .use_texture = true,  .use_gsplat = false}, ClippingConstant{.use_clipping = false});
 /* clang-format on */
 
 }  // namespace workbench::prepass

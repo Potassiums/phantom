@@ -28,6 +28,8 @@
 
 #include "GPU_capabilities.hh"
 
+#include "draw_sculpt.hh"
+
 namespace blender::workbench {
 
 /* Used for update detection on the render settings. */
@@ -264,6 +266,22 @@ void SceneState::init(const DRWContext *context,
                              (scene->toolsettings->sculpt->paint.debug_flags &
                               PAINT_DEBUG_SHOW_BVH_NODES) != 0 :
                              false;
+
+  float mask_opacity = 0.0f;
+  float face_sets_opacity = 0.0f;
+  if (sculpt_tint_in_workbench(v3d)) {
+    if (v3d->overlay.flag & V3D_OVERLAY_SCULPT_SHOW_MASK) {
+      mask_opacity = v3d->overlay.sculpt_mode_mask_opacity;
+    }
+    if (v3d->overlay.flag & V3D_OVERLAY_SCULPT_SHOW_FACE_SETS) {
+      face_sets_opacity = v3d->overlay.sculpt_mode_face_sets_opacity;
+    }
+  }
+  if (assign_if_different(sculpt_mask_opacity, mask_opacity) |
+      assign_if_different(sculpt_face_sets_opacity, face_sets_opacity))
+  {
+    reset_taa = true;
+  }
 
   if (reset_taa || samples_len <= 1) {
     sample = 0;

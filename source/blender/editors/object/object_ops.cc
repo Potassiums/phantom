@@ -133,6 +133,7 @@ void operatortypes_object()
   WM_operatortype_append(OBJECT_OT_multires_subdivide);
   WM_operatortype_append(OBJECT_OT_multires_reshape);
   WM_operatortype_append(OBJECT_OT_multires_higher_levels_delete);
+  WM_operatortype_append(OBJECT_OT_multires_lower_levels_delete);
   WM_operatortype_append(OBJECT_OT_multires_base_apply);
   WM_operatortype_append(OBJECT_OT_multires_unsubdivide);
   WM_operatortype_append(OBJECT_OT_multires_rebuild_subdiv);

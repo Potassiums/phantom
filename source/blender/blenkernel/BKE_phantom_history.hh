@@ -23,6 +23,7 @@
  */
 
 #include "BLI_array.hh"
+#include "BLI_bit_span.hh"
 #include "BLI_math_vector_types.hh"
 #include "BLI_string_ref.hh"
 
@@ -71,8 +72,15 @@ void begin_edit(Object &ob, StringRef name);
  * After an edit: add a step with what changed since the current step (nothing when nothing
  * moved). `topology_changed` makes it a keyframe. Steps after the current one are dropped first,
  * and the oldest ones after, past the limit.
+ *
+ * `touched` (one bit per point, optional) holds every point the edit may have changed: only those
+ * are compared, rather than the whole mesh. The first edit recorded in a sculpt session (and after
+ * undo moved the history) still compares every point, to catch changes made outside of it.
  */
-void record(Object &ob, StringRef name, bool topology_changed);
+void record(Object &ob, StringRef name, bool topology_changed, BitSpan touched = {});
+
+/** The object's sculpt session ended: the mesh may change before the next edit is recorded. */
+void session_ended(Object &ob);
 
 /** While alive, #begin_edit and #record do nothing. */
 class ScopedPause {
@@ -92,6 +100,20 @@ StepShape step_shape(const PhantomHistory &history, int index);
 
 /** Whether anything is masked at step `index`. */
 bool step_has_mask(const PhantomHistory &history, int index);
+
+/** The size of the Multires grids step `index` was sculpted on, or 0 for the mesh itself. */
+int step_grid_size(const PhantomHistory &history, int index);
+/** The number of Multires grids of step `index` (one per base mesh face corner), or 0. */
+int step_grids_num(const PhantomHistory &history, int index);
+/** Whether step `index` is of the mesh (not grids) with the same faces as `mesh`. */
+bool step_topology_matches(const PhantomHistory &history, int index, const Mesh &mesh);
+/**
+ * Multires: the last step at or before `index` of the mesh itself (not grids), whose positions the
+ * base mesh had at step `index` (sculpting the grids doesn't move it); -1 when there is none.
+ */
+int last_mesh_step(const PhantomHistory &history, int index);
+/** Give `mesh` the positions of step `index` (of the mesh, same faces); false when it had them. */
+bool write_mesh_positions(const PhantomHistory &history, int index, Mesh &mesh);
 
 /**
  * Whether the mesh (or its Multires grids in Sculpt Mode) is exactly in the shape and mask of the

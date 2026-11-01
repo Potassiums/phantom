@@ -1171,6 +1171,9 @@ class VIEW3D_PT_sculpt_options(Panel, View3DPaintPanel):
 
         col = layout.column(heading="Display", align=True)
         col.prop(sculpt, "show_low_resolution")
+        sub = col.column(align=True)
+        sub.active = sculpt.show_low_resolution
+        sub.prop(sculpt, "show_low_resolution_mesh", text="Meshes Too")
         col.prop(sculpt, "use_sculpt_delay_updates")
         col.prop(sculpt, "use_deform_only")
 

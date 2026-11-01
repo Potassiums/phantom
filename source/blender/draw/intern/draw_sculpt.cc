@@ -21,10 +21,16 @@
 #include "BKE_object.hh"
 #include "BKE_object_types.hh"
 #include "BKE_paint.hh"
+#include "BKE_subdiv_ccg.hh"
 
 #include "BLI_math_matrix.hh"
 
+#include "DEG_depsgraph_query.hh"
+#include "DNA_view3d_types.h"
+
 #include "bmesh_class.hh"
+
+#include "ED_view3d.hh"
 
 #include "DRW_pbvh.hh"
 #include "DRW_render.hh"
@@ -48,9 +54,87 @@ float3 SculptBatch::debug_color()
   return colors[debug_index % 9];
 }
 
+/**
+ * Phantom: the visible nodes minus those whose triangles all face away from the viewer. On a
+ * closed mesh wound outwards and seen from outside, those are behind front faces, so the picture
+ * stays the same. Not done where back faces can show or matter: X-ray, clipping regions, a near
+ * plane cutting the mesh, selection.
+ */
+static IndexMask cull_back_facing_nodes(const Object &ob,
+                                        const bke::pbvh::Tree &pbvh,
+                                        pbvh::DrawCache &draw_data,
+                                        const IndexMask &visible_nodes,
+                                        const float4 &near_plane,
+                                        IndexMaskMemory &memory)
+{
+  const DRWContext *drwctx = DRW_context_get();
+  const View3D *v3d = drwctx->v3d;
+  const RegionView3D *rv3d = drwctx->rv3d;
+  /* Debug value 7371 turns the culling off, to compare. */
+  if (!v3d || !rv3d || XRAY_ENABLED(v3d) || RV3D_CLIPPING_ENABLED(v3d, rv3d) ||
+      drwctx->is_select() || G.debug_value == 7371)
+  {
+    return visible_nodes;
+  }
+  /* The whole mesh must be in front of the near plane, or its inside shows through the cut. */
+  const Bounds<float3> bounds = bke::pbvh::bounds_get(pbvh);
+  float3 nearest;
+  for (const int axis : IndexRange(3)) {
+    nearest[axis] = near_plane[axis] < 0.0f ? bounds.max[axis] : bounds.min[axis];
+  }
+  if (math::dot(near_plane.xyz(), nearest) + near_plane.w <= 0.0f) {
+    return visible_nodes;
+  }
+  /* While sculpting, the nodes the brush changes face the viewer: leave their cones for later. */
+  const bool painting = rv3d->rflag & RV3D_PAINTING;
+  const Span<pbvh::NormalCone> cones = draw_data.ensure_normal_cones(
+      ob, visible_nodes, painting);
+  if (cones.is_empty()) {
+    return visible_nodes;
+  }
+
+  const View &view = View::default_get();
+  const float4x4 &world_to_object = ob.world_to_object();
+  const bool is_persp = view.is_persp();
+  const float3 eye = math::transform_point(world_to_object, view.location());
+  const float3 view_dir = math::normalize(
+      math::transform_direction(world_to_object, -view.forward()));
+  auto node_bounds = [&](const int i) -> const Bounds<float3> & {
+    switch (pbvh.type()) {
+      case bke::pbvh::Type::Mesh:
+        return pbvh.nodes<bke::pbvh::MeshNode>()[i].bounds();
+      case bke::pbvh::Type::Grids:
+        return pbvh.nodes<bke::pbvh::GridsNode>()[i].bounds();
+      case bke::pbvh::Type::BMesh:
+        break;
+    }
+    return pbvh.nodes<bke::pbvh::BMeshNode>()[i].bounds();
+  };
+  return IndexMask::from_predicate(visible_nodes, memory, [&](const int i) {
+    const pbvh::NormalCone &cone = cones[i];
+    if (cone.sin_angle > 1.0f) {
+      return true;
+    }
+    if (!is_persp) {
+      /* Every triangle faces away when the view direction is within 90 degrees minus the cone's
+       * angle of the axis. */
+      return math::dot(cone.axis, view_dir) <= cone.sin_angle;
+    }
+    /* The same for every direction from the eye to a point of the node's bounding sphere. */
+    const Bounds<float3> &b = node_bounds(i);
+    const float3 center = math::midpoint(b.min, b.max);
+    const float radius = math::distance(b.min, b.max) * 0.5f;
+    const float3 to_center = center - eye;
+    const float distance = math::length(to_center);
+    return math::dot(cone.axis, to_center) <=
+           cone.sin_angle * distance + radius * (1.0f + cone.sin_angle);
+  });
+}
+
 static Vector<SculptBatch> sculpt_batches_get_ex(const Object *ob,
                                                  const bool use_wire,
-                                                 const Span<pbvh::AttributeRequest> attrs)
+                                                 const Span<pbvh::AttributeRequest> attrs,
+                                                 const bool multi_draw = false)
 {
   /* pbvh::Tree should always exist for non-empty meshes, created by depsgraph eval. */
   bke::pbvh::Tree *pbvh = ob->runtime->sculpt_session ?
@@ -85,6 +169,10 @@ static Vector<SculptBatch> sculpt_batches_get_ex(const Object *ob,
   bool fast_mode = false;
   if (paint && (paint->flags & PAINT_FAST_NAVIGATE)) {
     fast_mode = navigating;
+    /* Phantom: meshes without multires have a coarse version too, used when opted into. */
+    if (pbvh->type() == bke::pbvh::Type::Mesh && !(paint->flags & PAINT_FAST_NAVIGATE_MESH)) {
+      fast_mode = false;
+    }
   }
 
   /* Update draw buffers only for visible nodes while painting.
@@ -105,14 +193,35 @@ static Vector<SculptBatch> sculpt_batches_get_ex(const Object *ob,
                bke::pbvh::node_frustum_contain_aabb(node, draw_frustum_planes);
       });
 
+  const IndexMask drawn_nodes = cull_back_facing_nodes(
+      *ob, *pbvh, draw_data, visible_nodes, draw_frustum_planes[4], memory);
+
   /* In the future we expect that update_only_visible nodes will be removed to support GPU driven
    * pipelines better. Only visible nodes is an CPU based optimization but does not provide the GPU
-   * with the actual data it needs. */
-  const IndexMask nodes_to_update = update_only_visible ? visible_nodes :
-                                                          bke::pbvh::all_leaf_nodes(*pbvh, memory);
+   * with the actual data it needs.
+   *
+   * Phantom: while navigating with the coarse geometry, only the nodes drawn need it, so it is
+   * built (#DrawCache) for the nodes facing the view, and for others as they come into view. */
+  const IndexMask nodes_to_update = fast_mode ? drawn_nodes :
+                                    update_only_visible ?
+                                                visible_nodes :
+                                                bke::pbvh::all_leaf_nodes(*pbvh, memory);
 
   Span<Batch *> batches;
-  if (use_wire) {
+  /* Phantom: with multi-draw, one batch for all nodes and each node's range of its indices. */
+  Batch *shared_batch = nullptr;
+  Vector<IndexRange> node_indices;
+  if (multi_draw) {
+    shared_batch = use_wire ?
+                       draw_data.ensure_lines_shared_batch(
+                           *ob, {{}, fast_mode}, nodes_to_update, node_indices) :
+                       draw_data.ensure_tris_shared_batch(
+                           *ob, {attrs, fast_mode}, nodes_to_update, node_indices);
+    if (shared_batch == nullptr) {
+      return {};
+    }
+  }
+  else if (use_wire) {
     batches = draw_data.ensure_lines_batches(*ob, {{}, fast_mode}, nodes_to_update);
   }
   else {
@@ -123,15 +232,25 @@ static Vector<SculptBatch> sculpt_batches_get_ex(const Object *ob,
 
   const int max_material = std::max(0, BKE_object_material_count_eval(ob) - 1);
   Vector<SculptBatch> result_batches;
-  result_batches.reserve(visible_nodes.size());
-  visible_nodes.foreach_index([&](const int i, const int pos) {
-    /* Skip nodes without any visible geometry, for example when all faces are hidden but some
-     * vertices are not. */
-    if (batches[i] == nullptr || batches[i]->gpu_batch()->elem_() == nullptr) {
-      return;
-    }
+  result_batches.reserve(drawn_nodes.size());
+  drawn_nodes.foreach_index([&](const int i, const int pos) {
     SculptBatch batch = {};
-    batch.batch = batches[i];
+    if (multi_draw) {
+      if (node_indices[i].is_empty()) {
+        return;
+      }
+      batch.batch = shared_batch;
+      batch.indices = node_indices[i];
+      batch.use_indices = true;
+    }
+    else {
+      /* Skip nodes without any visible geometry, for example when all faces are hidden but some
+       * vertices are not. */
+      if (batches[i] == nullptr || batches[i]->gpu_batch()->elem_() == nullptr) {
+        return;
+      }
+      batch.batch = batches[i];
+    }
     batch.material_slot = material_indices.is_empty() ?
                               0 :
                               std::clamp(material_indices[i], 0, max_material);
@@ -147,7 +266,9 @@ Vector<SculptBatch> sculpt_batches_get(const Object *ob, SculptBatchFeature feat
   Vector<pbvh::AttributeRequest, 16> attrs;
 
   attrs.append(pbvh::CustomRequest::Position);
-  attrs.append(pbvh::CustomRequest::Normal);
+  if (!(features & SCULPT_BATCH_NO_NORMAL)) {
+    attrs.append(pbvh::CustomRequest::Normal);
+  }
   if (features & SCULPT_BATCH_MASK) {
     attrs.append(pbvh::CustomRequest::Mask);
   }
@@ -169,7 +290,8 @@ Vector<SculptBatch> sculpt_batches_get(const Object *ob, SculptBatchFeature feat
     }
   }
 
-  return sculpt_batches_get_ex(ob, features & SCULPT_BATCH_WIREFRAME, attrs);
+  return sculpt_batches_get_ex(
+      ob, features & SCULPT_BATCH_WIREFRAME, attrs, features & SCULPT_BATCH_MULTI_DRAW);
 }
 
 Vector<SculptBatch> sculpt_batches_per_material_get(const Object *ob,
@@ -196,6 +318,33 @@ Vector<SculptBatch> sculpt_batches_per_material_get(const Object *ob,
   }
 
   return sculpt_batches_get_ex(ob, false, attrs);
+}
+
+bool sculpt_tint_in_workbench(const View3D *v3d)
+{
+  /* Solid shading is always drawn by Workbench. */
+  return v3d && v3d->shading.type == OB_SOLID && G.debug_value != 7372;
+}
+
+bool sculpt_has_mask(const Object &object)
+{
+  const SculptSession *ss = object.runtime->sculpt_session;
+  const bke::pbvh::Tree *pbvh = bke::object::pbvh_get(object);
+  if (!ss || !pbvh) {
+    return false;
+  }
+  /* The original data: sculpt mode skips depsgraph updates of the evaluated data. */
+  const Object &object_orig = *DEG_get_original(&object);
+  switch (pbvh->type()) {
+    case bke::pbvh::Type::Mesh:
+      return DRW_object_get_data_for_drawing<Mesh>(object_orig).attributes().contains(
+          ".sculpt_mask");
+    case bke::pbvh::Type::Grids:
+      return !ss->subdiv_ccg->masks.is_empty();
+    case bke::pbvh::Type::BMesh:
+      return CustomData_has_layer_named(&ss->bm->vdata, CD_PROP_FLOAT, ".sculpt_mask");
+  }
+  return false;
 }
 
 }  // namespace blender::draw

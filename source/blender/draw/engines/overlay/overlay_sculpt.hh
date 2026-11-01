@@ -215,16 +215,21 @@ class Sculpts : Overlay {
     }
 
     const bool use_pbvh = BKE_sculptsession_use_pbvh_draw(ob_ref.object, state.rv3d);
+    if (use_pbvh && sculpt_tint_in_workbench(state.v3d)) {
+      /* Phantom: Workbench tinted the surface when drawing it. */
+      return;
+    }
     if (use_pbvh) {
       ResourceHandleRange handle = manager.unique_handle_for_sculpt(ob_ref);
 
       SculptBatchFeature sculpt_batch_features_ = (show_face_set_ ? SCULPT_BATCH_FACE_SET :
                                                                     SCULPT_BATCH_DEFAULT) |
                                                   (show_mask_ ? SCULPT_BATCH_MASK :
-                                                                SCULPT_BATCH_DEFAULT);
+                                                                SCULPT_BATCH_DEFAULT) |
+                                                  SCULPT_BATCH_NO_NORMAL | SCULPT_BATCH_MULTI_DRAW;
 
       for (SculptBatch &batch : sculpt_batches_get(ob_ref.object, sculpt_batch_features_)) {
-        mesh_ps_->draw(batch.batch, handle);
+        batch.draw(*mesh_ps_, handle);
       }
     }
     else {

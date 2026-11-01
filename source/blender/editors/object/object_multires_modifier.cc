@@ -22,6 +22,7 @@
 #include "BKE_paint.hh"
 #include "BKE_report.hh"
 
+#include "BLI_listbase_iterator.hh"
 #include "BLI_path_utils.hh"
 #include "BLI_string_utf8.hh"
 
@@ -90,6 +91,100 @@ void OBJECT_OT_multires_higher_levels_delete(wmOperatorType *ot)
 
   /* flags */
   ot->flag = OPTYPE_REGISTER | OPTYPE_UNDO | OPTYPE_INTERNAL;
+  edit_modifier_properties(ot);
+}
+
+/** \} */
+
+/* ------------------------------------------------------------------- */
+/** \name Phantom: Multires Delete Lower Levels Operator
+ * \{ */
+
+/** The level sculpted in Sculpt Mode, shown in Object Mode. */
+static int multires_current_level(const Object &object, const MultiresModifierData &mmd)
+{
+  return (object.mode & OB_MODE_SCULPT) ? mmd.sculptlvl : mmd.lvl;
+}
+
+static wmOperatorStatus multires_lower_levels_delete_exec(bContext *C, wmOperator *op)
+{
+  Object *object = context_active_object(C);
+  MultiresModifierData *mmd = reinterpret_cast<MultiresModifierData *>(
+      edit_modifier_property_get(op, object, eModifierType_Multires));
+  if (!mmd) {
+    return OPERATOR_CANCELLED;
+  }
+  const int level = multires_current_level(*object, *mmd);
+  if (level == 0) {
+    BKE_report(op->reports, RPT_ERROR, "There are no levels below this one");
+    return OPERATOR_CANCELLED;
+  }
+  Mesh *mesh = id_cast<Mesh *>(object->data);
+  if (mesh->key) {
+    BKE_report(op->reports, RPT_ERROR, "Delete Lower doesn't work with shape keys");
+    return OPERATOR_CANCELLED;
+  }
+  if (ID_REAL_USERS(&mesh->id) > 1) {
+    BKE_report(op->reports, RPT_ERROR, "The mesh is used by other objects too");
+    return OPERATOR_CANCELLED;
+  }
+  /* The base mesh would take on the deformation of the modifiers above Multires. */
+  for (ModifierData &md : object->modifiers) {
+    if (&md == &mmd->modifier) {
+      break;
+    }
+    if (md.mode & eModifierMode_Realtime) {
+      BKE_report(op->reports, RPT_ERROR, "Apply or turn off the modifiers above Multires first");
+      return OPERATOR_CANCELLED;
+    }
+  }
+  const int old_faces = mesh->faces_num;
+
+  ed::sculpt_paint::undo::push_multires_mesh_begin(C, op->type->name);
+  Depsgraph *depsgraph = CTX_data_ensure_evaluated_depsgraph(C);
+  const bool done = multiresModifier_del_lower_levels(depsgraph, object, mmd, level);
+  ed::sculpt_paint::undo::push_multires_mesh_end(C, op->type->name);
+  if (!done) {
+    BKE_report(op->reports, RPT_ERROR, "Couldn't delete the lower levels of this mesh");
+    return OPERATOR_CANCELLED;
+  }
+
+  DEG_id_tag_update(&object->id, ID_RECALC_GEOMETRY);
+  WM_event_add_notifier(C, NC_OBJECT | ND_MODIFIER, object);
+  BKE_reportf(op->reports,
+              RPT_INFO,
+              "Deleted %d lower level%s: the base mesh went from %d to %d faces",
+              level,
+              level == 1 ? "" : "s",
+              old_faces,
+              id_cast<Mesh *>(object->data)->faces_num);
+  return OPERATOR_FINISHED;
+}
+
+static wmOperatorStatus multires_lower_levels_delete_invoke(bContext *C,
+                                                            wmOperator *op,
+                                                            const wmEvent * /*event*/)
+{
+  if (edit_modifier_invoke_properties(C, op)) {
+    return multires_lower_levels_delete_exec(C, op);
+  }
+  return OPERATOR_CANCELLED;
+}
+
+void OBJECT_OT_multires_lower_levels_delete(wmOperatorType *ot)
+{
+  ot->name = "Delete Lower Levels";
+  ot->description =
+      "Make the current level the base mesh, deleting the levels below it (the levels above keep "
+      "their shape)";
+  ot->idname = "OBJECT_OT_multires_lower_levels_delete";
+
+  ot->poll = multires_poll;
+  ot->invoke = multires_lower_levels_delete_invoke;
+  ot->exec = multires_lower_levels_delete_exec;
+
+  /* The undo step is pushed by hand: in Sculpt Mode it holds the mesh and the levels. */
+  ot->flag = OPTYPE_REGISTER | OPTYPE_INTERNAL;
   edit_modifier_properties(ot);
 }
 

@@ -65,8 +65,11 @@ class ModeTransfer : Overlay {
     if (use_sculpt_pbvh) {
       ResourceHandleRange handle = manager.unique_handle_for_sculpt(ob_ref);
 
-      for (SculptBatch &batch : sculpt_batches_get(ob_ref.object, SCULPT_BATCH_DEFAULT)) {
-        ps_.draw(batch.batch, handle);
+      for (SculptBatch &batch : sculpt_batches_get(ob_ref.object,
+                                                            SCULPT_BATCH_NO_NORMAL |
+                                                                SCULPT_BATCH_MULTI_DRAW))
+      {
+        batch.draw(ps_, handle);
       }
     }
     else {

@@ -283,12 +283,24 @@ static void panel_draw(const bContext *C, Panel *panel)
 {
   ui::Layout &layout = *panel->layout;
 
-  PointerRNA *ptr = modifier_panel_get_property_pointers(panel, nullptr);
+  PointerRNA ob_ptr;
+  PointerRNA *ptr = modifier_panel_get_property_pointers(panel, &ob_ptr);
 
   layout.use_property_split_set(true);
 
   ui::Layout &col = layout.column(true);
   col.prop(ptr, "levels", UI_ITEM_NONE, IFACE_("Levels Viewport"), ICON_NONE);
+  /* Phantom: Object Mode's draw buffers hold every face corner, and overflow past about 33
+   * million faces (Sculpt Mode draws any level). */
+  const MultiresModifierData *mmd = static_cast<const MultiresModifierData *>(ptr->data);
+  const Object *ob = static_cast<const Object *>(ob_ptr.data);
+  if (ob && ob->type == OB_MESH && mmd->lvl > 0) {
+    const Mesh &mesh = *id_cast<const Mesh *>(ob->data);
+    if ((int64_t(mesh.corners_num) << (2 * (mmd->lvl - 1))) > (int64_t(1) << 25)) {
+      col.label(IFACE_("Too many faces to show in Object Mode: lower Levels Viewport"),
+                ICON_ERROR);
+    }
+  }
   col.prop(ptr, "sculpt_levels", UI_ITEM_NONE, IFACE_("Sculpt"), ICON_NONE);
   col.prop(ptr, "render_levels", UI_ITEM_NONE, IFACE_("Render"), ICON_NONE);
 
@@ -353,6 +365,12 @@ static void subdivisions_panel_draw(const bContext * /*C*/, Panel *panel)
   layout.separator();
 
   layout.op("OBJECT_OT_multires_unsubdivide", IFACE_("Unsubdivide"), ICON_NONE);
+  /* Phantom: Delete Lower, like ZBrush (the current level becomes the base mesh). */
+  ui::Layout &delete_lower = layout.row(false);
+  const int current_level = RNA_enum_get(&ob_ptr, "mode") == OB_MODE_SCULPT ? mmd->sculptlvl :
+                                                                               mmd->lvl;
+  delete_lower.enabled_set(current_level > 0);
+  delete_lower.op("OBJECT_OT_multires_lower_levels_delete", IFACE_("Delete Lower"), ICON_NONE);
   layout.op("OBJECT_OT_multires_higher_levels_delete", IFACE_("Delete Higher"), ICON_NONE);
 }
 

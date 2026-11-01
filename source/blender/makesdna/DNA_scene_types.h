@@ -1187,6 +1187,8 @@ enum ePaintFlags : int {
   PAINT_SHOW_BRUSH_ON_SURFACE = (1 << 2),
   PAINT_USE_CAVITY_MASK = (1 << 3),
   PAINT_SCULPT_DELAY_UPDATES = (1 << 4),
+  /** Phantom: #PAINT_FAST_NAVIGATE also applies to meshes without Multires. */
+  PAINT_FAST_NAVIGATE_MESH = (1 << 5),
 };
 ENUM_OPERATORS(ePaintFlags)
 

@@ -221,6 +221,8 @@ void OBJECT_OT_modifier_set_active(wmOperatorType *ot);
 void OBJECT_OT_multires_subdivide(wmOperatorType *ot);
 void OBJECT_OT_multires_reshape(wmOperatorType *ot);
 void OBJECT_OT_multires_higher_levels_delete(wmOperatorType *ot);
+/** Phantom. */
+void OBJECT_OT_multires_lower_levels_delete(wmOperatorType *ot);
 void OBJECT_OT_multires_base_apply(wmOperatorType *ot);
 void OBJECT_OT_multires_unsubdivide(wmOperatorType *ot);
 void OBJECT_OT_multires_rebuild_subdiv(wmOperatorType *ot);

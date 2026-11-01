@@ -746,6 +746,14 @@ static void rna_def_paint(BlenderRNA *brna)
       prop, "Fast Navigate", "For multires, show low resolution while navigating the view");
   RNA_def_property_update(prop, NC_SCENE | ND_TOOLSETTINGS, nullptr);
 
+  prop = RNA_def_property(srna, "show_low_resolution_mesh", PROP_BOOLEAN, PROP_NONE);
+  RNA_def_property_boolean_sdna(prop, nullptr, "flags", PAINT_FAST_NAVIGATE_MESH);
+  RNA_def_property_ui_text(prop,
+                           "Fast Navigate Meshes",
+                           "Also show a lower resolution version of meshes without multires while "
+                           "navigating the view");
+  RNA_def_property_update(prop, NC_SCENE | ND_TOOLSETTINGS, nullptr);
+
   prop = RNA_def_property(srna, "use_sculpt_delay_updates", PROP_BOOLEAN, PROP_NONE);
   RNA_def_property_boolean_sdna(prop, nullptr, "flags", PAINT_SCULPT_DELAY_UPDATES);
   RNA_def_property_ui_text(

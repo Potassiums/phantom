@@ -13,8 +13,9 @@
 
 namespace blender::workbench {
 
-enum class eGeometryType { MESH = 0, CURVES, POINTCLOUD, GSPLAT };
-static constexpr int geometry_type_len = static_cast<int>(eGeometryType::GSPLAT) + 1;
+/** Phantom: #SCULPT is a mesh in Sculpt Mode, shaded flat from its positions. */
+enum class eGeometryType { MESH = 0, CURVES, POINTCLOUD, GSPLAT, SCULPT };
+static constexpr int geometry_type_len = static_cast<int>(eGeometryType::SCULPT) + 1;
 
 static inline const char *get_name(eGeometryType type)
 {
@@ -27,6 +28,8 @@ static inline const char *get_name(eGeometryType type)
       return "PointCloud";
     case eGeometryType::GSPLAT:
       return "GSplat";
+    case eGeometryType::SCULPT:
+      return "Sculpt";
     default:
       BLI_assert_unreachable();
       return "";

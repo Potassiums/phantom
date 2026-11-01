@@ -200,6 +200,13 @@ struct SceneState {
 
   bool show_paint_bvh_debug = false;
 
+  /**
+   * Phantom: the opacity of the mask and of polygroup colors on sculpt meshes, when Workbench
+   * draws them (#sculpt_tint_in_workbench); zero when they aren't shown.
+   */
+  float sculpt_mask_opacity = 0.0f;
+  float sculpt_face_sets_opacity = 0.0f;
+
   void init(const DRWContext *context, bool scene_updated, Object *camera_ob = nullptr);
 };
 
@@ -334,6 +341,8 @@ class MeshPass : public PassMain {
   ePipelineType pipeline_;
   eLightingType lighting_;
   bool clip_;
+  /** Phantom: mask and polygroup opacity for sculpt meshes (#SceneState::sculpt_mask_opacity). */
+  float2 sculpt_tint_opacity_ = float2(0.0f);
 
   bool is_empty_ = false;
 
@@ -346,7 +355,10 @@ class MeshPass : public PassMain {
   bool is_empty() const;
 
   void init_pass(SceneResources &resources, DRWState state, int clip_planes);
-  void init_subpasses(ePipelineType pipeline, eLightingType lighting, bool clip);
+  void init_subpasses(ePipelineType pipeline,
+                      eLightingType lighting,
+                      bool clip,
+                      const SceneState &scene_state);
 
   PassMain::Sub &get_subpass(eGeometryType geometry_type,
                              const MaterialTexture *texture = nullptr);

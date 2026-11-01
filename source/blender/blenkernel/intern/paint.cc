@@ -67,6 +67,7 @@
 #include "BKE_paint.hh"
 #include "BKE_paint_bvh.hh"
 #include "BKE_paint_types.hh"
+#include "BKE_phantom_history.hh"
 #include "BKE_scene.hh"
 #include "BKE_subdiv_ccg.hh"
 
@@ -2130,6 +2131,8 @@ void BKE_sculptsession_free(Object *ob)
     MEM_delete(ss);
 
     ob->runtime->sculpt_session = nullptr;
+    /* Phantom: the mesh can change outside of Sculpt Mode. */
+    bke::phantom_history::session_ended(*ob);
   }
 }
 

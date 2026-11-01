@@ -239,8 +239,29 @@ void DrawMulti::execute(RecordingState &state) const
 
     if (group.vertex_len > 0) {
       gpu::Batch *batch = group.desc.batch->gpu_batch();
+      const bool expanded = GPUPrimType(group.desc.expand_prim_type) != GPU_PRIM_NONE;
 
-      if (GPUPrimType(group.desc.expand_prim_type) != GPU_PRIM_NONE) {
+      /* Phantom: draws of one batch recorded one after the other, each with its own vertex range
+       * (the nodes of a sculpt mesh), have groups with consecutive indices, listed from the last
+       * one. Draw all of them with one multi-draw call. */
+      uint first_index = group_index;
+      bool any_back_facing = group.len - group.front_facing_len > 0;
+      bool any_front_facing = group.front_facing_len > 0;
+      if (!expanded) {
+        uint next = group.next;
+        while (next != uint(-1) && next + 1 == first_index &&
+               groups[next].desc.batch == group.desc.batch && groups[next].vertex_len > 0 &&
+               GPUPrimType(groups[next].desc.expand_prim_type) == GPU_PRIM_NONE)
+        {
+          any_back_facing |= groups[next].len - groups[next].front_facing_len > 0;
+          any_front_facing |= groups[next].front_facing_len > 0;
+          first_index = next;
+          next = groups[next].next;
+        }
+      }
+      const int draw_count = int(group_index - first_index) + 1;
+
+      if (expanded) {
         /* Bind original batch as resource and use a procedural batch to issue the draw-call. */
         GPU_batch_bind_as_resources(batch, state.shader, state.specialization_constants_get());
         batch = procedural_batch_get(GPUPrimType(group.desc.expand_prim_type))->gpu_batch();
@@ -250,18 +271,32 @@ void DrawMulti::execute(RecordingState &state) const
 
       constexpr intptr_t stride = sizeof(DrawCommand);
       /* We have 2 indirect command reserved per draw group. */
-      intptr_t offset = stride * group_index * 2;
+      intptr_t offset = stride * first_index * 2;
 
       /* Draw negatively scaled geometry first. */
-      if (group.len - group.front_facing_len > 0) {
+      if (any_back_facing) {
         state.front_facing_set(true);
-        GPU_batch_draw_indirect(batch, indirect_buf, offset);
+        if (draw_count == 1) {
+          GPU_batch_draw_indirect(batch, indirect_buf, offset);
+        }
+        else {
+          GPU_batch_multi_draw_indirect(batch, indirect_buf, draw_count, offset, stride * 2);
+        }
       }
 
-      if (group.front_facing_len > 0) {
+      if (any_front_facing) {
         state.front_facing_set(false);
-        GPU_batch_draw_indirect(batch, indirect_buf, offset + stride);
+        if (draw_count == 1) {
+          GPU_batch_draw_indirect(batch, indirect_buf, offset + stride);
+        }
+        else {
+          GPU_batch_multi_draw_indirect(
+              batch, indirect_buf, draw_count, offset + stride, stride * 2);
+        }
       }
+
+      group_index = groups[first_index].next;
+      continue;
     }
 
     group_index = group.next;

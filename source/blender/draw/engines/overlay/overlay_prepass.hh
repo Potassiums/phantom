@@ -188,7 +188,11 @@ class Prepass : Overlay {
   {
     ResourceHandleRange handle = manager.unique_handle_for_sculpt(ob_ref);
 
-    for (SculptBatch &batch : sculpt_batches_get(ob_ref.object, SCULPT_BATCH_DEFAULT)) {
+    /* Phantom: the expanded selection draws need a batch per node. */
+    const SculptBatchFeature features = res.is_selection() ?
+                                            SCULPT_BATCH_NO_NORMAL :
+                                            SCULPT_BATCH_NO_NORMAL | SCULPT_BATCH_MULTI_DRAW;
+    for (SculptBatch &batch : sculpt_batches_get(ob_ref.object, features)) {
       select::ID select_id = use_material_slot_selection_ ?
                                  res.select_id(ob_ref, (batch.material_slot + 1) << 16) :
                                  res.select_id(ob_ref);
@@ -198,7 +202,7 @@ class Prepass : Overlay {
         mesh_ps_->draw_expand(batch.batch, GPU_PRIM_TRIS, 1, 1, handle, select_id.get());
       }
       else {
-        mesh_ps_->draw(batch.batch, handle, select_id.get());
+        batch.draw(*mesh_ps_, handle, select_id.get());
       }
     }
   }

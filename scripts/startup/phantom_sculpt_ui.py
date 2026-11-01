@@ -358,6 +358,19 @@ class SCULPT_OT_phantom_mask_to_face_set(Operator):
         return {'FINISHED'}
 
 
+# Past this many faces, Object Mode can't draw a mesh (its draw buffers hold every face corner);
+# Sculpt Mode draws any level. Object Mode then shows the highest level under it.
+OBJECT_MODE_FACES_MAX = 1 << 25
+
+
+def object_mode_level(ob, level):
+    """The highest Multires level up to `level` that Object Mode can draw."""
+    corners = len(ob.data.loops)
+    while level > 0 and corners * 4 ** (level - 1) > OBJECT_MODE_FACES_MAX:
+        level -= 1
+    return level
+
+
 class SCULPT_OT_phantom_divide(Operator):
     """Subdivide the mesh one level, like ZBrush's Divide. Adds a Multiresolution modifier """         """first when the object has none"""
     bl_idname = "sculpt.phantom_divide"
@@ -384,20 +397,38 @@ class SCULPT_OT_phantom_divide(Operator):
         if ob.use_dynamic_topology_sculpting:
             self.report({'WARNING'}, "Turn off Dyntopo to divide")
             return {'CANCELLED'}
+        # A Subdivision Surface shows a smoothed cage while the brush moves the cage itself, the
+        # lowest level. Divide turns the levels it shows into Multires levels, so the level shown
+        # is the one sculpted, like ZBrush.
+        subsurf = next((md for md in ob.modifiers if md.type == 'SUBSURF' and md.show_viewport and
+                        md.levels > 0), None)
         multires = next((md for md in ob.modifiers if md.type == 'MULTIRES'), None)
         if multires is None:
             if bpy.ops.object.modifier_add(type='MULTIRES') != {'FINISHED'}:
                 return {'CANCELLED'}
-            multires = ob.modifiers[-1]
+            # Blender puts the new modifier ahead of the ones that don't need the original mesh,
+            # so it isn't always last: find it by type.
+            multires = next(md for md in ob.modifiers if md.type == 'MULTIRES')
             # Multires works on the original mesh, so it goes first in the stack.
-            if len(ob.modifiers) > 1:
+            if ob.modifiers[0] != multires:
                 bpy.ops.object.modifier_move_to_index(modifier=multires.name, index=0)
-        if bpy.ops.object.multires_subdivide(modifier=multires.name, mode=self.mode) != {'FINISHED'}:
-            return {'CANCELLED'}
-        # Sculpt on the new level, like ZBrush.
+        converted = subsurf.levels if subsurf is not None else 0
+        for mode in ['CATMULL_CLARK'] * converted + [self.mode]:
+            if bpy.ops.object.multires_subdivide(modifier=multires.name, mode=mode) != {'FINISHED'}:
+                return {'CANCELLED'}
+        if subsurf is not None:
+            ob.modifiers.remove(subsurf)
+        # Sculpt on the new level, and show it in Object Mode too, like ZBrush (up to what Object
+        # Mode can draw).
         multires.sculpt_levels = multires.total_levels
-        multires.levels = max(multires.levels, multires.total_levels)
-        self.report({'INFO'}, f"Divided to level {multires.total_levels}")
+        multires.levels = object_mode_level(ob, multires.total_levels)
+        message = f"Divided to level {multires.total_levels}"
+        if converted:
+            message += f" (the Subdivision Surface's {converted} became Multires levels)"
+        if multires.levels < multires.total_levels:
+            message += (f"; Object Mode shows level {multires.levels}, as more faces than that "
+                        f"are too many to draw there")
+        self.report({'INFO'}, message)
         return {'FINISHED'}
 
 
@@ -405,6 +436,14 @@ def _draw_sculpt_menu_divide(self, context):
     layout = self.layout
     layout.separator()
     layout.operator(SCULPT_OT_phantom_divide.bl_idname, text="Divide (Multires)")
+    # Like ZBrush's Del Lower: the level sculpted becomes the base mesh.
+    ob = context.active_object
+    multires = next((md for md in ob.modifiers if md.type == 'MULTIRES'), None) if ob else None
+    if multires is not None and multires.total_levels > 0:
+        row = layout.row()
+        row.enabled = multires.sculpt_levels > 0
+        row.operator("object.multires_lower_levels_delete",
+                     text="Delete Lower (Multires)").modifier = multires.name
 
 
 # Brushes that paint color: with one of them active, C samples the mesh's color.

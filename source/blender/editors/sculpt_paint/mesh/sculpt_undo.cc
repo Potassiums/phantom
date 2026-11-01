@@ -25,6 +25,7 @@
 #include "sculpt_undo.hh"
 
 #include <algorithm>
+#include <atomic>
 #include <mutex>
 #include <zstd.h>
 
@@ -43,6 +44,7 @@
 #include "BLI_vector.hh"
 
 #include "DNA_key_types.h"
+#include "DNA_modifier_types.h"
 #include "DNA_object_types.h"
 #include "DNA_scene_types.h"
 #include "DNA_screen_types.h"
@@ -57,6 +59,7 @@
 #include "BKE_layer.hh"
 #include "BKE_main.hh"
 #include "BKE_mesh.hh"
+#include "BKE_modifier.hh"
 #include "BKE_multires.hh"
 #include "BKE_object.hh"
 #include "BKE_object_types.hh"
@@ -191,6 +194,13 @@ struct NodeGeometry {
   int edges_num;
   int corners_num;
   int faces_num;
+
+  /**
+   * Phantom: the levels of the object's Multires modifier, which change with its grids when the
+   * base mesh is replaced (Delete Lower). Unused without one.
+   */
+  bool has_multires = false;
+  char multires_levels[4] = {};
 };
 
 struct Node;
@@ -958,6 +968,30 @@ static void store_geometry_data(NodeGeometry *geometry, const Object &object)
   geometry->edges_num = mesh->edges_num;
   geometry->corners_num = mesh->corners_num;
   geometry->faces_num = mesh->faces_num;
+
+  if (const MultiresModifierData *mmd = reinterpret_cast<const MultiresModifierData *>(
+          BKE_modifiers_findby_type(&object, eModifierType_Multires)))
+  {
+    geometry->has_multires = true;
+    geometry->multires_levels[0] = mmd->totlvl;
+    geometry->multires_levels[1] = mmd->lvl;
+    geometry->multires_levels[2] = mmd->sculptlvl;
+    geometry->multires_levels[3] = mmd->renderlvl;
+  }
+}
+
+/** Phantom: see #NodeGeometry::multires_levels. */
+static void restore_geometry_multires_levels(const NodeGeometry *geometry, Object &object)
+{
+  MultiresModifierData *mmd = reinterpret_cast<MultiresModifierData *>(
+      BKE_modifiers_findby_type(&object, eModifierType_Multires));
+  if (!geometry->has_multires || mmd == nullptr) {
+    return;
+  }
+  mmd->totlvl = geometry->multires_levels[0];
+  mmd->lvl = geometry->multires_levels[1];
+  mmd->sculptlvl = geometry->multires_levels[2];
+  mmd->renderlvl = geometry->multires_levels[3];
 }
 
 static void restore_geometry_data(const NodeGeometry *geometry, Mesh *mesh)
@@ -1009,10 +1043,12 @@ static void restore_geometry(StepData &step_data, Object &object)
 
   if (step_data.needs_undo()) {
     restore_geometry_data(&step_data.geometry_original, mesh);
+    restore_geometry_multires_levels(&step_data.geometry_original, object);
     step_data.tag_needs_redo();
   }
   else {
     restore_geometry_data(&step_data.geometry_modified, mesh);
+    restore_geometry_multires_levels(&step_data.geometry_modified, object);
     step_data.tag_needs_undo();
   }
 }
@@ -2038,7 +2074,7 @@ static void history_begin(Object &ob, const char *name)
   }
 }
 
-static void history_record(Object &ob, const bool topology_changed)
+static void history_record(Object &ob, const bool topology_changed, const BitSpan touched = {})
 {
   if (!history_applies(ob)) {
     return;
@@ -2046,11 +2082,47 @@ static void history_record(Object &ob, const bool topology_changed)
   const PhantomHistory *history = ob.phantom_history;
   const bool had_later = history && history->current < history->steps_num - 1;
   const int before = bke::phantom_history::cursor_get(ob);
-  bke::phantom_history::record(ob, history_step_name(), topology_changed);
+  bke::phantom_history::record(ob, history_step_name(), topology_changed, touched);
   if (had_later && bke::phantom_history::cursor_get(ob) != before) {
     /* An edit on an older step deleted the steps after it: undo must not lead into them. */
     history_steps_deleted(ob, before);
   }
+}
+
+/**
+ * Phantom: one bit per point of the history (the mesh's vertices, or the Multires grid points)
+ * for the points held by the step's nodes, which are all the step can have changed: the history
+ * only compares those (#bke::phantom_history::record).
+ */
+static BitVector<> history_touched_points(const Object &ob, const StepData &step_data)
+{
+  const SculptSession &ss = *ob.runtime->sculpt_session;
+  if (ss.subdiv_ccg && ss.subdiv_ccg->grids_num > 0) {
+    const SubdivCCG &subdiv_ccg = *ss.subdiv_ccg;
+    const CCGKey key = BKE_subdiv_ccg_key_top_level(subdiv_ccg);
+    BitVector<> touched(subdiv_ccg.positions.size(), false);
+    for (const std::unique_ptr<Node> &unode : step_data.nodes) {
+      for (const int grid : unode->grids) {
+        MutableBitSpan(touched).slice(bke::ccg::grid_range(key, grid)).set_all();
+      }
+    }
+    return touched;
+  }
+  const Mesh &mesh = *id_cast<const Mesh *>(ob.data);
+  BitVector<> touched(mesh.verts_num, false);
+  /* A node's own vertices are enough: a shared vertex only moves with the node owning it, which is
+   * then in the step too. In parallel: neighboring nodes may set bits of the same word. */
+  bits::BitInt *words = touched.data();
+  threading::parallel_for(step_data.nodes.index_range(), 16, [&](const IndexRange range) {
+    for (const std::unique_ptr<Node> &unode : step_data.nodes.as_span().slice(range)) {
+      for (const int vert : unode->vert_indices.as_span().take_front(unode->unique_verts_num)) {
+        const bits::BitInt bit = bits::mask_single_bit(vert & bits::BitIndexMask);
+        std::atomic_ref<bits::BitInt>(words[vert >> bits::BitToIntIndexShift])
+            .fetch_or(bit, std::memory_order_relaxed);
+      }
+    }
+  });
+  return touched;
 }
 
 /** Phantom: the history cursor after the step being pushed, for redo. */
@@ -2165,6 +2237,12 @@ void push_end_ex(Object &ob, const bool use_nested_undo)
    * just one positions array that has a different semantic meaning depending on whether there are
    * deform modifiers. */
 
+  /* Phantom: before the nodes move into the compressed storage. */
+  BitVector<> history_touched;
+  if (ELEM(step_data->type, Type::Position, Type::Mask) && history_applies(ob)) {
+    history_touched = history_touched_points(ob, *step_data);
+  }
+
   if (step_data->type == Type::Position) {
     step_data->position_step_storage = std::make_unique<PositionUndoStorage>(*step_data);
   }
@@ -2183,7 +2261,7 @@ void push_end_ex(Object &ob, const bool use_nested_undo)
   }
 
   if (ELEM(step_data->type, Type::Position, Type::Mask)) {
-    history_record(ob, false);
+    history_record(ob, false, history_touched);
   }
   history_cursor_store_after(ob);
 

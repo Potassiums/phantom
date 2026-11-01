@@ -10,7 +10,9 @@
 
 #include "MEM_guardedalloc.h"
 
+#include "BLI_implicit_sharing.hh"
 #include "BLI_index_mask.hh"
+#include "BLI_map.hh"
 #include "BLI_listbase.hh"
 #include "BLI_string.hh"
 #include "BLI_offset_indices.hh"
@@ -63,11 +65,40 @@ static Layout step_layout(const PhantomHistoryStep &keyframe)
           keyframe.grid_size};
 }
 
-/** What #PhantomHistory.runtime points to: the shape and mask at the current step. */
+/**
+ * A keyframe's arrays shared with the mesh they were taken from instead of copied: they only take
+ * memory of their own once the mesh's arrays change (sculpting copies the positions on its first
+ * write anyway, as the evaluated mesh shares them too).
+ */
+struct SharedArrays {
+  const ImplicitSharingInfo *positions = nullptr;
+  const ImplicitSharingInfo *face_offsets = nullptr;
+  const ImplicitSharingInfo *corner_verts = nullptr;
+};
+
+/**
+ * What #PhantomHistory.runtime points to.
+ *
+ * The next edit is compared to the shape and mask at the current step. Rather than a copy of
+ * them, this keeps for every point the number of the last step since the current keyframe that
+ * changed it (-1 for none), and a value is read from that step (#CurrentStep): four bytes per
+ * point instead of sixteen, and nothing to copy when the history starts.
+ */
 struct Runtime {
-  Array<float3> positions;
-  Array<float> masks;
+  /** Whether the arrays below are for the current step. */
+  bool compare_valid = false;
   Layout layout;
+  Array<int> last_position_step;
+  /** Empty when no mask changed since the keyframe. */
+  Array<int> last_mask_step;
+  /**
+   * The mesh is known to be in the current step's shape apart from the points edits touch, since
+   * it was last compared in full, in this sculpt session (#record).
+   */
+  bool in_sync = false;
+
+  /** By step number: keyframes with arrays shared with a mesh. */
+  Map<int, SharedArrays> shared_arrays;
 };
 
 /** Where the object's sculpted points are now: its mesh, or its Multires grids in Sculpt Mode. */
@@ -141,17 +172,72 @@ static Span<float3> step_positions(const PhantomHistoryStep &step)
   return {reinterpret_cast<const float3 *>(step.positions), step.verts_num};
 }
 
+static Runtime &runtime_get(PhantomHistory &history)
+{
+  if (history.runtime == nullptr) {
+    history.runtime = MEM_new<Runtime>(__func__);
+  }
+  return *static_cast<Runtime *>(history.runtime);
+}
+
+/** Free the runtime data, after the steps (which release their shared arrays). */
 static void free_runtime(PhantomHistory &history)
 {
   MEM_delete(static_cast<Runtime *>(history.runtime));
   history.runtime = nullptr;
 }
 
-static void free_step(PhantomHistoryStep &step)
+/** The current step changed: the comparison data is rebuilt when it is next needed. */
+static void invalidate_compare(PhantomHistory &history)
 {
-  MEM_SAFE_DELETE(step.positions);
-  MEM_SAFE_DELETE(step.face_offsets);
-  MEM_SAFE_DELETE(step.corner_verts);
+  if (history.runtime) {
+    Runtime &runtime = *static_cast<Runtime *>(history.runtime);
+    runtime.compare_valid = false;
+    runtime.in_sync = false;
+    runtime.last_position_step = {};
+    runtime.last_mask_step = {};
+  }
+}
+
+static SharedArrays *shared_arrays(PhantomHistory &history, const PhantomHistoryStep &step)
+{
+  if (history.runtime == nullptr || !(step.flag & PHANTOM_HISTORY_STEP_KEYFRAME)) {
+    return nullptr;
+  }
+  return static_cast<Runtime *>(history.runtime)->shared_arrays.lookup_ptr(step.number);
+}
+
+static void free_step(PhantomHistory &history, PhantomHistoryStep &step)
+{
+  SharedArrays *shared = shared_arrays(history, step);
+  if (shared && shared->positions) {
+    shared->positions->remove_user_and_delete_if_last();
+    step.positions = nullptr;
+  }
+  else {
+    MEM_SAFE_DELETE(step.positions);
+  }
+  if (shared) {
+    if (shared->face_offsets) {
+      shared->face_offsets->remove_user_and_delete_if_last();
+    }
+    else {
+      MEM_SAFE_DELETE(step.face_offsets);
+    }
+    if (shared->corner_verts) {
+      shared->corner_verts->remove_user_and_delete_if_last();
+    }
+    else {
+      MEM_SAFE_DELETE(step.corner_verts);
+    }
+    static_cast<Runtime *>(history.runtime)->shared_arrays.remove(step.number);
+    step.face_offsets = nullptr;
+    step.corner_verts = nullptr;
+  }
+  else {
+    MEM_SAFE_DELETE(step.face_offsets);
+    MEM_SAFE_DELETE(step.corner_verts);
+  }
   MEM_SAFE_DELETE(step.delta_indices);
   MEM_SAFE_DELETE(step.delta_positions);
   MEM_SAFE_DELETE(step.masks);
@@ -165,7 +251,7 @@ void free(PhantomHistory *history)
     return;
   }
   for (const int i : IndexRange(history->steps_num)) {
-    free_step(history->steps[i]);
+    free_step(*history, history->steps[i]);
   }
   MEM_SAFE_DELETE(history->steps);
   free_runtime(*history);
@@ -230,7 +316,7 @@ void cursor_set(Object &ob, const int cursor)
       if (i != history->current) {
         history->current = i;
         /* The compared-against shape is rebuilt from the new current step when needed. */
-        free_runtime(*history);
+        invalidate_compare(*history);
       }
       return;
     }
@@ -285,25 +371,127 @@ StepShape step_shape(const PhantomHistory &history, const int index)
   return shape;
 }
 
-static void set_runtime(PhantomHistory &history, StepShape &&shape, const Layout &layout)
+static void fill_parallel(MutableSpan<int> values, const int value)
 {
-  free_runtime(history);
-  Runtime *runtime = MEM_new<Runtime>(__func__);
-  runtime->positions = std::move(shape.positions);
-  runtime->masks = std::move(shape.masks);
-  runtime->layout = layout;
-  history.runtime = runtime;
+  threading::parallel_for(values.index_range(), 1 << 16, [&](const IndexRange range) {
+    values.slice(range).fill(value);
+  });
 }
 
-static Runtime &ensure_runtime(PhantomHistory &history)
+/** For each point, the number of the last of `steps` (in order) changing it, or -1. */
+static void scatter_numbers(const Span<PhantomHistoryStep> steps,
+                            const bool masks,
+                            MutableSpan<int> last_step)
 {
-  if (history.runtime == nullptr) {
-    StepShape shape = step_shape(history, history.current);
-    const Layout layout = step_layout(history.steps[shape.keyframe]);
-    set_runtime(history, std::move(shape), layout);
+  for (const PhantomHistoryStep &step : steps) {
+    const Span<int> indices = masks ? Span<int>(step.mask_delta_indices, step.mask_delta_num) :
+                                      Span<int>(step.delta_indices, step.delta_num);
+    threading::parallel_for(indices.index_range(), 4096, [&](const IndexRange range) {
+      for (const int i : indices.slice(range)) {
+        last_step[i] = step.number;
+      }
+    });
   }
-  return *static_cast<Runtime *>(history.runtime);
 }
+
+/** The mesh is at the current step, a keyframe: nothing changed since it. */
+static void start_compare_at_keyframe(PhantomHistory &history, const Layout &layout)
+{
+  Runtime &runtime = runtime_get(history);
+  runtime.layout = layout;
+  runtime.last_position_step.reinitialize(layout.points_num);
+  fill_parallel(runtime.last_position_step, -1);
+  runtime.last_mask_step = {};
+  runtime.compare_valid = true;
+  runtime.in_sync = true;
+}
+
+static Runtime &ensure_compare(PhantomHistory &history)
+{
+  Runtime &runtime = runtime_get(history);
+  if (runtime.compare_valid) {
+    return runtime;
+  }
+  const int keyframe = keyframe_of(history, history.current);
+  runtime.layout = step_layout(history.steps[keyframe]);
+  const Span<PhantomHistoryStep> since = Span(history.steps, history.steps_num)
+                                             .slice(IndexRange::from_begin_end(
+                                                 keyframe + 1, history.current + 1));
+  runtime.last_position_step.reinitialize(runtime.layout.points_num);
+  fill_parallel(runtime.last_position_step, -1);
+  scatter_numbers(since, false, runtime.last_position_step);
+  runtime.last_mask_step = {};
+  if (std::any_of(since.begin(), since.end(), [](const PhantomHistoryStep &step) {
+        return step.mask_delta_num > 0;
+      }))
+  {
+    runtime.last_mask_step.reinitialize(runtime.layout.points_num);
+    fill_parallel(runtime.last_mask_step, -1);
+    scatter_numbers(since, true, runtime.last_mask_step);
+  }
+  runtime.compare_valid = true;
+  runtime.in_sync = false;
+  return runtime;
+}
+
+/** Reads the positions and masks of the current step (#Runtime). */
+class CurrentStep {
+  const PhantomHistory &history_;
+  const Runtime &runtime_;
+  const PhantomHistoryStep &keyframe_;
+  int first_number_;
+  Array<int> index_by_number_;
+
+  /** The step `number`, or null when it was folded into the first keyframe (#apply_limit). */
+  const PhantomHistoryStep *step(const int number) const
+  {
+    const int offset = number - first_number_;
+    if (offset < 0 || offset >= index_by_number_.size() || index_by_number_[offset] == -1) {
+      return nullptr;
+    }
+    const PhantomHistoryStep &step = history_.steps[index_by_number_[offset]];
+    return (step.flag & PHANTOM_HISTORY_STEP_KEYFRAME) ? nullptr : &step;
+  }
+
+ public:
+  CurrentStep(const PhantomHistory &history, const Runtime &runtime)
+      : history_(history),
+        runtime_(runtime),
+        keyframe_(history.steps[keyframe_of(history, history.current)])
+  {
+    first_number_ = history.steps[0].number;
+    index_by_number_.reinitialize(history.steps[history.steps_num - 1].number - first_number_ + 1);
+    index_by_number_.fill(-1);
+    for (const int i : IndexRange(history.steps_num)) {
+      index_by_number_[history.steps[i].number - first_number_] = i;
+    }
+  }
+
+  float3 position(const int64_t i) const
+  {
+    const int number = runtime_.last_position_step[i];
+    const PhantomHistoryStep *step = number == -1 ? nullptr : this->step(number);
+    if (step == nullptr) {
+      return reinterpret_cast<const float3 *>(keyframe_.positions)[i];
+    }
+    const int *indices = step->delta_indices;
+    const int j = int(std::lower_bound(indices, indices + step->delta_num, int(i)) - indices);
+    return reinterpret_cast<const float3 *>(step->delta_positions)[j];
+  }
+
+  float mask(const int64_t i) const
+  {
+    const int number = runtime_.last_mask_step.is_empty() ? -1 : runtime_.last_mask_step[i];
+    const PhantomHistoryStep *step = number == -1 ? nullptr : this->step(number);
+    if (step == nullptr) {
+      return keyframe_.masks ? keyframe_.masks[i] : 0.0f;
+    }
+    const int *indices = step->mask_delta_indices;
+    const int j = int(std::lower_bound(indices, indices + step->mask_delta_num, int(i)) -
+                      indices);
+    return step->mask_delta_values[j];
+  }
+};
 
 /** Appends an empty step (the array grows by one; it is never long). */
 static PhantomHistoryStep &append_step(PhantomHistory &history, const StringRef name)
@@ -334,7 +522,7 @@ static bool any_masked(const Span<float> masks)
   return std::any_of(masks.begin(), masks.end(), [](const float m) { return m != 0.0f; });
 }
 
-static void set_keyframe(PhantomHistoryStep &step, const State &state)
+static void set_keyframe(PhantomHistory &history, PhantomHistoryStep &step, const State &state)
 {
   const Layout &layout = state.layout;
   step.flag |= PHANTOM_HISTORY_STEP_KEYFRAME;
@@ -343,21 +531,58 @@ static void set_keyframe(PhantomHistoryStep &step, const State &state)
   step.corners_num = layout.corners_num;
   step.grids_num = layout.grids_num;
   step.grid_size = layout.grid_size;
-  step.positions = MEM_new_array_uninitialized<float>(size_t(layout.points_num) * 3, __func__);
-  MutableSpan<float>(step.positions, int64_t(layout.points_num) * 3)
-      .copy_from(state.positions.cast<float>());
-  step.face_offsets = MEM_new_array_uninitialized<int>(size_t(layout.faces_num) + 1, __func__);
-  step.face_offsets[0] = 0;
-  step.corner_verts = MEM_new_array_uninitialized<int>(size_t(layout.corners_num), __func__);
-  if (state.mesh) {
-    if (layout.faces_num > 0) {
+  SharedArrays shared;
+  const GAttributeReader positions = state.mesh ? state.mesh->attributes().lookup("position") :
+                                                  GAttributeReader{};
+  if (positions && positions.sharing_info && positions.varray.is_span()) {
+    step.positions = static_cast<float *>(
+        const_cast<void *>(positions.varray.get_internal_span().data()));
+    positions.sharing_info->add_user();
+    shared.positions = positions.sharing_info;
+  }
+  else {
+    step.positions = MEM_new_array_uninitialized<float>(size_t(layout.points_num) * 3, __func__);
+    /* In parallel: a large copy (240 MB at 20 million points). */
+    const Span<float> src_positions = state.positions.cast<float>();
+    MutableSpan<float> dst_positions(step.positions, src_positions.size());
+    threading::parallel_for(src_positions.index_range(), 1 << 18, [&](const IndexRange range) {
+      dst_positions.slice(range).copy_from(src_positions.slice(range));
+    });
+  }
+  if (state.mesh && layout.faces_num > 0 && state.mesh->runtime->face_offsets_sharing_info) {
+    const ImplicitSharingInfo *sharing_info = nullptr;
+    implicit_sharing::copy_shared_pointer(const_cast<int *>(state.mesh->face_offset_indices),
+                                          state.mesh->runtime->face_offsets_sharing_info,
+                                          &step.face_offsets,
+                                          &sharing_info);
+    shared.face_offsets = sharing_info;
+  }
+  else {
+    step.face_offsets = MEM_new_array_uninitialized<int>(size_t(layout.faces_num) + 1, __func__);
+    step.face_offsets[0] = 0;
+    if (state.mesh && layout.faces_num > 0) {
       memcpy(step.face_offsets,
              state.mesh->face_offsets().data(),
              sizeof(int) * (layout.faces_num + 1));
     }
-    if (layout.corners_num > 0) {
+  }
+  const GAttributeReader corner_verts = state.mesh && layout.corners_num > 0 ?
+                                            state.mesh->attributes().lookup(".corner_vert") :
+                                            GAttributeReader{};
+  if (corner_verts && corner_verts.sharing_info && corner_verts.varray.is_span()) {
+    step.corner_verts = static_cast<int *>(
+        const_cast<void *>(corner_verts.varray.get_internal_span().data()));
+    corner_verts.sharing_info->add_user();
+    shared.corner_verts = corner_verts.sharing_info;
+  }
+  else {
+    step.corner_verts = MEM_new_array_uninitialized<int>(size_t(layout.corners_num), __func__);
+    if (state.mesh && layout.corners_num > 0) {
       memcpy(step.corner_verts, state.mesh->corner_verts().data(), sizeof(int) * layout.corners_num);
     }
+  }
+  if (shared.positions || shared.face_offsets || shared.corner_verts) {
+    runtime_get(history).shared_arrays.add_overwrite(step.number, shared);
   }
   if (any_masked(state.masks)) {
     step.masks = MEM_new_array_uninitialized<float>(size_t(layout.points_num), __func__);
@@ -365,18 +590,12 @@ static void set_keyframe(PhantomHistoryStep &step, const State &state)
   }
 }
 
-static void set_runtime_from_state(PhantomHistory &history, const State &state)
+
+void session_ended(Object &ob)
 {
-  StepShape shape;
-  shape.positions = state.positions;
-  shape.masks.reinitialize(state.layout.points_num);
-  if (state.masks.is_empty()) {
-    shape.masks.fill(0.0f);
+  if (ob.phantom_history && ob.phantom_history->runtime) {
+    static_cast<Runtime *>(ob.phantom_history->runtime)->in_sync = false;
   }
-  else {
-    shape.masks.as_mutable_span().copy_from(state.masks);
-  }
-  set_runtime(history, std::move(shape), state.layout);
 }
 
 void begin_edit(Object &ob, const StringRef /*name*/)
@@ -393,9 +612,9 @@ void begin_edit(Object &ob, const StringRef /*name*/)
     return;
   }
   PhantomHistory &history = ensure(ob);
-  set_keyframe(append_step(history, IFACE_("Start")), state);
+  set_keyframe(history, append_step(history, IFACE_("Start")), state);
   history.current = 0;
-  set_runtime_from_state(history, state);
+  start_compare_at_keyframe(history, state.layout);
 }
 
 void truncate_after_current(PhantomHistory &history)
@@ -404,7 +623,7 @@ void truncate_after_current(PhantomHistory &history)
     return;
   }
   for (int i = history.current + 1; i < history.steps_num; i++) {
-    free_step(history.steps[i]);
+    free_step(history, history.steps[i]);
   }
   history.steps_num = history.current + 1;
   /* Give the memory of the dropped steps' slots back too. */
@@ -412,6 +631,20 @@ void truncate_after_current(PhantomHistory &history)
   memcpy(steps, history.steps, sizeof(PhantomHistoryStep) * history.steps_num);
   MEM_SAFE_DELETE(history.steps);
   history.steps = steps;
+}
+
+/** Before writing a keyframe's positions: they are its own, not shared with a mesh. */
+static void ensure_positions_owned(PhantomHistory &history, PhantomHistoryStep &step)
+{
+  SharedArrays *shared = shared_arrays(history, step);
+  if (shared == nullptr || shared->positions == nullptr || shared->positions->is_mutable()) {
+    return;
+  }
+  float *positions = MEM_new_array_uninitialized<float>(size_t(step.verts_num) * 3, __func__);
+  std::copy_n(step.positions, size_t(step.verts_num) * 3, positions);
+  shared->positions->remove_user_and_delete_if_last();
+  shared->positions = nullptr;
+  step.positions = positions;
 }
 
 void apply_limit(PhantomHistory &history)
@@ -424,11 +657,12 @@ void apply_limit(PhantomHistory &history)
     PhantomHistoryStep &first = history.steps[0];
     PhantomHistoryStep &second = history.steps[1];
     if (second.flag & PHANTOM_HISTORY_STEP_KEYFRAME) {
-      free_step(first);
+      free_step(history, first);
       erase_step(history, 0);
     }
     else {
       /* Fold the second step into the first keyframe, which then has its shape and mask. */
+      ensure_positions_owned(history, first);
       scatter({second.delta_indices, second.delta_num},
               delta_positions(second),
               MutableSpan<float3>(reinterpret_cast<float3 *>(first.positions), first.verts_num));
@@ -440,16 +674,26 @@ void apply_limit(PhantomHistory &history)
                        {second.mask_delta_values, second.mask_delta_num},
                        {first.masks, first.verts_num});
       }
+      /* The comparison data reads values of the folded step from the keyframe (#CurrentStep), and
+       * the keyframe's shared arrays go by its number. */
+      if (history.runtime) {
+        Runtime &runtime = *static_cast<Runtime *>(history.runtime);
+        if (const std::optional<SharedArrays> shared = runtime.shared_arrays.pop_try(
+                first.number))
+        {
+          runtime.shared_arrays.add_overwrite(second.number, *shared);
+        }
+      }
       first.number = second.number;
       memcpy(first.name, second.name, sizeof(first.name));
-      free_step(second);
+      free_step(history, second);
       erase_step(history, 1);
     }
     history.current--;
   }
 }
 
-void record(Object &ob, const StringRef name, bool topology_changed)
+void record(Object &ob, const StringRef name, bool topology_changed, const BitSpan touched)
 {
   if (pause_count > 0 || !is_recording(ob)) {
     return;
@@ -461,13 +705,13 @@ void record(Object &ob, const StringRef name, bool topology_changed)
   PhantomHistory &history = ensure(ob);
   if (history.steps_num == 0) {
     /* Nothing to compare to: the mesh as it is now is where the history starts. */
-    set_keyframe(append_step(history, name), state);
+    set_keyframe(history, append_step(history, name), state);
     history.current = 0;
-    set_runtime_from_state(history, state);
+    start_compare_at_keyframe(history, state.layout);
     return;
   }
 
-  Runtime &runtime = ensure_runtime(history);
+  Runtime &runtime = ensure_compare(history);
   const Span<float3> positions = state.positions;
   topology_changed |= state.layout != runtime.layout;
 
@@ -475,14 +719,27 @@ void record(Object &ob, const StringRef name, bool topology_changed)
   IndexMask moved;
   IndexMask remasked;
   if (!topology_changed) {
+    /* Only the points the edit touched can differ, once the rest is known to match. */
+    const IndexMask candidates = runtime.in_sync && touched.size() == positions.size() ?
+                                     IndexMask::from_bits(touched, memory) :
+                                     IndexMask(positions.index_range());
     /* Compare bits, so the step restores exactly. */
-    moved = IndexMask::from_predicate(positions.index_range(), memory, [&](const int64_t i) {
-      return memcmp(&positions[i], &runtime.positions[i], sizeof(float3)) != 0;
+    const CurrentStep current_step(history, runtime);
+    moved = IndexMask::from_predicate(candidates, memory, [&](const int64_t i) {
+      const float3 position = current_step.position(i);
+      return memcmp(&positions[i], &position, sizeof(float3)) != 0;
     });
-    remasked = IndexMask::from_predicate(positions.index_range(), memory, [&](const int64_t i) {
-      const float mask = mask_at(state.masks, i);
-      return memcmp(&mask, &runtime.masks[i], sizeof(float)) != 0;
-    });
+    /* Without a mask now or at the current step, no mask changed (the usual case). */
+    const bool unmasked = state.masks.is_empty() && runtime.last_mask_step.is_empty() &&
+                          history.steps[keyframe_of(history, history.current)].masks == nullptr;
+    if (!unmasked) {
+      remasked = IndexMask::from_predicate(candidates, memory, [&](const int64_t i) {
+        const float mask = mask_at(state.masks, i);
+        const float current = current_step.mask(i);
+        return memcmp(&mask, &current, sizeof(float)) != 0;
+      });
+    }
+    runtime.in_sync = true;
     if (moved.is_empty() && remasked.is_empty()) {
       /* A face set or visibility edit: nothing the history keeps. */
       return;
@@ -494,8 +751,8 @@ void record(Object &ob, const StringRef name, bool topology_changed)
 
   PhantomHistoryStep &step = append_step(history, name);
   if (topology_changed) {
-    set_keyframe(step, state);
-    set_runtime_from_state(history, state);
+    set_keyframe(history, step, state);
+    start_compare_at_keyframe(history, state.layout);
   }
   else {
     step.delta_num = int(moved.size());
@@ -503,19 +760,31 @@ void record(Object &ob, const StringRef name, bool topology_changed)
     step.delta_positions = MEM_new_array_uninitialized<float>(moved.size() * 3, __func__);
     moved.to_indices<int>({step.delta_indices, step.delta_num});
     float3 *values = reinterpret_cast<float3 *>(step.delta_positions);
-    moved.foreach_index([&](const int64_t i, const int64_t pos) {
-      values[pos] = positions[i];
-      runtime.positions[i] = positions[i];
-    });
+    MutableSpan<int> last_position_step = runtime.last_position_step;
+    const int number = step.number;
+    moved.foreach_index(
+        [&](const int64_t i, const int64_t pos) {
+          values[pos] = positions[i];
+          last_position_step[i] = number;
+        },
+        exec_mode::grain_size(4096));
     if (!remasked.is_empty()) {
       step.mask_delta_num = int(remasked.size());
       step.mask_delta_indices = MEM_new_array_uninitialized<int>(remasked.size(), __func__);
       step.mask_delta_values = MEM_new_array_uninitialized<float>(remasked.size(), __func__);
       remasked.to_indices<int>({step.mask_delta_indices, step.mask_delta_num});
-      remasked.foreach_index([&](const int64_t i, const int64_t pos) {
-        step.mask_delta_values[pos] = mask_at(state.masks, i);
-        runtime.masks[i] = step.mask_delta_values[pos];
-      });
+      if (runtime.last_mask_step.is_empty()) {
+        runtime.last_mask_step.reinitialize(runtime.layout.points_num);
+        fill_parallel(runtime.last_mask_step, -1);
+      }
+      MutableSpan<int> last_mask_step = runtime.last_mask_step;
+      float *mask_values = step.mask_delta_values;
+      remasked.foreach_index(
+          [&](const int64_t i, const int64_t pos) {
+            mask_values[pos] = mask_at(state.masks, i);
+            last_mask_step[i] = number;
+          },
+          exec_mode::grain_size(4096));
     }
   }
   history.current = history.steps_num - 1;
@@ -549,6 +818,56 @@ static void write_mesh_masks(Mesh &mesh, const Span<float> masks)
   writer.finish();
 }
 
+int step_grid_size(const PhantomHistory &history, const int index)
+{
+  return history.steps[keyframe_of(history, index)].grid_size;
+}
+
+int step_grids_num(const PhantomHistory &history, const int index)
+{
+  return history.steps[keyframe_of(history, index)].grids_num;
+}
+
+static bool same_topology(const PhantomHistoryStep &keyframe, const Mesh &mesh)
+{
+  if (keyframe.grids_num > 0 || keyframe.verts_num != mesh.verts_num ||
+      keyframe.faces_num != mesh.faces_num || keyframe.corners_num != mesh.corners_num)
+  {
+    return false;
+  }
+  return Span<int>(keyframe.face_offsets, keyframe.faces_num + 1) == mesh.face_offsets() &&
+         Span<int>(keyframe.corner_verts, keyframe.corners_num) == mesh.corner_verts();
+}
+
+bool step_topology_matches(const PhantomHistory &history, const int index, const Mesh &mesh)
+{
+  return same_topology(history.steps[keyframe_of(history, index)], mesh);
+}
+
+int last_mesh_step(const PhantomHistory &history, const int index)
+{
+  for (int i = index; i >= 0; i--) {
+    if (history.steps[keyframe_of(history, i)].grids_num == 0) {
+      return i;
+    }
+  }
+  return -1;
+}
+
+bool write_mesh_positions(const PhantomHistory &history, const int index, Mesh &mesh)
+{
+  const StepShape shape = step_shape(history, index);
+  const Span<float3> positions = mesh.vert_positions();
+  if (positions.size() != shape.positions.size() ||
+      memcmp(positions.data(), shape.positions.data(), positions.size_in_bytes()) == 0)
+  {
+    return false;
+  }
+  mesh.vert_positions_for_write().copy_from(shape.positions);
+  mesh.tag_positions_changed();
+  return true;
+}
+
 ApplyResult apply_step(Object &ob, int index)
 {
   PhantomHistory *history = ob.phantom_history;
@@ -572,10 +891,14 @@ ApplyResult apply_step(Object &ob, int index)
       return ApplyResult::Failed;
     }
   }
-  else if (!(keyframe_index == keyframe_of(*history, history->current) && layout == state.layout))
-  {
-    /* Across a topology change the mesh is replaced. */
-    result = ApplyResult::Topology;
+  else {
+    const bool same_keyframe = keyframe_index == keyframe_of(*history, history->current) &&
+                               layout == state.layout;
+    /* Across a topology change the mesh is replaced. (A keyframe with the mesh's own faces, like
+     * the steps of the base mesh before and after Multires levels, is written in place.) */
+    if (!same_keyframe && !same_topology(keyframe, *state.mesh)) {
+      result = ApplyResult::Topology;
+    }
   }
 
   StepShape shape = step_shape(*history, index);
@@ -609,8 +932,10 @@ ApplyResult apply_step(Object &ob, int index)
     BKE_mesh_nomain_to_mesh(new_mesh, mesh, &ob);
   }
 
-  set_runtime(*history, std::move(shape), layout);
   history->current = index;
+  /* The mesh is at the step now: the comparison data is rebuilt (and the mesh compared in full)
+   * when the next edit is recorded. */
+  invalidate_compare(*history);
   return result;
 }
 
@@ -621,18 +946,30 @@ bool is_at_current(const Object &ob)
   if (history == nullptr || history->steps_num == 0 || !read_state(ob, state)) {
     return true;
   }
-  const Runtime &runtime = ensure_runtime(*history);
+  const Runtime &runtime = ensure_compare(*history);
   if (state.layout != runtime.layout) {
     return false;
   }
+  const CurrentStep current_step(*history, runtime);
   const Span<float3> positions = state.positions;
-  if (memcmp(positions.data(), runtime.positions.data(), positions.size_in_bytes()) != 0) {
-    return false;
-  }
-  if (state.masks.is_empty()) {
-    return !any_masked(runtime.masks);
-  }
-  return memcmp(state.masks.data(), runtime.masks.data(), state.masks.size_in_bytes()) == 0;
+  return !threading::parallel_reduce(
+      positions.index_range(),
+      4096,
+      false,
+      [&](const IndexRange range, bool differs) {
+        for (const int64_t i : range) {
+          if (differs) {
+            break;
+          }
+          const float3 position = current_step.position(i);
+          const float mask = mask_at(state.masks, i);
+          const float current_mask = current_step.mask(i);
+          differs = memcmp(&positions[i], &position, sizeof(float3)) != 0 ||
+                    memcmp(&mask, &current_mask, sizeof(float)) != 0;
+        }
+        return differs;
+      },
+      [](const bool a, const bool b) { return a || b; });
 }
 
 int find_cursor(const PhantomHistory &history, const int cursor)

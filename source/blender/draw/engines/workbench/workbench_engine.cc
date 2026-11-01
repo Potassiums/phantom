@@ -298,6 +298,29 @@ class Instance : public DrawEngine {
     });
   }
 
+  /**
+   * Phantom: like #draw_mesh for a node of a sculpt mesh, shaded flat (#eGeometryType::SCULPT)
+   * and drawn as its range of the batch shared by all nodes, so the nodes share one multi-draw.
+   */
+  void draw_sculpt_batch(ObjectRef &ob_ref,
+                         Material &material,
+                         const SculptBatch &batch,
+                         ResourceHandleRange handle,
+                         const MaterialTexture *texture = nullptr,
+                         bool show_missing_texture = false)
+  {
+    resources_.material_buf.append(material);
+    int material_index = resources_.material_buf.size() - 1;
+
+    if (show_missing_texture && (!texture || !texture->gpu.texture)) {
+      texture = &resources_.missing_texture;
+    }
+
+    this->draw_to_mesh_pass(ob_ref, material.is_transparent(), [&](MeshPass &mesh_pass) {
+      batch.draw(mesh_pass.get_subpass(eGeometryType::SCULPT, texture), handle, material_index);
+    });
+  }
+
   void mesh_sync(Manager &manager,
                  ObjectRef &ob_ref,
                  ResourceHandleRange handle,
@@ -372,12 +395,20 @@ class Instance : public DrawEngine {
                    ResourceHandleRange handle,
                    const ObjectState &object_state)
   {
-    SculptBatchFeature features = SCULPT_BATCH_DEFAULT;
+    /* Phantom: sculpt meshes are shaded flat from their positions (#eGeometryType::SCULPT). */
+    SculptBatchFeature features = SCULPT_BATCH_NO_NORMAL | SCULPT_BATCH_MULTI_DRAW;
     if (object_state.color_type == V3D_SHADING_VERTEX_COLOR) {
-      features = SCULPT_BATCH_VERTEX_COLOR;
+      features |= SCULPT_BATCH_VERTEX_COLOR;
     }
     else if (object_state.color_type == V3D_SHADING_TEXTURE_COLOR) {
-      features = SCULPT_BATCH_UV;
+      features |= SCULPT_BATCH_UV;
+    }
+    /* Phantom: polygroups and the mask tint the surface (#vert_sculpt). */
+    if (scene_state_.sculpt_face_sets_opacity > 0.0f) {
+      features |= SCULPT_BATCH_FACE_SET;
+    }
+    if (scene_state_.sculpt_mask_opacity > 0.0f && sculpt_has_mask(*ob_ref.object)) {
+      features |= SCULPT_BATCH_MASK;
     }
 
     if (object_state.use_per_material_batches) {
@@ -392,8 +423,8 @@ class Instance : public DrawEngine {
           texture = MaterialTexture(manager, ob_ref.object, batch.material_slot);
         }
 
-        this->draw_mesh(
-            ob_ref, mat, batch.batch, handle, &texture, object_state.show_missing_texture);
+        this->draw_sculpt_batch(
+            ob_ref, mat, batch, handle, &texture, object_state.show_missing_texture);
       }
     }
     else {
@@ -403,7 +434,7 @@ class Instance : public DrawEngine {
           mat.base_color = batch.debug_color();
         }
 
-        this->draw_mesh(ob_ref, mat, batch.batch, handle, &object_state.image_paint_override);
+        this->draw_sculpt_batch(ob_ref, mat, batch, handle, &object_state.image_paint_override);
       }
     }
   }
