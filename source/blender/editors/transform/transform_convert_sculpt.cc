@@ -95,7 +95,7 @@ static void createTransSculpt(bContext *C, TransInfo *t)
   normalize_m3(td->axismtx);
 
   BLI_assert(!(t->options & CTX_PAINT_CURVE));
-  sculpt_paint::init_transform(C, ob, t->mval, t->undo_name);
+  sculpt_paint::init_transform(C, ob, t->mval, t->undo_name, true);
 }
 
 /** \} */

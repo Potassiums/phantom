@@ -10,6 +10,7 @@
 
 #include "BLI_array_utils.hh"
 #include "BLI_enumerable_thread_specific.hh"
+#include "BLI_listbase.hh"
 #include "BLI_math_matrix.hh"
 #include "BLI_math_matrix_c.hh"
 #include "BLI_math_rotation_c.hh"
@@ -24,18 +25,25 @@
 #include "BKE_context.hh"
 #include "BKE_kelvinlet.h"
 #include "BKE_layer.hh"
+#include "BKE_lib_id.hh"
+#include "BKE_mesh.h"
+#include "BKE_object.hh"
 #include "BKE_mesh.hh"
 #include "BKE_object_types.hh"
 #include "BKE_paint.hh"
 #include "BKE_paint_bvh.hh"
 #include "BKE_paint_types.hh"
 #include "BKE_subdiv_ccg.hh"
+#include "BKE_wm_runtime.hh"
+
+#include "DEG_depsgraph.hh"
 
 #include "WM_api.hh"
 #include "WM_types.hh"
 
 #include "ED_screen.hh"
 #include "ED_sculpt.hh"
+#include "ED_undo.hh"
 #include "ED_view3d.hh"
 
 #include "../paint_intern.hh"
@@ -55,7 +63,81 @@
 
 namespace blender::ed::sculpt_paint {
 
-void init_transform(bContext *C, Object &ob, const float mval_fl[2], const char *undo_name)
+/* Phantom: the gizmo's options, see #phantom_gizmo_options_set. */
+static struct {
+  bool sticky = false;
+  bool all_visible = false;
+  bool unlocked = false;
+} gizmo_options;
+
+void phantom_gizmo_options_set(const bool sticky, const bool all_visible, const bool unlocked)
+{
+  gizmo_options.sticky = sticky;
+  gizmo_options.all_visible = all_visible;
+  gizmo_options.unlocked = unlocked;
+}
+
+/** Whether the transform moves only the pivot, not the mesh. */
+static bool pivot_only(const ToolSettings &ts, const SculptSession &ss)
+{
+  return (ts.transform_flag & SCE_XFORM_SCULPT_PIVOT) || ss.phantom_pivot_only;
+}
+
+/**
+ * Phantom: the other visible meshes, which the gizmo moves along with this one while
+ * "all visible" is on. Objects whose parent moves too are left to follow it.
+ */
+static void collect_other_objects(bContext *C, Object &active)
+{
+  SculptSession &ss = *active.runtime->sculpt_session;
+  ss.phantom_others.clear();
+  Main *bmain = CTX_data_main(C);
+  const Scene *scene = CTX_data_scene(C);
+  ViewLayer *view_layer = CTX_data_view_layer(C);
+  const View3D *v3d = CTX_wm_view3d(C);
+  BKE_view_layer_synced_ensure(*bmain, scene, view_layer);
+  Set<const Object *> moving = {&active};
+  Vector<Object *> candidates;
+  for (Base &base : *BKE_view_layer_object_bases_get(view_layer)) {
+    Object *other = base.object;
+    if (other == &active || other->type != OB_MESH || !BKE_base_is_visible(v3d, &base) ||
+        !BKE_id_is_editable(bmain, &other->id))
+    {
+      continue;
+    }
+    candidates.append(other);
+    moving.add(other);
+  }
+  UndoStack *ustack = ED_undo_stack_get();
+  for (Object *other : candidates) {
+    bool parent_moves = false;
+    for (const Object *parent = other->parent; parent; parent = parent->parent) {
+      parent_moves |= moving.contains(parent);
+    }
+    if (parent_moves) {
+      continue;
+    }
+    /* Changed "in the future" of an earlier global undo step, so that one reloads it. */
+    ED_undosys_stack_memfile_id_changed_tag(ustack, &other->id);
+    ss.phantom_others.append({other, other->object_to_world(), other->object_to_world()});
+  }
+}
+
+/** Move the other meshes by `local`, the object-space transform of the mesh sculpted. */
+static void update_other_objects(const Object &ob, const float4x4 &local)
+{
+  SculptSession &ss = *ob.runtime->sculpt_session;
+  const float4x4 &obmat = ob.object_to_world();
+  const float4x4 world = obmat * local * math::invert(obmat);
+  for (SculptSession::PhantomOtherObject &other : ss.phantom_others) {
+    other.after = world * other.before;
+    BKE_object_apply_mat4(other.object, other.after.ptr(), false, true);
+    DEG_id_tag_update(&other.object->id, ID_RECALC_TRANSFORM);
+  }
+}
+
+void init_transform(
+    bContext *C, Object &ob, const float mval_fl[2], const char *undo_name, const bool gizmo)
 {
   const Scene &scene = *CTX_data_scene(C);
   ToolSettings &ts = *CTX_data_tool_settings(C);
@@ -71,8 +153,19 @@ void init_transform(bContext *C, Object &ob, const float mval_fl[2], const char 
   ss.prev_pivot_rot = ss.pivot_rot;
   ss.prev_pivot_scale = ss.pivot_scale;
 
-  /* Pivot only transformations don't push undo steps */
-  if (ts.transform_flag & SCE_XFORM_SCULPT_PIVOT) {
+  /* Phantom: the gizmo moves only its pivot while unlocked, or when Alt is held as it starts. */
+  ss.phantom_gizmo = gizmo;
+  ss.phantom_pivot_only = false;
+  ss.phantom_others.clear();
+  if (gizmo) {
+    const wmWindow *win = CTX_wm_window(C);
+    const bool alt = win && win->runtime->eventstate &&
+                     (win->runtime->eventstate->modifier & KM_ALT);
+    ss.phantom_pivot_only = gizmo_options.unlocked || alt;
+  }
+
+  /* Pivot only transformations push their undo step at the end, if the pivot moved. */
+  if (pivot_only(ts, ss)) {
     return;
   }
 
@@ -89,6 +182,36 @@ void init_transform(bContext *C, Object &ob, const float mval_fl[2], const char 
   else {
     ss.filter_cache->transform_displacement_mode = TransformDisplacementMode::Original;
   }
+
+  if (gizmo && gizmo_options.all_visible) {
+    collect_other_objects(C, ob);
+  }
+}
+
+/**
+ * Phantom: an undo step for moving only the pivot, from `before_*` to where it is now. None when
+ * it didn't move.
+ */
+static void push_pivot_step(bContext *C,
+                            Object &ob,
+                            const float3 &before_pos,
+                            const float4 &before_rot,
+                            const char *name)
+{
+  SculptSession &ss = *ob.runtime->sculpt_session;
+  if (ss.pivot_pos == before_pos && ss.pivot_rot == before_rot) {
+    return;
+  }
+  const float3 after_pos = ss.pivot_pos;
+  const float4 after_rot = ss.pivot_rot;
+  ss.pivot_pos = before_pos;
+  ss.pivot_rot = before_rot;
+  Depsgraph *depsgraph = CTX_data_ensure_evaluated_depsgraph(C);
+  bke::object::pbvh_ensure(*depsgraph, ob);
+  undo::push_begin_ex(*CTX_data_scene(C), ob, name);
+  ss.pivot_pos = after_pos;
+  ss.pivot_rot = after_rot;
+  undo::push_end(ob);
 }
 
 static void finish_pivot_change(bContext *C, Object &ob)
@@ -120,7 +243,8 @@ static std::array<float4x4, 8> transform_matrices_init(const SculptSession &ss,
           mirror[axis][axis] = -1.0f;
         }
       }
-      mats[i] = mirror * *ss.phantom_transform_matrix * mirror;
+      mats[i] = ss.phantom_transform_whole ? *ss.phantom_transform_matrix :
+                                             mirror * *ss.phantom_transform_matrix * mirror;
     }
     return mats;
   }
@@ -590,7 +714,7 @@ void update_modal_transform(bContext *C, Object &ob)
   SculptSession &ss = *ob.runtime->sculpt_session;
   Depsgraph *depsgraph = CTX_data_depsgraph_pointer(C);
 
-  if ((ts.transform_flag & SCE_XFORM_SCULPT_PIVOT) == 0) {
+  if (!pivot_only(ts, ss)) {
     vert_random_access_ensure(ob);
     BKE_sculptsession_update_for_edit(depsgraph, &ob, false);
 
@@ -617,6 +741,12 @@ void update_modal_transform(bContext *C, Object &ob)
         break;
       }
     }
+    if (!ss.phantom_others.is_empty()) {
+      /* The other meshes move as the whole of this one would, from where they started. */
+      const std::array<float4x4, 8> mats = transform_matrices_init(
+          ss, PAINT_SYMM_NONE, TransformDisplacementMode::Original);
+      update_other_objects(ob, mats[0]);
+    }
   }
   else {
     /* Intentional no-op */
@@ -626,7 +756,7 @@ void update_modal_transform(bContext *C, Object &ob)
   copy_v4_v4(ss.prev_pivot_rot, ss.pivot_rot);
   copy_v3_v3(ss.prev_pivot_scale, ss.pivot_scale);
 
-  if ((ts.transform_flag & SCE_XFORM_SCULPT_PIVOT) == 0) {
+  if (!pivot_only(ts, ss)) {
     flush_update_step(C, UpdateType::Position);
   }
 }
@@ -637,7 +767,14 @@ void cancel_modal_transform(bContext *C, Object &ob)
    * requires restoring positions from undo. For "All Vertices" there is no benefit in using the
    * transform system to update to original positions either. */
   Depsgraph &depsgraph = *CTX_data_depsgraph_pointer(C);
+  SculptSession &ss = *ob.runtime->sculpt_session;
+  if (pivot_only(*CTX_data_tool_settings(C), ss)) {
+    return;
+  }
   undo::restore_position_from_undo_step(depsgraph, ob);
+  /* Phantom: the other meshes back where they were. */
+  update_other_objects(ob, float4x4::identity());
+  ss.phantom_others.clear();
 
   bke::pbvh::Tree &pbvh = *bke::object::pbvh_get(ob);
   bke::pbvh::update_normals(depsgraph, ob, pbvh);
@@ -648,16 +785,33 @@ void end_transform(bContext *C, Object &ob)
 {
   ToolSettings &ts = *CTX_data_tool_settings(C);
   SculptSession &ss = *ob.runtime->sculpt_session;
-  /* Pivot only transformations don't push undo steps */
-  if (ts.transform_flag & SCE_XFORM_SCULPT_PIVOT) {
+  const bool gizmo = ss.phantom_gizmo;
+  ss.phantom_gizmo = false;
+  if (pivot_only(ts, ss)) {
     BLI_assert(ss.filter_cache == nullptr);
+    ss.phantom_pivot_only = false;
+    /* Phantom: moving the pivot can be undone too. */
+    push_pivot_step(C, ob, ss.init_pivot_pos, ss.init_pivot_rot, IFACE_("Move Gizmo Pivot"));
     finish_pivot_change(C, ob);
     return;
   }
   MEM_delete(ss.filter_cache);
   ss.filter_cache = nullptr;
+  /* Phantom: sticky, the gizmo's pivot and axes go back to where they were, the mesh stays. */
+  if (gizmo && gizmo_options.sticky) {
+    ss.pivot_pos = ss.init_pivot_pos;
+    ss.pivot_rot = ss.init_pivot_rot;
+  }
+  if (!ss.phantom_others.is_empty()) {
+    undo::store_other_objects(ss.phantom_others);
+    ss.phantom_others.clear();
+    WM_event_add_notifier(C, NC_OBJECT | ND_TRANSFORM, nullptr);
+  }
   undo::push_end(ob);
   flush_update_done(C, ob, UpdateType::Position);
+  if (gizmo && gizmo_options.sticky) {
+    finish_pivot_change(C, ob);
+  }
 }
 
 /* -------------------------------------------------------------------- */
@@ -686,7 +840,7 @@ static wmOperatorStatus phantom_transform_exec(bContext *C, wmOperator *op)
       /* Pivot-only transforms skip the undo step and cache that deforming needs. */
       ts.transform_flag &= ~SCE_XFORM_SCULPT_PIVOT;
       const float mval[2] = {0.0f, 0.0f};
-      init_transform(C, ob, mval, IFACE_("Transpose"));
+      init_transform(C, ob, mval, IFACE_("Transpose"), false);
       ss.filter_cache->transform_displacement_mode = TransformDisplacementMode::Original;
       return OPERATOR_FINISHED;
     }
@@ -1190,5 +1344,168 @@ void SCULPT_OT_set_pivot_position(wmOperatorType *ot)
                 0.0f,
                 10000.0f);
 }
+
+/* -------------------------------------------------------------------- */
+/** \name Phantom: gizmo pivot actions
+ *
+ * The icons above the gizmo (see `phantom_transpose.py`): put its pivot on the mesh's center, at
+ * the world origin, or back to the world axes. While the gizmo is locked, Home and the axes
+ * reset take the mesh along (back to where the gizmo moved and turned it from); unlocked, only
+ * the pivot moves.
+ * \{ */
+
+enum class GizmoAction { Center = 0, Home = 1, Spin = 2 };
+
+/**
+ * The mesh's center of volume (else of its surface), or the average of its unmasked vertices
+ * when part of it is masked or hidden, or with Multires or Dyntopo.
+ */
+static float3 mesh_center(const Depsgraph &depsgraph, Object &ob)
+{
+  const SculptSession &ss = *ob.runtime->sculpt_session;
+  const bke::pbvh::Tree &pbvh = *bke::object::pbvh_get(ob);
+  if (pbvh.type() == bke::pbvh::Type::Mesh) {
+    const Mesh &mesh = *id_cast<const Mesh *>(ob.data);
+    const bke::AttributeAccessor attributes = mesh.attributes();
+    bool partial = false;
+    if (const VArray mask = *attributes.lookup<float>(".sculpt_mask", bke::AttrDomain::Point)) {
+      const VArraySpan<float> values(mask);
+      partial |= std::any_of(values.begin(), values.end(), [](const float m) { return m > 0.0f; });
+    }
+    if (const VArray hide = *attributes.lookup<bool>(".hide_vert", bke::AttrDomain::Point)) {
+      const VArraySpan<bool> values(hide);
+      partial |= std::any_of(values.begin(), values.end(), [](const bool h) { return h; });
+    }
+    float3 center;
+    if (!partial &&
+        (BKE_mesh_center_of_volume(&mesh, center) || BKE_mesh_center_of_surface(&mesh, center)))
+    {
+      return center;
+    }
+  }
+  return average_unmasked_position(depsgraph, ob, ss.pivot_pos, PAINT_SYMM_NONE);
+}
+
+static wmOperatorStatus phantom_gizmo_exec(bContext *C, wmOperator *op)
+{
+  static const char *undo_names[] = {
+      N_("Center Gizmo"), N_("Gizmo to World Origin"), N_("Reset Gizmo Rotation")};
+  Object &ob = *CTX_data_active_object(C);
+  SculptSession &ss = *ob.runtime->sculpt_session;
+  ToolSettings &ts = *CTX_data_tool_settings(C);
+  const GizmoAction action = GizmoAction(RNA_enum_get(op->ptr, "action"));
+  const char *undo_name = IFACE_(undo_names[int(action)]);
+  if (ss.filter_cache) {
+    /* In the middle of another transform. */
+    return OPERATOR_CANCELLED;
+  }
+  Depsgraph *depsgraph = CTX_data_ensure_evaluated_depsgraph(C);
+  BKE_sculptsession_update_for_edit(depsgraph, &ob, false);
+
+  const float3 before_pos = ss.pivot_pos;
+  const float4 before_rot = ss.pivot_rot;
+  float3 pos = before_pos;
+  float4 rot = before_rot;
+  switch (action) {
+    case GizmoAction::Center:
+      pos = mesh_center(*depsgraph, ob);
+      break;
+    case GizmoAction::Home:
+      pos = math::transform_point(ob.world_to_object(), float3(0.0f));
+      break;
+    case GizmoAction::Spin:
+      rot = float4(1.0f, 0.0f, 0.0f, 0.0f);
+      break;
+  }
+  if (pos == before_pos && rot == before_rot) {
+    return OPERATOR_CANCELLED;
+  }
+
+  const bool move_mesh = action != GizmoAction::Center && !gizmo_options.unlocked &&
+                         !(ts.transform_flag & SCE_XFORM_SCULPT_PIVOT);
+  if (!move_mesh) {
+    ss.pivot_pos = pos;
+    ss.pivot_rot = rot;
+    push_pivot_step(C, ob, before_pos, before_rot, undo_name);
+    finish_pivot_change(C, ob);
+    return OPERATOR_FINISHED;
+  }
+
+  /* The mesh moves from the pivot as it is to the pivot as it will be. */
+  float4x4 local;
+  if (action == GizmoAction::Home) {
+    local = math::from_location<float4x4>(pos - before_pos);
+  }
+  else {
+    float4 delta;
+    sub_qt_qtqt(delta, rot, before_rot);
+    normalize_qt(delta);
+    float4x4 rotation;
+    quat_to_mat4(rotation.ptr(), delta);
+    local = math::from_location<float4x4>(before_pos) * rotation *
+            math::from_location<float4x4>(-before_pos);
+  }
+
+  const float mval[2] = {0.0f, 0.0f};
+  ts.transform_flag &= ~SCE_XFORM_SCULPT_PIVOT;
+  init_transform(C, ob, mval, undo_name, false);
+  if (gizmo_options.all_visible) {
+    collect_other_objects(C, ob);
+  }
+  /* The whole mesh moves: symmetry would mirror it into itself. */
+  Mesh &mesh = *id_cast<Mesh *>(ob.data);
+  const eMeshSymmetryType symmetry = mesh.symmetry;
+  mesh.symmetry = eMeshSymmetryType(symmetry & ~ME_SYMMETRY_XYZ);
+  ss.phantom_transform_matrix = local;
+  ss.phantom_transform_whole = true;
+  sculpt_transform_all_vertices(*depsgraph, *ts.sculpt, ob);
+  ss.phantom_transform_matrix.reset();
+  ss.phantom_transform_whole = false;
+  mesh.symmetry = symmetry;
+  flush_update_step(C, UpdateType::Position);
+  update_other_objects(ob, local);
+
+  ss.pivot_pos = pos;
+  ss.pivot_rot = rot;
+  end_transform(C, ob);
+  finish_pivot_change(C, ob);
+  return OPERATOR_FINISHED;
+}
+
+void SCULPT_OT_phantom_gizmo(wmOperatorType *ot)
+{
+  ot->name = "Gizmo Pivot";
+  ot->idname = "SCULPT_OT_phantom_gizmo";
+  ot->description =
+      "Put the gizmo's pivot on the mesh's center, at the world origin, or back to the world "
+      "axes (while it is locked, the mesh comes along)";
+
+  ot->exec = phantom_gizmo_exec;
+  ot->poll = sculpt_mode_poll_view3d;
+
+  ot->flag = OPTYPE_INTERNAL;
+
+  static const EnumPropertyItem actions[] = {
+      {int(GizmoAction::Center),
+       "CENTER",
+       0,
+       "Center",
+       "Put the pivot on the center of the mesh's volume (of its unmasked part when masked)"},
+      {int(GizmoAction::Home),
+       "HOME",
+       0,
+       "Home",
+       "Put the pivot at the world origin, the mesh along with it while the gizmo is locked"},
+      {int(GizmoAction::Spin),
+       "SPIN",
+       0,
+       "Reset Rotation",
+       "Turn the gizmo back to the world axes, the mesh along with it while the gizmo is locked"},
+      {0, nullptr, 0, nullptr, nullptr},
+  };
+  RNA_def_enum(ot->srna, "action", actions, int(GizmoAction::Center), "Action", "");
+}
+
+/** \} */
 
 }  // namespace blender::ed::sculpt_paint

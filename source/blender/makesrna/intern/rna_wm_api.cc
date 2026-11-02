@@ -111,6 +111,9 @@ const EnumPropertyItem rna_enum_window_cursor_items[] = {
 #  include "BKE_object_types.hh"
 #  include "BKE_paint.hh"
 #  include "BKE_paint_types.hh"
+#  include "ED_sculpt.hh"
+#  include "BLI_math_matrix_c.hh"
+#  include "BLI_math_vector_c.hh"
 #  include "DNA_brush_types.h"
 #  include "BKE_subdiv_ccg.hh"
 #  include "BLI_bit_span_ops.hh"
@@ -1095,6 +1098,23 @@ static bool rna_WindowManager_phantom_ui_sound_play(const char *name, float pitc
   return WM_ui_sound_play_by_name(name, pitch);
 }
 
+static void rna_WindowManager_phantom_sculpt_gizmo_options(const bool sticky,
+                                                          const bool all_visible,
+                                                          const bool unlocked)
+{
+  ed::sculpt_paint::phantom_gizmo_options_set(sticky, all_visible, unlocked);
+}
+
+static void rna_WindowManager_phantom_sculpt_pivot(bContext *C, float r_location[3])
+{
+  const Object *ob = CTX_data_active_object(C);
+  if (ob == nullptr || !(ob->mode & OB_MODE_SCULPT) || ob->runtime->sculpt_session == nullptr) {
+    zero_v3(r_location);
+    return;
+  }
+  mul_v3_m4v3(r_location, ob->object_to_world().ptr(), ob->runtime->sculpt_session->pivot_pos);
+}
+
 static int rna_WindowManager_phantom_undo_push_count()
 {
   return BKE_undosys_phantom_push_count();
@@ -1339,6 +1359,33 @@ void RNA_api_wm(StructRNA *srna)
   RNA_def_float(func, "pitch", 1.0f, 0.25f, 4.0f, "Pitch", "Playback speed factor", 0.5f, 2.0f);
   parm = RNA_def_boolean(func, "found", false, "Found", "Whether there is such a sound");
   RNA_def_function_return(func, parm);
+
+  func = RNA_def_function(srna,
+                          "phantom_sculpt_gizmo_options",
+                          "rna_WindowManager_phantom_sculpt_gizmo_options");
+  RNA_def_function_flag(func, FUNC_NO_SELF);
+  RNA_def_function_ui_description(
+      func,
+      "The Sculpt Mode gizmo's options: sticky (its pivot goes back after each transform), all "
+      "visible (the other visible meshes move along) and unlocked (it moves only its pivot)");
+  parm = RNA_def_boolean(func, "sticky", false, "Sticky", "");
+  RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
+  parm = RNA_def_boolean(func, "all_visible", false, "All Visible", "");
+  RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
+  parm = RNA_def_boolean(func, "unlocked", false, "Unlocked", "");
+  RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
+
+  func = RNA_def_function(
+      srna, "phantom_sculpt_pivot", "rna_WindowManager_phantom_sculpt_pivot");
+  RNA_def_function_flag(func, FUNC_NO_SELF | FUNC_USE_CONTEXT);
+  RNA_def_function_ui_description(
+      func,
+      "World position of the Sculpt Mode gizmo's pivot for the active object (zero outside "
+      "Sculpt Mode)");
+  parm = RNA_def_float_vector(
+      func, "location", 3, nullptr, -FLT_MAX, FLT_MAX, "Location", "", -1e4, 1e4);
+  RNA_def_parameter_flags(parm, PROP_THICK_WRAP, ParameterFlag(0));
+  RNA_def_function_output(func, parm);
 
   func = RNA_def_function(
       srna, "phantom_undo_push_count", "rna_WindowManager_phantom_undo_push_count");

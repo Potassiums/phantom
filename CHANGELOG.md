@@ -4,6 +4,36 @@ Phantom is a fork of Blender tuned for sculpting. This file lists what Phantom c
 own changes come from the Blender version each release is built on.
 
 
+## 0.5.1 alpha (2026-11-02)
+
+Built on Blender 5.4 alpha, on top of 0.5.0. ZBrush's gizmo options come to Phantom's Move,
+Rotate and Scale gizmo in Sculpt Mode, and Symmetry is back on the simple view's right toolbar.
+
+### Gizmo options
+
+- **A row of icons above the gizmo** (in the simple view and the usual interface), after ZBrush's,
+  with a tooltip each:
+  - **Transform types** (gear): a card with the primitives to add and the gizmo's other tools
+    that Phantom has: Move, Rotate, Scale, Stretch and Twist (Transpose), Smooth and Inflate
+    (mesh filters), Subdivide, Remesh (like DynaMesh), Quad Remesh (like ZRemesher) and Union.
+  - **Sticky** (pin): after each move, rotate or scale the gizmo goes back to where it was; the
+    mesh stays where it was moved to.
+  - **Center** (GPS): the gizmo on the mesh's center of volume (of its unmasked part when
+    masked).
+  - **Home:** to the world origin. **Reset rotation:** back to the world axes.
+  - **Lock:** locked, the gizmo moves the mesh, and Home and Reset rotation take it along;
+    unlocked, it moves only itself. **Alt-drag** the gizmo to move only the gizmo too.
+  - **All visible** (list): move every visible mesh with the gizmo, not only the one sculpted.
+- The gizmo's axes turn with the mesh it rotated, as in ZBrush.
+- Moving the gizmo by itself never moves the mesh, and it can be undone and redone (also with
+  Dyntopo). Redo now puts the gizmo back where the step left it.
+
+### Simple sculpting view
+
+- **Symmetry** is back on the right toolbar: click it for X symmetry, right-click it for the other
+  axes and Symmetrize (it stays in the top bar too).
+
+
 ## 0.5.0 alpha (2026-11-02)
 
 Built on Blender 5.4 alpha, on top of 0.4.4. A big update: a simple sculpting view laid out like

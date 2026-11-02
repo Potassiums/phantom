@@ -488,6 +488,25 @@ struct SculptSession : NonCopyable, NonMovable {
   std::optional<float4x4> phantom_transform_matrix;
   /** Phantom: symmetry area the #phantom_transform_matrix was made in. */
   int phantom_transform_area = 0;
+  /** Phantom: the #phantom_transform_matrix moves the whole mesh, ignoring symmetry. */
+  bool phantom_transform_whole = false;
+  /**
+   * Phantom: this transform moves only the gizmo's pivot (the gizmo is unlocked, or Alt was held
+   * when it started), not the mesh.
+   */
+  bool phantom_pivot_only = false;
+  /** Phantom: this transform was started with the gizmo (not Transpose or an operator). */
+  bool phantom_gizmo = false;
+  /**
+   * Phantom: the other visible meshes the gizmo moves along with this one ("all visible"), with
+   * their world matrices when the transform started and now.
+   */
+  struct PhantomOtherObject {
+    Object *object;
+    float4x4 before;
+    float4x4 after;
+  };
+  Vector<PhantomOtherObject> phantom_others;
 
   eObjectMode mode_type = OB_MODE_OBJECT;
 

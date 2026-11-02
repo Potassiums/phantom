@@ -1836,6 +1836,7 @@ void operatortypes_sculpt()
   WM_operatortype_append(mask::SCULPT_OT_mask_filter);
   WM_operatortype_append(SCULPT_OT_set_pivot_position);
   WM_operatortype_append(SCULPT_OT_phantom_transform);
+  WM_operatortype_append(SCULPT_OT_phantom_gizmo);
   WM_operatortype_append(SCULPT_OT_phantom_clay_polish);
   WM_operatortype_append(SCULPT_OT_phantom_history_goto);
   WM_operatortype_append(SCULPT_OT_phantom_history_scrub);

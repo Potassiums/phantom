@@ -32,11 +32,29 @@ angle, and a measuring tick sounds as it changes (like adjusting the voxel remes
 
 The deformation itself is done by ``sculpt.phantom_transform`` (Blender's sculpt transform with a
 matrix), so masks, symmetry and undo work as with the gizmo tools.
+
+Above the gizmo (after ZBrush's) sits a row of icons, in the simple view and the usual interface:
+
+- **Transform types** (gear): a card with the gizmo's other tools, as in ZBrush, where Phantom has
+  them: the primitives, Move, Rotate, Scale, Stretch and Twist (Transpose), Smooth and Inflate
+  (mesh filters), Divide, Remesh, Quad Remesh and Union.
+- **Sticky** (pin): after each move, rotate or scale the gizmo's pivot and axes go back to where
+  they were; the mesh stays where it was moved to.
+- **Center** (GPS): the pivot on the mesh's center of volume (of its unmasked part when masked).
+- **Home**: the pivot to the world origin.
+- **Reset rotation** (spin): the gizmo back to the world axes.
+- **Lock**: locked, the gizmo moves the mesh (Home and Reset rotation take it along); unlocked, it
+  moves only its pivot. Holding Alt as a drag starts unlocks it for that drag.
+- **All visible** (list): move every visible mesh, not only the one sculpted.
+
+The gizmo's axes turn with the mesh it rotated (or with the pivot alone, unlocked). Moving the
+pivot never moves the mesh, and every change of the pivot or the meshes can be undone.
 """
 
 import json
 import math
 import os
+import time
 
 import blf
 import bpy
@@ -87,7 +105,10 @@ LABELS = {
     'ROTATE': ("Rotate", "Twist"),
 }
 
-_settings = {"style": 'GIZMO', "mode": 'MOVE'}
+_settings = {"style": 'GIZMO', "mode": 'MOVE',
+             # The gizmo's options (its icon row): see #phantom_gizmo_options_set in C.
+             "sticky": False, "locked": True, "all_visible": False}
+GIZMO_OPTIONS = ("sticky", "locked", "all_visible")
 # The action line, in world space: {"a": Vector, "b": Vector} or None.
 _line = {"value": None}
 # What the line was drawn on: it goes away in another workspace, on another object, out of
@@ -115,6 +136,17 @@ def _load_settings():
         _settings["style"] = data["style"]
     if data.get("mode") in GIZMO_TOOLS:
         _settings["mode"] = data["mode"]
+    for key in GIZMO_OPTIONS:
+        if isinstance(data.get(key), bool):
+            _settings[key] = data[key]
+
+
+def _push_gizmo_options():
+    """Hand the gizmo's options to the sculpt transform (C), which follows them."""
+    set_options = getattr(bpy.types.WindowManager, "phantom_sculpt_gizmo_options", None)
+    if set_options is not None:
+        set_options(sticky=_settings["sticky"], all_visible=_settings["all_visible"],
+                    unlocked=not _settings["locked"])
 
 
 def _save_settings():
@@ -662,6 +694,536 @@ def _draw():
 
 
 # -----------------------------------------------------------------------------
+# Gizmo icon row
+#
+# Drawn above the gizmo in the simple view's look (its toolbars' graphite, hairline, corners,
+# button size and hover; see phantom_simple_view): Phantom orange marks only what is on.
+
+# The row's buttons, in groups: (key, tooltip). Tooltips name the state; see #_row_tip.
+ROW_GROUPS = (('TYPES',), ('STICKY', 'CENTER', 'HOME', 'SPIN'), ('LOCK', 'ALL'))
+# Unscaled pixels: between the gizmo's arrows and the row, and the row's distance from the
+# region's edges.
+ROW_ABOVE = 12
+ROW_MARGIN = 8
+# The gizmo's arrows (with their tips) reach about this many times the Gizmo Size preference
+# from its center: the row keeps clear of them, or they would take its clicks.
+GIZMO_REACH = 1.12
+# The Transform Types card, unscaled pixels on a 4 px grid: padding, title row, section label
+# row, primitive tile, the gap between tiles and pills, a pill, its columns, and the caption row.
+TYPES_PAD = 16
+TYPES_TITLE = 24
+TYPES_LABEL = 20
+TYPES_TILE = 64
+TYPES_GAP = 8
+TYPES_PILL = 32
+TYPES_COLUMNS = 4
+TYPES_CAPTION = 20
+
+# The tools of ZBrush's Transform Types that Phantom has: (key, label, what it is and does).
+TYPES = (
+    ('MOVE', "Move", "Move the model with the gizmo (ZBrush: Offset)"),
+    ('ROTATE', "Rotate", "Rotate the model with the gizmo"),
+    ('SCALE', "Scale", "Scale the model with the gizmo"),
+    ('STRETCH', "Stretch", "Transpose: drag an end circle to stretch the model along the line"),
+    ('TWIST', "Twist", "Transpose Rotate: drag the middle circle along the line to twist"),
+    ('SMOOTH', "Smooth", "Mesh filter: drag left or right in the viewport to smooth everything "
+                         "unmasked"),
+    ('INFLATE', "Inflate", "Mesh filter: drag left or right to inflate or deflate the unmasked "
+                           "model"),
+    ('DIVIDE', "Subdivide", "Divide: subdivide the mesh one level (Ctrl D)"),
+    ('REMESH', "Remesh", "Voxel remesh, even polygons all over (ZBrush: Remesh by DynaMesh)"),
+    ('QUAD', "Quad Remesh", "Rebuild the mesh with clean quads (ZBrush: Remesh by ZRemesher)"),
+    ('UNION', "Union", "Join the mesh below into this one as one solid (ZBrush: Remesh by "
+                       "Union)"),
+)
+
+# The button under the cursor and since when, the one pressed, and whether the Transform Types
+# card is open with the item under the cursor or pressed there.
+_row = {"hover": None, "since": 0.0, "pressed": None}
+_types = {"open": False, "hover": None, "pressed": None}
+
+
+def _sv():
+    import phantom_simple_view
+    return phantom_simple_view
+
+
+def _row_on(key):
+    """Whether a button shows as on (the accent)."""
+    if key == 'TYPES':
+        return _types["open"]
+    if key == 'STICKY':
+        return _settings["sticky"]
+    if key == 'LOCK':
+        # Unlocked changes what the gizmo does: that is what stands out.
+        return not _settings["locked"]
+    if key == 'ALL':
+        return _settings["all_visible"]
+    return False
+
+
+def _row_icon(key):
+    """Blender's icon for a button, or None for the ones drawn here (#_draw_row_icon)."""
+    return {
+        'TYPES': 'PREFERENCES',
+        'STICKY': 'PINNED' if _settings["sticky"] else 'UNPINNED',
+        'HOME': 'HOME',
+        'SPIN': 'FILE_REFRESH',
+    }.get(key)
+
+
+def _bar(x0, y0, x1, y1, width, color):
+    """A straight stroke `width` pixels wide (as a quad: line widths vary between GPU backends)."""
+    d = Vector((x1 - x0, y1 - y0))
+    if d.length < 1e-6:
+        return
+    n = Vector((-d.y, d.x)).normalized() * (width / 2.0)
+    _sv()._draw('TRI_FAN', [(x0 + n.x, y0 + n.y), (x1 + n.x, y1 + n.y), (x1 - n.x, y1 - n.y),
+                            (x0 - n.x, y0 - n.y)], color)
+
+
+def _draw_row_icon(key, cx, cy, size, s):
+    """The icons drawn here, as big as Blender's around them: a lock (Blender's is small), a map
+    pin (Center, ZBrush's GPS) and a checklist (All visible: one row checked for this mesh only,
+    all of them for every visible mesh)."""
+    sv = _sv()
+    color = (1.0, 1.0, 1.0, 0.92)
+    r = size / 2.0
+    stroke = max(1.5, 1.6 * s)
+    if key == 'LOCK':
+        # The body, then the shackle over it: closed when locked, its left side lifted out of
+        # the body when unlocked.
+        body_w, body_h = r * 1.3, r * 0.95
+        body_y = cy - r * 0.8
+        sv._rounded_rect(cx - body_w / 2, body_y, body_w, body_h, 2.0 * s, color)
+        top = body_y + body_h
+        shackle_r = r * 0.42
+        center_y = top + r * (0.18 if _settings["locked"] else 0.42)
+        sv._arc(cx, center_y, shackle_r, stroke, 0.0, math.pi, color)
+        _bar(cx + shackle_r, center_y, cx + shackle_r, top, stroke, color)
+        left_end = top if _settings["locked"] else center_y - r * 0.12
+        _bar(cx - shackle_r, center_y, cx - shackle_r, left_end, stroke, color)
+        return
+    if key == 'CENTER':
+        head_y, head_r = cy + r * 0.28, r * 0.52
+        # The head's ring, open where the point leaves it, and the point.
+        a0, a1 = math.radians(-38.0), math.radians(218.0)
+        sv._arc(cx, head_y, head_r, stroke, a0, a1, color)
+        tip = (cx, cy - r * 0.95)
+        for a in (a0, a1):
+            _bar(cx + head_r * math.cos(a), head_y + head_r * math.sin(a), *tip, stroke, color)
+        sv._disc(cx, head_y, head_r * 0.36, color)
+        return
+    box = r * 0.42
+    for i, row_y in enumerate((cy + r * 0.62, cy, cy - r * 0.62)):
+        bx = cx - r
+        checked = i == 0 or _settings["all_visible"]
+        if checked:
+            sv._rounded_rect(bx, row_y - box / 2, box, box, 1.5 * s, color)
+        else:
+            sv._outline(sv._rounded_rect(bx, row_y - box / 2, box, box, 1.5 * s, (0, 0, 0, 0)),
+                        color, max(1.0, 1.2 * s))
+        _bar(cx - r * 0.3, row_y, cx + r, row_y, stroke, color)
+
+
+def _row_tip(key):
+    locked = _settings["locked"]
+    if key == 'TYPES':
+        return "Transform types: primitives and the gizmo's other tools"
+    if key == 'STICKY':
+        return ("Sticky on: the gizmo goes back to where it was after each move, rotate or scale"
+                if _settings["sticky"] else
+                "Sticky off: the gizmo stays with the mesh. Click to have it go back after each "
+                "move")
+    if key == 'CENTER':
+        return "Center: put the gizmo on the mesh's center of volume (unmasked part when masked)"
+    if key == 'HOME':
+        return ("Home: move the mesh and the gizmo to the world origin" if locked else
+                "Home: put the gizmo at the world origin")
+    if key == 'SPIN':
+        return ("Reset rotation: turn the mesh and the gizmo back to the world axes" if locked else
+                "Reset rotation: turn the gizmo back to the world axes")
+    if key == 'LOCK':
+        return ("Locked: the gizmo moves the mesh. Click to move only the gizmo (or hold Alt)"
+                if locked else
+                "Unlocked: the gizmo moves only itself, not the mesh. Click to lock")
+    if _settings["all_visible"]:
+        return "All visible meshes move with the gizmo. Click to move only this one"
+    return "Only this mesh moves with the gizmo. Click to move every visible mesh"
+
+
+def _row_shown(context):
+    """Whether the row goes above the gizmo here: a gizmo tool in Sculpt Mode, gizmos shown."""
+    region, space = context.region, context.space_data
+    if (context.mode != 'SCULPT' or region is None or region.type != 'WINDOW' or space is None or
+            space.type != 'VIEW_3D' or context.active_object is None):
+        return False
+    if not (space.show_gizmo and space.show_gizmo_tool):
+        return False
+    return _active_tool(context) in GIZMO_TOOLS.values()
+
+
+def _row_layout(context):
+    """The row's rectangle, its buttons as ``(key, (x, y, w, h))`` and its dividers as
+    ``(x, y0, y1)``, or None when it isn't shown."""
+    if not _row_shown(context):
+        return None
+    pivot_at = getattr(bpy.types.WindowManager, "phantom_sculpt_pivot", None)
+    if pivot_at is None:
+        return None
+    region, rv3d = context.region, context.region_data
+    center = _to_screen(region, rv3d, Vector(pivot_at()))
+    if center is None:
+        return None
+    sv = _sv()
+    s = _ui_scale(context)
+    item, gap, pad = sv.ITEM * s, sv.ITEM_GAP * s, sv.BAR_PAD * s
+    group_gap = sv.GROUP_GAP * s
+    count = sum(len(group) for group in ROW_GROUPS)
+    w = (2 * pad + count * item + gap * (count - len(ROW_GROUPS)) +
+         group_gap * (len(ROW_GROUPS) - 1))
+    h = item + 2 * pad
+    reach = context.preferences.view.gizmo_size * GIZMO_REACH * s
+    margin = ROW_MARGIN * s
+    top = region.height - margin
+    try:
+        top -= sv._top_inset(context.area, region)
+    except (AttributeError, TypeError):
+        pass
+    y = center.y + reach + ROW_ABOVE * s
+    if y + h > top:
+        # No room above: below the gizmo.
+        y = center.y - reach - ROW_ABOVE * s - h
+    y = round(max(margin, min(y, top - h)))
+    x = round(max(margin, min(center.x - w / 2, region.width - margin - w)))
+    buttons, dividers = [], []
+    bx = x + pad
+    for index, group in enumerate(ROW_GROUPS):
+        if index:
+            dividers.append((bx - gap + group_gap / 2, y + h * 0.3, y + h * 0.7))
+            bx += group_gap - gap
+        for key in group:
+            buttons.append((key, (bx, y + pad, item, item)))
+            bx += item + gap
+    return {"rect": (x, y, w, h), "buttons": buttons, "dividers": dividers}
+
+
+def _in(rect, mx, my):
+    x, y, w, h = rect
+    return x <= mx <= x + w and y <= my <= y + h
+
+
+def _types_layout(context, row):
+    """The Transform Types card: above the row (else below), with the primitives as tiles,
+    the tools as pills in columns, and a caption saying what the one under the cursor does."""
+    sv = _sv()
+    s = _ui_scale(context)
+    region = context.region
+    pad, gap = TYPES_PAD * s, TYPES_GAP * s
+    tile, pill = TYPES_TILE * s, TYPES_PILL * s
+    tiles_n = len(sv.PRIMITIVES)
+    inner_w = tiles_n * tile + (tiles_n - 1) * gap
+    rows = -(-len(TYPES) // TYPES_COLUMNS)
+    pill_w = (inner_w - (TYPES_COLUMNS - 1) * gap) / TYPES_COLUMNS
+    w = inner_w + 2 * pad
+    h = (2 * pad + TYPES_TITLE * s + 2 * (TYPES_LABEL * s + gap) + tile + 2 * gap +
+         rows * pill + (rows - 1) * gap + gap + TYPES_CAPTION * s)
+    rx, ry, rw, rh = row["rect"]
+    margin = ROW_MARGIN * s
+    y = ry + rh + gap
+    if y + h > region.height - margin:
+        y = ry - gap - h
+    y = max(margin, min(y, region.height - margin - h))
+    x = max(margin, min(rx + rw / 2 - w / 2, region.width - margin - w))
+    top = y + h - pad
+    title_y = top - TYPES_TITLE * s
+    label1_y = title_y - gap - TYPES_LABEL * s
+    tiles_top = label1_y - gap
+    items = []
+    for i, (kind, name, icon) in enumerate(sv.PRIMITIVES):
+        items.append(("PRIM_" + kind, name, icon,
+                      (x + pad + i * (tile + gap), tiles_top - tile, tile, tile)))
+    label2_y = tiles_top - tile - 2 * gap - TYPES_LABEL * s
+    pills_top = label2_y - gap
+    for i, (key, label, _desc) in enumerate(TYPES):
+        col, line = i % TYPES_COLUMNS, i // TYPES_COLUMNS
+        items.append((key, label, None, (x + pad + col * (pill_w + gap),
+                                         pills_top - (line + 1) * pill - line * gap, pill_w, pill)))
+    return {"rect": (x, y, w, h), "title": (x + pad, title_y + TYPES_TITLE * s / 2),
+            "labels": ((x + pad, label1_y + TYPES_LABEL * s / 2, "Primitives"),
+                       (x + pad, label2_y + TYPES_LABEL * s / 2, "Tools")),
+            "caption": (x + pad, y + pad + TYPES_CAPTION * s / 2), "items": items}
+
+
+def _types_caption(key):
+    if key is None:
+        return "Add a primitive to sculpt, or pick a tool"
+    if key.startswith("PRIM_"):
+        name = next((p[1] for p in _sv().PRIMITIVES if "PRIM_" + p[0] == key), "primitive")
+        return f"Add a {name.lower()} to sculpt, placed first with the gizmo"
+    return next((d for k, _l, d in TYPES if k == key), "")
+
+
+def _draw_row():
+    context = bpy.context
+    row = _row_layout(context)
+    if row is None:
+        if _types["open"] and context.region is not None and context.region.type == 'WINDOW':
+            _types.update(open=False, hover=None, pressed=None)
+        return
+    sv = _sv()
+    s = _ui_scale(context)
+    gpu.state.blend_set('ALPHA')
+    outline = sv._rounded_rect(*row["rect"], sv.BAR_CORNER * s, sv.BAR_COLOR)
+    sv._outline(outline, sv.OUTLINE_COLOR)
+    for x, y0, y1 in row["dividers"]:
+        sv._line(x, y0, x, y1, sv.DIVIDER_COLOR)
+    for key, rect in row["buttons"]:
+        x, y, w, h = rect
+        if _row_on(key):
+            # On: a step of the accent under the icon, and its hairline.
+            points = sv._rounded_rect(x, y, w, h, 8 * s, (*sv.ACCENT[:3], 0.18))
+            sv._outline(points, sv.ACCENT, max(1.0, 1.5 * s))
+        elif _row["pressed"] == key:
+            sv._rounded_rect(x, y, w, h, 8 * s, sv.PRESS_COLOR)
+        elif _row["hover"] == key:
+            sv._rounded_rect(x, y, w, h, 8 * s, sv.HOVER_COLOR)
+        icon = _row_icon(key)
+        if icon is None:
+            _draw_row_icon(key, x + w / 2, y + h / 2, sv.ICON_SIZE * s, s)
+        else:
+            sv._draw_icon(icon, x + w / 2, y + h / 2, sv.ICON_SIZE * s, 0.92)
+    if _types["open"]:
+        _draw_types(context, row, s)
+    else:
+        _draw_row_tip(context, row, s)
+    gpu.state.blend_set('NONE')
+
+
+def _draw_row_tip(context, row, s):
+    sv = _sv()
+    key = _row["hover"]
+    if key is None or _row["pressed"] or time.perf_counter() - _row["since"] < sv.TOOLTIP_DELAY:
+        return
+    rect = next((r for k, r in row["buttons"] if k == key), None)
+    if rect is None:
+        return
+    text = _row_tip(key)
+    size = 11 * s
+    blf.size(0, size)
+    width = blf.dimensions(0, text)[0] + 16 * s
+    height = 24 * s
+    region = context.region
+    x = min(max(rect[0] + rect[2] / 2 - width / 2, 4 * s), region.width - width - 4 * s)
+    rx, ry, rw, rh = row["rect"]
+    y = ry + rh + 8 * s
+    if y + height > region.height - 4 * s:
+        y = ry - 8 * s - height
+    sv._rounded_rect(x, y, width, height, 6 * s, sv.TIP_COLOR)
+    sv._text_mid(x + 8 * s, y + height / 2, text, size, sv.TEXT_COLOR, align='LEFT')
+
+
+def _draw_types(context, row, s):
+    sv = _sv()
+    g = _types_layout(context, row)
+    points = sv._rounded_rect(*g["rect"], sv.BAR_CORNER * s, sv.BAR_COLOR)
+    sv._outline(points, sv.OUTLINE_COLOR)
+    x, cy = g["title"]
+    sv._text_mid(x, cy, "Transform types", 13 * s, sv.TEXT_COLOR, align='LEFT')
+    for lx, ly, label in g["labels"]:
+        sv._text_mid(lx, ly, label, 11 * s, sv.PILL_TEXT_COLOR, align='LEFT')
+    active = _active_tool(context)
+    for key, label, icon, rect in g["items"]:
+        x, y, w, h = rect
+        on = (key in GIZMO_TOOLS and active == GIZMO_TOOLS[key])
+        if _types["pressed"] == key:
+            fill = sv.PRESS_COLOR
+        elif _types["hover"] == key:
+            fill = sv.HOVER_COLOR
+        else:
+            fill = sv.PILL_COLOR
+        points = sv._rounded_rect(x, y, w, h, 8 * s, fill)
+        if on:
+            sv._outline(points, sv.ACCENT, max(1.0, 1.5 * s))
+        if icon is not None:
+            sv._draw_icon(icon, x + w / 2, y + h / 2 + 8 * s, 24 * s, 0.92)
+            sv._text_mid(x + w / 2, y + 12 * s, sv._fit(label, 10 * s, w - 8 * s), 10 * s,
+                         sv.PILL_TEXT_COLOR)
+        else:
+            sv._text_mid(x + w / 2, y + h / 2, label, 11 * s,
+                         sv.TEXT_COLOR if on else sv.PILL_TEXT_COLOR)
+    x, cy = g["caption"]
+    rx, _ry, rw, _rh = g["rect"]
+    text = sv._fit(_types_caption(_types["hover"]), 11 * s, rw - 2 * TYPES_PAD * s)
+    sv._text_mid(x, cy, text, 11 * s, sv.PILL_TEXT_COLOR, align='LEFT')
+
+
+def _row_redraw():
+    _redraw(bpy.context)
+    return None
+
+
+def _play_click():
+    play = getattr(bpy.types.WindowManager, "phantom_ui_sound_play", None)
+    if play is not None:
+        play("click")
+
+
+def _row_act(context, key):
+    """What clicking one of the row's buttons does."""
+    if key == 'TYPES':
+        _types.update(open=not _types["open"], hover=None, pressed=None)
+    elif key in {'STICKY', 'ALL'}:
+        option = "sticky" if key == 'STICKY' else "all_visible"
+        _settings[option] = not _settings[option]
+    elif key == 'LOCK':
+        _settings["locked"] = not _settings["locked"]
+    else:
+        action = {'CENTER': 'CENTER', 'HOME': 'HOME', 'SPIN': 'SPIN'}[key]
+        # `True`: its own undo step, as when run from a menu (Python calls skip undo by default).
+        bpy.ops.sculpt.phantom_gizmo('EXEC_DEFAULT', True, action=action)
+        return
+    _save_settings()
+    _push_gizmo_options()
+
+
+def _types_act(context, key):
+    """What clicking an item of the Transform Types card does."""
+    _types.update(open=False, hover=None, pressed=None)
+    if key.startswith("PRIM_"):
+        # `True`: each makes its own undo step, as when run from a menu.
+        bpy.ops.view3d.phantom_simple_add_primitive('EXEC_DEFAULT', True, kind=key[5:])
+    elif key in GIZMO_TOOLS:
+        bpy.ops.sculpt.phantom_transform_style(style='GIZMO')
+        bpy.ops.sculpt.phantom_transform_tool(mode=key)
+    elif key in {'STRETCH', 'TWIST'}:
+        bpy.ops.sculpt.phantom_transform_style(style='TRANSPOSE')
+        bpy.ops.sculpt.phantom_transform_tool(mode='MOVE' if key == 'STRETCH' else 'ROTATE')
+    elif key in {'SMOOTH', 'INFLATE'}:
+        bpy.ops.wm.tool_set_by_id(name="builtin.mesh_filter")
+        tool = context.workspace.tools.from_space_view3d_mode('SCULPT', create=False)
+        if tool is not None:
+            tool.operator_properties("sculpt.mesh_filter").type = key
+    elif key == 'DIVIDE':
+        bpy.ops.sculpt.phantom_divide('INVOKE_DEFAULT', True)
+    elif key == 'REMESH':
+        bpy.ops.object.voxel_remesh('INVOKE_DEFAULT', True)
+    elif key == 'QUAD':
+        bpy.ops.wm.call_panel(name="VIEW3D_PT_sculpt_quad_remesh", keep_open=True)
+    elif key == 'UNION':
+        bpy.ops.view3d.phantom_simple_scene_action('EXEC_DEFAULT', True, action='UNION')
+
+
+def _hit(context, mx, my):
+    """What is under the cursor: ('ROW', key), ('TYPES', key), ('CARD', None) for the card
+    outside its items, ('BAR', None) for the row outside its buttons, or None."""
+    row = _row_layout(context)
+    if row is None:
+        return None
+    if _types["open"]:
+        g = _types_layout(context, row)
+        if _in(g["rect"], mx, my):
+            key = next((k for k, _l, _i, r in g["items"] if _in(r, mx, my)), None)
+            return ('TYPES', key) if key else ('CARD', None)
+    if _in(row["rect"], mx, my):
+        key = next((k for k, r in row["buttons"] if _in(r, mx, my)), None)
+        return ('ROW', key) if key else ('BAR', None)
+    return None
+
+
+class SCULPT_OT_phantom_gizmo_row_hover(Operator):
+    """Track the cursor over the icons above the gizmo"""
+    bl_idname = "sculpt.phantom_gizmo_row_hover"
+    bl_label = "Gizmo Icons Hover"
+    bl_options = {'INTERNAL'}
+
+    @classmethod
+    def poll(cls, context):
+        return _row_shown(context)
+
+    def invoke(self, context, event):
+        hit = _hit(context, event.mouse_region_x, event.mouse_region_y)
+        row_key = hit[1] if hit and hit[0] == 'ROW' else None
+        types_key = hit[1] if hit and hit[0] == 'TYPES' else None
+        if row_key != _row["hover"] or types_key != _types["hover"]:
+            _row.update(hover=row_key, since=time.perf_counter())
+            _types["hover"] = types_key
+            context.area.tag_redraw()
+            if row_key is not None:
+                bpy.app.timers.register(_row_redraw, first_interval=_sv().TOOLTIP_DELAY + 0.02)
+        # Never consume the event: the gizmo and sculpting need it.
+        return {'PASS_THROUGH'}
+
+
+class SCULPT_OT_phantom_gizmo_row_click(Operator):
+    """Use the icons above the gizmo, or the Transform Types card"""
+    bl_idname = "sculpt.phantom_gizmo_row_click"
+    bl_label = "Gizmo Icons"
+    bl_options = {'INTERNAL'}
+
+    @classmethod
+    def poll(cls, context):
+        return _row_shown(context)
+
+    def invoke(self, context, event):
+        hit = _hit(context, event.mouse_region_x, event.mouse_region_y)
+        if hit is None:
+            if _types["open"]:
+                # A click elsewhere puts the card away (and does nothing else).
+                _types.update(open=False, hover=None, pressed=None)
+                context.area.tag_redraw()
+                return {'FINISHED'}
+            return {'PASS_THROUGH'}
+        self.hit = hit
+        if hit[1] is None:
+            # On the row or the card but not on a button: nothing starts here.
+            return {'FINISHED'}
+        (_row if hit[0] == 'ROW' else _types)["pressed"] = hit[1]
+        context.area.tag_redraw()
+        context.window_manager.modal_handler_add(self)
+        return {'RUNNING_MODAL'}
+
+    def modal(self, context, event):
+        if event.type == 'LEFTMOUSE' and event.value == 'RELEASE':
+            _row["pressed"] = _types["pressed"] = None
+            # No tooltip right after a click: not until the cursor moves to another button.
+            _row["since"] = math.inf
+            over = _hit(context, event.mouse_region_x, event.mouse_region_y) == self.hit
+            if over:
+                _play_click()
+                try:
+                    if self.hit[0] == 'ROW':
+                        _row_act(context, self.hit[1])
+                    else:
+                        _types_act(context, self.hit[1])
+                except RuntimeError as ex:
+                    self.report({'WARNING'}, str(ex).replace("Error: ", "").strip())
+            _redraw(context)
+            return {'FINISHED'}
+        if event.type in {'ESC', 'RIGHTMOUSE'} and event.value == 'PRESS':
+            _row["pressed"] = _types["pressed"] = None
+            _redraw(context)
+            return {'CANCELLED'}
+        return {'RUNNING_MODAL'}
+
+
+class SCULPT_OT_phantom_gizmo_types_close(Operator):
+    """Put the Transform Types card away"""
+    bl_idname = "sculpt.phantom_gizmo_types_close"
+    bl_label = "Close Transform Types"
+    bl_options = {'INTERNAL'}
+
+    @classmethod
+    def poll(cls, context):
+        return _types["open"]
+
+    def invoke(self, context, event):
+        _types.update(open=False, hover=None, pressed=None)
+        _redraw(context)
+        return {'FINISHED'}
+
+
+# -----------------------------------------------------------------------------
 # Tool
 
 class PHANTOM_TL_transpose(WorkSpaceTool):
@@ -685,22 +1247,49 @@ classes = (
     SCULPT_OT_phantom_transform_tool,
     SCULPT_OT_phantom_transform_style,
     SCULPT_OT_phantom_transpose,
+    SCULPT_OT_phantom_gizmo_row_hover,
+    SCULPT_OT_phantom_gizmo_row_click,
+    SCULPT_OT_phantom_gizmo_types_close,
 )
+_row_handle = None
+_addon_keymaps = []
 
 
 def register():
-    global _draw_handle
+    global _draw_handle, _row_handle
     _load_settings()
+    _push_gizmo_options()
     for cls in classes:
         bpy.utils.register_class(cls)
     bpy.utils.register_tool(PHANTOM_TL_transpose, after={"builtin.transform"})
     _draw_handle = bpy.types.SpaceView3D.draw_handler_add(_draw, (), 'WINDOW', 'POST_PIXEL')
+    _row_handle = bpy.types.SpaceView3D.draw_handler_add(_draw_row, (), 'WINDOW', 'POST_PIXEL')
+    kc = bpy.context.window_manager.keyconfigs.addon
+    if kc:
+        km = kc.keymaps.new(name="Sculpt", space_type='EMPTY')
+        for idname, key, value in (
+                (SCULPT_OT_phantom_gizmo_row_click.bl_idname, 'LEFTMOUSE', 'PRESS'),
+                (SCULPT_OT_phantom_gizmo_row_hover.bl_idname, 'MOUSEMOVE', 'ANY'),
+                (SCULPT_OT_phantom_gizmo_types_close.bl_idname, 'ESC', 'PRESS')):
+            _addon_keymaps.append((km, km.keymap_items.new(idname, key, value, any=True)))
+        # Alt-drag on the gizmo moves only its pivot (see `init_transform` in C). Blender's gizmo
+        # keymaps leave Alt out; the transform gizmo uses this one.
+        km = kc.keymaps.new(name="Generic Gizmo Maybe Drag", space_type='EMPTY',
+                            region_type='WINDOW')
+        _addon_keymaps.append((km, km.keymap_items.new("gizmogroup.gizmo_tweak", 'LEFTMOUSE',
+                                                       'CLICK_DRAG', alt=True)))
     for handlers in (bpy.app.handlers.undo_post, bpy.app.handlers.redo_post, bpy.app.handlers.load_post):
         handlers.append(_forget_line)
 
 
 def unregister():
-    global _draw_handle
+    global _draw_handle, _row_handle
+    for km, kmi in _addon_keymaps:
+        km.keymap_items.remove(kmi)
+    _addon_keymaps.clear()
+    if _row_handle is not None:
+        bpy.types.SpaceView3D.draw_handler_remove(_row_handle, 'WINDOW')
+        _row_handle = None
     for handlers in (bpy.app.handlers.undo_post, bpy.app.handlers.redo_post, bpy.app.handlers.load_post):
         if _forget_line in handlers:
             handlers.remove(_forget_line)

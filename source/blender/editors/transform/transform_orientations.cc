@@ -37,6 +37,8 @@
 #include "BKE_curve.hh"
 #include "BKE_editmesh.hh"
 #include "BKE_layer.hh"
+#include "BKE_object_types.hh"
+#include "BKE_paint.hh"
 #include "BKE_report.hh"
 #include "BKE_scene.hh"
 
@@ -665,6 +667,30 @@ static void handle_object_parent_orientation(Object *ob, float r_mat[3][3])
   }
 }
 
+/**
+ * Phantom: in Sculpt Mode the gizmo's axes turn with its pivot, as the mesh was turned with it
+ * (or the pivot alone): Global starts at the world axes, Local at the object's.
+ */
+static void sculpt_pivot_orientation(const Object *ob, const bool local, float r_mat[3][3])
+{
+  if (ob == nullptr || !(ob->mode & OB_MODE_SCULPT) || ob->runtime->sculpt_session == nullptr) {
+    return;
+  }
+  const SculptSession &ss = *ob->runtime->sculpt_session;
+  if (ss.pivot_rot == float4(1.0f, 0.0f, 0.0f, 0.0f)) {
+    return;
+  }
+  float obrot[3][3], obrot_inv[3][3], pivot[3][3];
+  copy_m3_m4(obrot, ob->object_to_world().ptr());
+  normalize_m3(obrot);
+  quat_to_mat3(pivot, ss.pivot_rot);
+  mul_m3_m3m3(r_mat, obrot, pivot);
+  if (!local) {
+    invert_m3_m3(obrot_inv, obrot);
+    mul_m3_m3_post(r_mat, obrot_inv);
+  }
+}
+
 short calc_orientation_from_type_ex(const Main &bmain,
                                     const Scene *scene,
                                     ViewLayer *view_layer,
@@ -729,6 +755,7 @@ short calc_orientation_from_type_ex(const Main &bmain,
         }
         else {
           transform_orientations_create_from_axis(r_mat, UNPACK3(ob->object_to_world().ptr()));
+          sculpt_pivot_orientation(ob, true, r_mat);
         }
         break;
       }
@@ -737,6 +764,9 @@ short calc_orientation_from_type_ex(const Main &bmain,
     }
     case V3D_ORIENT_GLOBAL: {
       unit_m3(r_mat);
+      if (orientation_index == V3D_ORIENT_GLOBAL) {
+        sculpt_pivot_orientation(ob, false, r_mat);
+      }
       break;
     }
     case V3D_ORIENT_VIEW: {

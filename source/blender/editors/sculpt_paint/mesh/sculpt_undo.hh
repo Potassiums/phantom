@@ -15,6 +15,8 @@
 #include "BLI_string_ref.hh"
 #include "BLI_vector.hh"
 
+#include "BKE_paint.hh"
+
 namespace blender {
 
 struct bContext;
@@ -80,6 +82,12 @@ void push_enter_sculpt_mode(const Scene &scene, Object &ob, const wmOperator *op
 void push_begin_ex(const Scene &scene, Object &ob, const char *name);
 void push_end(Object &ob);
 void push_end_ex(Object &ob, bool use_nested_undo);
+
+/**
+ * Phantom: the other meshes the gizmo moved along with this one ("all visible"), restored with
+ * the undo step being made. Call before #push_end.
+ */
+void store_other_objects(Span<SculptSession::PhantomOtherObject> others);
 
 /**
  * Phantom: after the sculpt history steps after `current` (a #bke::phantom_history::cursor_get)

@@ -57,8 +57,19 @@ void keymap_sculpt(wmKeyConfig *keyconf);
 
 void update_modal_transform(bContext *C, Object &ob);
 void cancel_modal_transform(bContext *C, Object &ob);
-void init_transform(bContext *C, Object &ob, const float mval_fl[2], const char *undo_name);
+/** `gizmo`: started with the gizmo, which follows its options (#phantom_gizmo_options_set). */
+void init_transform(
+    bContext *C, Object &ob, const float mval_fl[2], const char *undo_name, bool gizmo = false);
 void end_transform(bContext *C, Object &ob);
+
+/**
+ * Phantom: the gizmo's options in Sculpt Mode (set by its icon row, see `phantom_transpose.py`):
+ * - `sticky`: after each move, rotate or scale the pivot goes back to where it was, the mesh
+ *   stays where it was moved to.
+ * - `all_visible`: the other visible meshes move along with the one sculpted.
+ * - `unlocked`: the gizmo moves only its pivot (Alt does too while held).
+ */
+void phantom_gizmo_options_set(bool sticky, bool all_visible, bool unlocked);
 
 /* `sculpt_undo.cc` */
 

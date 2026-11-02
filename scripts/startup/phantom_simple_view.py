@@ -206,7 +206,7 @@ BRUSH_SHELF = "VIEW3D_AST_brush_sculpt"
 LEFT_KEYS = ('TOOLS', 'STROKE', 'ALPHA', 'TEXTURE', 'MATCAP', 'COLOR', None,
              'RGB', 'FOCAL', 'SIZE', 'STRENGTH', 'UNDO', 'REDO')
 RIGHT_GROUPS = (('PALETTES', 'SUBTOOLS'),
-                ('RENDER', 'PERSP', 'FLOOR', 'FRAME', 'POLYFRAME', 'XRAY', 'SOLO'))
+                ('RENDER', 'PERSP', 'FLOOR', 'SYMMETRY', 'FRAME', 'POLYFRAME', 'XRAY', 'SOLO'))
 BOTTOM_TOOLS = ('GIZMO', None, 'REMESH', 'DYNTOPO', 'QUAD', 'DIVIDE')
 RING_KEYS = {'RGB', 'FOCAL', 'SIZE', 'STRENGTH'}
 # The rings in the Quick Menu's order, with their names.
@@ -220,6 +220,7 @@ ICONS = {
     'SUBTOOLS': 'OUTLINER_OB_MESH',
     'RENDER': 'RENDER_STILL',
     'FLOOR': 'GRID',
+    'SYMMETRY': 'MOD_MIRROR',
     'FRAME': 'FULLSCREEN_ENTER',
     'POLYFRAME': 'MOD_WIREFRAME',
     'XRAY': 'XRAY',
@@ -257,6 +258,7 @@ TIPS = {
     'RENDER': "Render: a picture of the viewport as it is now",
     'PERSP': "Perspective: switch between perspective and orthographic (Numpad 5)",
     'FLOOR': "Grid: show or hide the grid (limited or infinite: in Overlays)",
+    'SYMMETRY': "Symmetry: mirror strokes across X (X). Right-click for the other axes",
     'FRAME': "Frame: fit the model in the view (Home)",
     'POLYFRAME': "PolyFrame: show the polygroups and the wireframe (Ctrl F)",
     'XRAY': "Transparency: see through the model (Alt Z)",
@@ -277,6 +279,7 @@ OPTIONS = {
     'FOCAL': ('PANEL', "VIEW3D_PT_phantom_simple_quick_menu"),
     'SIZE': ('PANEL', "VIEW3D_PT_phantom_simple_quick_menu"),
     'STRENGTH': ('FLIP_DIRECTION', None),
+    'SYMMETRY': ('PANEL', "VIEW3D_PT_sculpt_symmetry_for_topbar"),
     'FLOOR': ('PANEL', "VIEW3D_PT_overlay"),
     'XRAY': ('PANEL', "VIEW3D_PT_shading"),
     'REMESH': ('PANEL', "VIEW3D_PT_sculpt_voxel_remesh"),
@@ -1362,6 +1365,8 @@ def _item_active(context, key):
             return phantom_viewport.grid_shown(space, context.screen)
         except (ImportError, AttributeError):
             return space.overlay.show_floor
+    if key == 'SYMMETRY':
+        return ob is not None and ob.type == 'MESH' and ob.data.use_mirror_x
     if key == 'POLYFRAME':
         return space.overlay.show_sculpt_face_sets and space.overlay.show_wireframes
     if key == 'XRAY':
@@ -1393,7 +1398,7 @@ def _item_enabled(context, key):
     ob = context.active_object
     if key == 'TEXTURE':
         return False
-    if key in {'DIVIDE', 'REMESH', 'QUAD', 'DYNTOPO'}:
+    if key in {'DIVIDE', 'REMESH', 'QUAD', 'DYNTOPO', 'SYMMETRY'}:
         return ob is not None and ob.type == 'MESH'
     return True
 
@@ -2848,6 +2853,9 @@ def _perform(context, key):
         # The grid in use here: the limited one (the simple view's default) or the floor.
         import phantom_viewport
         phantom_viewport.toggle_grid(space, context.screen)
+    elif key == 'SYMMETRY':
+        if ob is not None and ob.type == 'MESH':
+            ob.data.use_mirror_x = not ob.data.use_mirror_x
     elif key == 'FRAME':
         bpy.ops.view3d.view_all('INVOKE_DEFAULT', center=False)
     elif key == 'POLYFRAME':

@@ -58,6 +58,7 @@
 #include "BKE_global.hh"
 #include "BKE_key.hh"
 #include "BKE_layer.hh"
+#include "BKE_lib_id.hh"
 #include "BKE_main.hh"
 #include "BKE_mesh.hh"
 #include "BKE_modifier.hh"
@@ -259,6 +260,17 @@ struct StepData {
 
   float3 pivot_pos;
   float4 pivot_rot;
+  /** Phantom: the pivot after the step, for redo (#pivot_pos is the one before it). */
+  float3 pivot_pos_end;
+  float4 pivot_rot_end;
+  bool has_pivot_end = false;
+  /** Phantom: other meshes the gizmo moved along ("all visible"), by name. */
+  struct OtherObject {
+    std::string name;
+    float4x4 before;
+    float4x4 after;
+  };
+  Vector<OtherObject> other_objects;
 
   /* Geometry modification operations. */
   /* Original geometry is stored before the modification and is restored from when undoing. */
@@ -1152,6 +1164,14 @@ static void restore_list(bContext *C, Depsgraph *depsgraph, StepData &step_data)
   /* Restore pivot. */
   ss.pivot_pos = step_data.pivot_pos;
   ss.pivot_rot = step_data.pivot_rot;
+
+  /* Phantom: a step that only moved the gizmo's pivot. It has no Dyntopo log entry, so must not
+   * step the log. */
+  if (step_data.type == Type::None && step_data.nodes.is_empty() &&
+      step_data.bmesh.bm_entry == nullptr && step_data.has_pivot_end)
+  {
+    return;
+  }
 
   if (bmesh_restore(C, *depsgraph, step_data, object)) {
     return;
@@ -2085,6 +2105,14 @@ static void save_common_data(Object &ob, SculptUndoStep *us)
   }
 }
 
+void store_other_objects(const Span<SculptSession::PhantomOtherObject> others)
+{
+  StepData *step_data = get_step_data();
+  for (const SculptSession::PhantomOtherObject &other : others) {
+    step_data->other_objects.append({other.object->id.name, other.before, other.after});
+  }
+}
+
 /** Phantom: sculpt history (#Object.phantom_history) follows the undo steps of the mesh. */
 static std::string &history_step_name()
 {
@@ -2305,6 +2333,13 @@ void push_end_ex(Object &ob, const bool use_nested_undo)
   }
   history_cursor_store_after(ob);
 
+  /* Phantom: the pivot as the step leaves it, for redo. */
+  if (const SculptSession *ss = ob.runtime->sculpt_session) {
+    step_data->pivot_pos_end = ss->pivot_pos;
+    step_data->pivot_rot_end = ss->pivot_rot;
+    step_data->has_pivot_end = true;
+  }
+
   /* We could remove this and enforce all callers run in an operator using 'OPTYPE_UNDO'. */
   wmWindowManager *wm = G_MAIN->wm.first();
   if (wm->op_undo_depth == 0 || use_nested_undo) {
@@ -2490,6 +2525,41 @@ void history_steps_deleted(const Object &ob, const int current)
   }
 }
 
+/**
+ * Phantom: what the gizmo changed besides the mesh: on redo the pivot as the step left it
+ * (#restore_list gives the one before), and the other meshes it moved along.
+ */
+static void restore_gizmo_extras(bContext *C, const StepData &step_data, const bool redo)
+{
+  Main *bmain = CTX_data_main(C);
+  for (const StepData::OtherObject &other : step_data.other_objects) {
+    Object *ob = id_cast<Object *>(BKE_libblock_find_name(bmain, ID_OB, other.name.c_str() + 2));
+    if (ob == nullptr) {
+      continue;
+    }
+    float4x4 matrix = redo ? other.after : other.before;
+    BKE_object_apply_mat4(ob, matrix.ptr(), false, true);
+    DEG_id_tag_update(&ob->id, ID_RECALC_TRANSFORM);
+  }
+  if (!step_data.other_objects.is_empty()) {
+    WM_main_add_notifier(NC_OBJECT | ND_TRANSFORM, nullptr);
+  }
+  if (!redo || !step_data.has_pivot_end) {
+    return;
+  }
+  Scene *scene = CTX_data_scene(C);
+  ViewLayer *view_layer = CTX_data_view_layer(C);
+  BKE_view_layer_synced_ensure(*bmain, scene, view_layer);
+  Object *object = BKE_view_layer_active_object_get(view_layer);
+  if (object == nullptr || step_data.object_name != object->id.name ||
+      object->runtime->sculpt_session == nullptr)
+  {
+    return;
+  }
+  object->runtime->sculpt_session->pivot_pos = step_data.pivot_pos_end;
+  object->runtime->sculpt_session->pivot_rot = step_data.pivot_rot_end;
+}
+
 static void step_decode_undo_impl(bContext *C, Depsgraph *depsgraph, SculptUndoStep *us)
 {
   BLI_assert(us->step.is_applied == true);
@@ -2500,6 +2570,7 @@ static void step_decode_undo_impl(bContext *C, Depsgraph *depsgraph, SculptUndoS
   else {
     restore_list(C, depsgraph, us->data);
   }
+  restore_gizmo_extras(C, us->data, false);
   us->step.is_applied = false;
   history_cursor_restore(C, us->history_cursor_before);
 }
@@ -2514,6 +2585,7 @@ static void step_decode_redo_impl(bContext *C, Depsgraph *depsgraph, SculptUndoS
   else {
     restore_list(C, depsgraph, us->data);
   }
+  restore_gizmo_extras(C, us->data, true);
   us->step.is_applied = true;
   history_cursor_restore(C, us->history_cursor_after);
 }
