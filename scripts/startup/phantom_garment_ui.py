@@ -836,7 +836,7 @@ class _GarmentTool:
         self._cancel_drag(context)
         self._release_grab()
         _state.update(rect=None, first=None, poly=[], poly_press=None, free=[])
-        garment.play_sound("cancel")
+        garment.play_sound("transform_cancel")
         _redraw()
 
     def _cancel_drag(self, context):

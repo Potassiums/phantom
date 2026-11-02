@@ -22,6 +22,7 @@
 #include "BLT_translation.hh"
 
 #include "DNA_listBase.h"
+#include "DNA_object_types.h"
 #include "DNA_windowmanager_types.h"
 
 #include "BKE_context.hh"
@@ -405,6 +406,14 @@ void BKE_undosys_stack_init_from_main(UndoStack *ustack, Main *bmain)
 
 void BKE_undosys_stack_init_from_context(UndoStack *ustack, bContext *C)
 {
+  /* Phantom: the first step (pushed without a window) holds the file's state, maybe in Sculpt
+   * Mode (see #UndoStep::phantom_sculpt_object). */
+  if (UndoStep *us = ustack->steps.last()) {
+    const Object *ob = CTX_data_active_object(C);
+    if (ob && (ob->mode & OB_MODE_SCULPT)) {
+      STRNCPY(us->phantom_sculpt_object, ob->id.name);
+    }
+  }
   const UndoType *ut = BKE_undosys_type_from_context(C);
   if (!ELEM(ut, nullptr, BKE_UNDOSYS_TYPE_MEMFILE)) {
     BKE_undosys_step_push_with_type(ustack, C, IFACE_("Original Mode"), UndoEncodeHints::None, ut);
@@ -578,6 +587,14 @@ eUndoPushReturn BKE_undosys_step_push_with_type(UndoStack *ustack,
   bool is_not_empty = ustack->step_active != nullptr;
   eUndoPushReturn retval = UNDO_PUSH_RET_FAILURE;
 
+  /* Phantom: see #UndoStep::phantom_sculpt_object. Pushes without a window (the internal memfile
+   * steps, sculpt steps pushed outside operators) leave it to the caller. */
+  const char *sculpt_object = nullptr;
+  if (C && CTX_wm_window(C)) {
+    const Object *ob = CTX_data_active_object(C);
+    sculpt_object = (ob && (ob->mode & OB_MODE_SCULPT)) ? ob->id.name : "";
+  }
+
   /* Might not be final place for this to be called - probably only want to call it from some
    * undo handlers, not all of them? */
   eRNAOverrideMatchResult report_flags = RNA_OVERRIDE_MATCH_RESULT_INIT;
@@ -662,6 +679,9 @@ eUndoPushReturn BKE_undosys_step_push_with_type(UndoStack *ustack,
     ustack->step_active = us;
     BLI_addtail(&ustack->steps, us);
     use_memfile_step = us->use_memfile_step;
+    if (sculpt_object) {
+      STRNCPY(us->phantom_sculpt_object, sculpt_object);
+    }
   }
 
   if (use_memfile_step) {
@@ -674,6 +694,7 @@ eUndoPushReturn BKE_undosys_step_push_with_type(UndoStack *ustack,
       UndoStep *us = ustack->steps.last();
       BLI_assert(STREQ(us->name, name_internal));
       us_prev->skip = true;
+      STRNCPY(us->phantom_sculpt_object, us_prev->phantom_sculpt_object);
 #ifdef WITH_GLOBAL_UNDO_CORRECT_ORDER
       ustack->step_active_memfile = us;
 #endif

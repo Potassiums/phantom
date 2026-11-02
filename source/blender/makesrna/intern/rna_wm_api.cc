@@ -9,6 +9,8 @@
 #include <cctype>
 #include <cstdlib>
 
+#include "BLI_rect.hh"
+
 #include "RNA_define.hh"
 #include "RNA_enum_types.hh"
 
@@ -751,6 +753,14 @@ static void rna_PieMenuEnd(bContext *C, PointerRNA *handle)
 static void rna_WindowManager_print_undo_steps(wmWindowManager *wm)
 {
   BKE_undosys_print(wm->runtime->undo_stack);
+}
+
+static void rna_WindowManager_phantom_popup_anchor_set(
+    int xmin, int ymin, int xmax, int ymax, int side, bool simple_style)
+{
+  rcti rect;
+  BLI_rcti_init(&rect, xmin, xmax, ymin, ymax);
+  ui::popup_anchor_set(rect, char(side), simple_style);
 }
 
 static void rna_WindowManager_tag_script_reload()
@@ -1615,6 +1625,34 @@ void RNA_api_wm(StructRNA *srna)
   RNA_def_function_return(func, parm);
 
   RNA_def_function(srna, "print_undo_steps", "rna_WindowManager_print_undo_steps");
+
+  /* Phantom: see #ui::popup_anchor_set. */
+  static const EnumPropertyItem popup_anchor_side_items[] = {
+      {0, "NONE", 0, "None", "Under the mouse, as usual"},
+      {'R', "RIGHT", 0, "Right", "To the right of the rectangle"},
+      {'L', "LEFT", 0, "Left", "To the left of the rectangle"},
+      {'U', "UP", 0, "Up", "Above the rectangle"},
+      {0, nullptr, 0, nullptr, nullptr},
+  };
+  func = RNA_def_function(
+      srna, "phantom_popup_anchor_set", "rna_WindowManager_phantom_popup_anchor_set");
+  RNA_def_function_ui_description(func,
+                                  "Open the popups opened next (pop-overs and menus) beside a "
+                                  "rectangle of the window instead of under the mouse, until "
+                                  "set back to NONE");
+  RNA_def_function_flag(func, FUNC_NO_SELF);
+  for (const char *name : {"xmin", "ymin", "xmax", "ymax"}) {
+    parm = RNA_def_int(func, name, 0, INT_MIN, INT_MAX, name, "In window pixels", INT_MIN, INT_MAX);
+    RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
+  }
+  parm = RNA_def_enum(func, "side", popup_anchor_side_items, 0, "Side", "");
+  RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
+  RNA_def_boolean(func,
+                  "simple_style",
+                  false,
+                  "Simple Style",
+                  "Draw the popups (and those opened from them) in the simple sculpting view's "
+                  "style");
 
   /* Used by (#SCRIPT_OT_reload). */
   func = RNA_def_function(srna, "tag_script_reload", "rna_WindowManager_tag_script_reload");

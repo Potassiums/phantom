@@ -71,6 +71,8 @@ struct Popover {
   int ui_size_x;
   /** Assign accelerator keys to buttons (#BLOCK_NUMSELECT). */
   bool use_numselect;
+  /** Phantom: placed beside an anchor (#popup_anchor_set), also when refreshed. */
+  bool anchored = false;
 
 #ifdef USE_UI_POPOVER_ONCE
   bool is_once;
@@ -199,6 +201,23 @@ static Block *block_func_POPOVER(bContext *C, PopupBlockHandle *handle, void *ar
     /* Estimated a maximum size so we don't go off-screen for low height
      * areas near the bottom of the window on refreshes. */
     handle->max_size_y = UI_UNIT_Y * 16.0f;
+  }
+  else if (pup->anchored ||
+           (!handle->refresh && popup_anchor_offset(CTX_wm_window(C),
+                                                    *handle,
+                                                    *block,
+                                                    block_margin,
+                                                    UI_MENU_WIDTH_MIN,
+                                                    handle->popup_create_vars.event_xy,
+                                                    handle->prev_bounds_offset)))
+  {
+    /* Phantom: beside the anchor, also when refreshed (the offset is kept). */
+    pup->anchored = true;
+    block_flag_enable(block, BLOCK_LOOP);
+    block_theme_style_set(block, BLOCK_THEME_STYLE_POPUP);
+    block_direction_set(block, block->direction);
+    block->minbounds = UI_MENU_WIDTH_MIN;
+    block_bounds_set_popup(block, block_margin, handle->prev_bounds_offset);
   }
   else if (pup->panel_type &&
            (pup->panel_type->offset_units_xy.x || pup->panel_type->offset_units_xy.y))

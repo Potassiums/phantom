@@ -303,6 +303,17 @@ class NLA_OT_bake(Operator):
                     objects.append(pose_object)
                 objects = [obj for obj in objects if obj.pose is not None]
 
+        # Phantom: an object tweaking an NLA strip (an animation layer being edited) would get the baked result
+        # written into that strip's Action, and the rest of the stack would add on top of it again.
+        tweaking = [obj.name for obj in objects
+                    if obj.animation_data is not None and obj.animation_data.use_tweak_mode]
+        if tweaking:
+            self.report({'ERROR'}, rpt_(
+                "Can't bake {:s}: it's editing an NLA strip or animation layer. "
+                "Turn off Layer Editing (Animation Layers panel) or leave tweak mode first").format(
+                    ", ".join(tweaking)))
+            return {'CANCELLED'}
+
         object_action_pairs = (
             [(obj, getattr(obj.animation_data, "action", None)) for obj in objects]
             if self.use_current_action else

@@ -252,6 +252,30 @@ static void rna_AnimData_tweakmode_set(PointerRNA *ptr, const bool value)
   }
 }
 
+/* Phantom: the NLA editor's "Evaluate Upper Stack" tweak mode, settable from Python (animation layers
+ * keep each layered object tweaking its active layer with the tracks above still playing). */
+static void rna_AnimData_tweakmode_upper_stack_set(PointerRNA *ptr, const bool value)
+{
+  AnimData *adt = static_cast<AnimData *>(ptr->data);
+  if (value) {
+    adt->flag |= ADT_NLA_EVAL_UPPER_TRACKS;
+  }
+  else {
+    adt->flag &= ~ADT_NLA_EVAL_UPPER_TRACKS;
+  }
+  /* Already tweaking: entering tweak mode disabled the tracks above the tweaked one, or not. */
+  if ((adt->flag & ADT_NLA_EDIT_ON) && adt->act_track) {
+    for (NlaTrack *nlt = adt->act_track->next; nlt; nlt = nlt->next) {
+      if (value) {
+        nlt->flag &= ~NLATRACK_DISABLED;
+      }
+      else {
+        nlt->flag |= NLATRACK_DISABLED;
+      }
+    }
+  }
+}
+
 /**
  * This is used to avoid the check for NLA tracks when enabling tweak
  * mode while loading overrides. This is necessary because the normal
@@ -1745,6 +1769,16 @@ static void rna_def_animdata(BlenderRNA *brna)
       prop, "Use NLA Tweak Mode", "Whether to enable or disable tweak mode in NLA");
   RNA_def_property_update(prop, NC_ANIMATION | ND_NLA, "rna_AnimData_update");
   RNA_def_property_override_funcs(prop, nullptr, nullptr, "rna_AnimData_tweakmode_override_apply");
+
+  /* Phantom: animation layers. */
+  prop = RNA_def_property(srna, "use_tweak_mode_upper_stack", PROP_BOOLEAN, PROP_NONE);
+  RNA_def_property_boolean_sdna(prop, nullptr, "flag", ADT_NLA_EVAL_UPPER_TRACKS);
+  RNA_def_property_boolean_funcs(prop, nullptr, "rna_AnimData_tweakmode_upper_stack_set");
+  RNA_def_property_ui_text(prop,
+                           "Evaluate Upper Stack",
+                           "In NLA tweak mode, keep evaluating the tracks above the tweaked strip; "
+                           "keys set while tweaking are then solved through the whole stack");
+  RNA_def_property_update(prop, NC_ANIMATION | ND_NLA, "rna_AnimData_update");
 
   prop = RNA_def_property(srna, "use_pin", PROP_BOOLEAN, PROP_NONE);
   RNA_def_property_flag(prop, PROP_NO_DEG_UPDATE);

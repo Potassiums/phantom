@@ -771,6 +771,42 @@ static void layerConstruct_grid_paint_mask(void *data, const int count)
 /** \} */
 
 /* -------------------------------------------------------------------- */
+/** \name Callbacks for (#GridPaintColor, #CD_GRID_PAINT_COLOR)
+ * \{ */
+
+static void layerCopy_grid_paint_color(const void *source, void *dest, const int count)
+{
+  const GridPaintColor *s = static_cast<const GridPaintColor *>(source);
+  GridPaintColor *d = static_cast<GridPaintColor *>(dest);
+
+  for (int i = 0; i < count; i++) {
+    if (s[i].data) {
+      d[i].data = MEM_dupalloc(s[i].data);
+      d[i].level = s[i].level;
+    }
+    else {
+      d[i].data = nullptr;
+      d[i].level = 0;
+    }
+  }
+}
+
+static void layerFree_grid_paint_color(void *data, const int count)
+{
+  for (GridPaintColor &gpc : MutableSpan(static_cast<GridPaintColor *>(data), count)) {
+    MEM_SAFE_DELETE(gpc.data);
+    gpc.level = 0;
+  }
+}
+
+static void layerConstruct_grid_paint_color(void *data, const int count)
+{
+  std::fill_n(static_cast<GridPaintColor *>(data), count, GridPaintColor{});
+}
+
+/** \} */
+
+/* -------------------------------------------------------------------- */
 /** \name Callbacks for (#MLoopCol, #CD_PROP_BYTE_COLOR)
  * \{ */
 
@@ -1952,6 +1988,16 @@ static const LayerTypeInfo LAYERTYPEINFO[CD_NUMTYPES] = {
         .interp = layerInterp_propquaternion,
         .set_default_value = layerDefault_propquaternion,
     },
+    /* 53: CD_GRID_PAINT_COLOR */
+    {
+        .size = sizeof(GridPaintColor),
+        .alignment = alignof(GridPaintColor),
+        .structname = "GridPaintColor",
+        .structnum = 1,
+        .copy = layerCopy_grid_paint_color,
+        .free = layerFree_grid_paint_color,
+        .construct = layerConstruct_grid_paint_color,
+    },
 };
 
 static_assert(sizeof(mat4x4f) == sizeof(float4x4));
@@ -2012,6 +2058,7 @@ static const char *LAYERTYPENAMES[CD_NUMTYPES] = {
     "CDPropBoolean",
     "CDHairLength",
     "CDPropQuaternion",
+    /* 53 */ "CDGridPaintColor",
 };
 
 const CustomData_MeshMasks CD_MASK_BAREMESH = {
@@ -2036,7 +2083,7 @@ const CustomData_MeshMasks CD_MASK_MESH = {
     /*pmask*/
     CD_MASK_PROP_ALL,
     /*lmask*/
-    (CD_MASK_MDISPS | CD_MASK_GRID_PAINT_MASK | CD_MASK_PROP_ALL),
+    (CD_MASK_MDISPS | CD_MASK_GRID_PAINT_MASK | CD_MASK_GRID_PAINT_COLOR | CD_MASK_PROP_ALL),
 };
 const CustomData_MeshMasks CD_MASK_DERIVEDMESH = {
     /*vmask*/ (CD_MASK_ORIGINDEX | CD_MASK_MDEFORMVERT | CD_MASK_SHAPEKEY | CD_MASK_ORCO |
@@ -2056,7 +2103,7 @@ const CustomData_MeshMasks CD_MASK_BMESH = {
     /*pmask*/
     CD_MASK_PROP_ALL,
     /*lmask*/
-    (CD_MASK_MDISPS | CD_MASK_GRID_PAINT_MASK | CD_MASK_PROP_ALL),
+    (CD_MASK_MDISPS | CD_MASK_GRID_PAINT_MASK | CD_MASK_GRID_PAINT_COLOR | CD_MASK_PROP_ALL),
 };
 const CustomData_MeshMasks CD_MASK_EVERYTHING = {
     /*vmask*/ (CD_MASK_BM_ELEM_PYPTR | CD_MASK_ORIGINDEX | CD_MASK_MDEFORMVERT | CD_MASK_ORCO |
@@ -2070,7 +2117,8 @@ const CustomData_MeshMasks CD_MASK_EVERYTHING = {
     (CD_MASK_BM_ELEM_PYPTR | CD_MASK_ORIGINDEX | CD_MASK_PROP_ALL),
     /*lmask*/
     (CD_MASK_BM_ELEM_PYPTR | CD_MASK_MDISPS | CD_MASK_NORMAL | CD_MASK_MLOOPTANGENT |
-     CD_MASK_ORIGSPACE_MLOOP | CD_MASK_GRID_PAINT_MASK | CD_MASK_PROP_ALL),
+     CD_MASK_ORIGSPACE_MLOOP | CD_MASK_GRID_PAINT_MASK | CD_MASK_GRID_PAINT_COLOR |
+     CD_MASK_PROP_ALL),
 };
 
 static const LayerTypeInfo *layerType_getInfo(const eCustomDataType type)
@@ -4782,6 +4830,22 @@ static void write_grid_paint_mask(BlendWriter *writer,
   }
 }
 
+static void write_grid_paint_color(BlendWriter *writer,
+                                   int count,
+                                   const GridPaintColor *grid_paint_color)
+{
+  if (grid_paint_color) {
+    writer->write_struct_array(count, grid_paint_color);
+    for (int i = 0; i < count; i++) {
+      const GridPaintColor *gpc = &grid_paint_color[i];
+      if (gpc->data) {
+        const int gridsize = CCG_grid_size(gpc->level);
+        writer->write_struct_array(gridsize * gridsize, gpc->data);
+      }
+    }
+  }
+}
+
 static void blend_write_layer_data(BlendWriter *writer,
                                    const CustomDataLayer &layer,
                                    const int count)
@@ -4799,6 +4863,9 @@ static void blend_write_layer_data(BlendWriter *writer,
       break;
     case CD_GRID_PAINT_MASK:
       write_grid_paint_mask(writer, count, static_cast<const GridPaintMask *>(layer.data));
+      break;
+    case CD_GRID_PAINT_COLOR:
+      write_grid_paint_color(writer, count, static_cast<const GridPaintColor *>(layer.data));
       break;
     case CD_PROP_BOOL:
       BLI_STATIC_ASSERT(sizeof(bool) == sizeof(uint8_t),
@@ -4893,6 +4960,23 @@ static void blend_read_paint_mask(BlendDataReader *reader,
   }
 }
 
+static void blend_read_paint_color(BlendDataReader *reader,
+                                   int count,
+                                   GridPaintColor *grid_paint_color)
+{
+  if (grid_paint_color) {
+    for (int i = 0; i < count; i++) {
+      GridPaintColor *gpc = &grid_paint_color[i];
+      if (gpc->data) {
+        const int gridsize = CCG_grid_size(gpc->level);
+        if (!BLO_read_array(reader, &gpc->data, int64_t(gridsize) * gridsize)) {
+          gpc->level = 0;
+        }
+      }
+    }
+  }
+}
+
 static void blend_read_layer_data(BlendDataReader *reader, CustomDataLayer &layer, const int count)
 {
   /* Note: result of #BLO_read_array can be discarded because
@@ -4915,6 +4999,11 @@ static void blend_read_layer_data(BlendDataReader *reader, CustomDataLayer &laye
     case CD_GRID_PAINT_MASK:
       if (BLO_read_array(reader, reinterpret_cast<GridPaintMask **>(&layer.data), count)) {
         blend_read_paint_mask(reader, count, static_cast<GridPaintMask *>(layer.data));
+      }
+      break;
+    case CD_GRID_PAINT_COLOR:
+      if (BLO_read_array(reader, reinterpret_cast<GridPaintColor **>(&layer.data), count)) {
+        blend_read_paint_color(reader, count, static_cast<GridPaintColor *>(layer.data));
       }
       break;
     case CD_PROP_BOOL:

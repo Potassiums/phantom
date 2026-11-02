@@ -6,9 +6,11 @@
 Phantom: viewport extras.
 
 - Grid: infinite (Blender's floor) or limited, a square grid around the origin like Maya's,
-  chosen in the Overlays popover. The limited grid replaces the floor and its X/Y axis lines in
-  perspective views (its center lines can keep the axis colors); side views keep Blender's
-  orthographic grid.
+  chosen in the Overlays popover, separately for the usual interface (infinite at first) and the
+  simple sculpting view (limited at first). The limited grid replaces the floor and its X/Y axis
+  lines in perspective views (its center lines can keep the axis colors); side views keep
+  Blender's orthographic grid. It has its own Show switch, which the simple view's Floor button
+  uses too (``toggle_grid``).
 - Vertex hover: in Edit Mode with vertex selection, the vertex under the cursor grows a little
   and pulses.
 - Theme: brings an existing Phantom theme up to the current edit-mode colors, once, when it
@@ -32,7 +34,11 @@ from bpy_extras import view3d_utils
 from gpu_extras.batch import batch_for_shader
 
 DEFAULT_SETTINGS = {
+    # The grid of the usual interface, and of the simple sculpting view.
     "grid": 'INFINITE',
+    "simple_grid": 'LIMITED',
+    # Whether the limited grid shows (the infinite one is the floor overlay).
+    "grid_visible": True,
     # Half the width of the limited grid, in grid cells (Maya's default grid is 24 wide).
     "grid_size": 12,
     # Draw the limited grid's center lines in the X/Y axis colors instead of a darker gray.
@@ -77,32 +83,72 @@ def _save_settings():
 # -----------------------------------------------------------------------------
 # Limited grid
 
-def _limited():
-    return _settings["grid"] == 'LIMITED'
+def _is_simple(screen):
+    return screen is not None and bool(screen.get("phantom_simple_view"))
 
 
-def _view3d_spaces():
-    for screen in bpy.data.screens:
-        for area in screen.areas:
-            for space in area.spaces:
-                if space.type == 'VIEW_3D':
-                    yield space
+def _grid_key(screen):
+    return "simple_grid" if _is_simple(screen) else "grid"
 
 
-def _apply_grid_mode(force=False):
+def _limited(screen=None):
+    """Whether `screen` (by default the current one) uses the limited grid."""
+    if screen is None:
+        screen = getattr(bpy.context, "screen", None)
+    return _settings[_grid_key(screen)] == 'LIMITED'
+
+
+def _view3d_spaces(screen):
+    for area in screen.areas:
+        for space in area.spaces:
+            if space.type == 'VIEW_3D':
+                yield space
+
+
+def _apply_grid_mode(force=False, simple=None):
     """The limited grid stands in for the floor and its X/Y axes; the infinite grid is the floor.
-    Without `force`, only views showing the floor are changed (new views, opened files)."""
-    limited = _limited()
-    for space in _view3d_spaces():
-        overlay = space.overlay
-        if limited and (force or overlay.show_floor):
-            overlay.show_floor = False
-            overlay.show_axis_x = False
-            overlay.show_axis_y = False
-        elif not limited and force:
-            overlay.show_floor = True
-            overlay.show_axis_x = True
-            overlay.show_axis_y = True
+    Without `force`, only views showing the floor are changed (new views, opened files); with it,
+    the screens of one kind (`simple` or not) switch over."""
+    for screen in bpy.data.screens:
+        limited = _limited(screen)
+        this_kind = simple is None or _is_simple(screen) == simple
+        for space in _view3d_spaces(screen):
+            overlay = space.overlay
+            if limited and (force and this_kind or overlay.show_floor):
+                overlay.show_floor = False
+                overlay.show_axis_x = False
+                overlay.show_axis_y = False
+            elif not limited and force and this_kind:
+                overlay.show_floor = True
+                overlay.show_axis_x = True
+                overlay.show_axis_y = True
+
+
+def refresh_grid():
+    """Put the grid of each screen's kind in place (the simple view calls this on entering)."""
+    _apply_grid_mode()
+    _redraw_views()
+
+
+def grid_shown(space, screen=None):
+    """Whether the grid of `space` shows: the limited one, or the floor."""
+    if _limited(screen):
+        return _settings["grid_visible"]
+    return space.overlay.show_floor
+
+
+def toggle_grid(space, screen=None):
+    """Show or hide the grid in use (the simple view's Floor button)."""
+    if _limited(screen):
+        _settings["grid_visible"] = not _settings["grid_visible"]
+        _save_settings()
+        _redraw_views()
+        return
+    overlay = space.overlay
+    show = not overlay.show_floor
+    overlay.show_floor = show
+    overlay.show_axis_x = show
+    overlay.show_axis_y = show
 
 
 def _grid_batches(shader, size, spacing):
@@ -125,9 +171,9 @@ def _grid_batches(shader, size, spacing):
 
 
 def _draw_grid():
-    if not _limited():
-        return
     context = bpy.context
+    if not _limited(context.screen) or not _settings["grid_visible"]:
+        return
     space = context.space_data
     region = context.region
     r3d = context.region_data
@@ -188,11 +234,24 @@ def _grid_get(_self):
 
 
 def _grid_set(_self, value):
+    # The grid of the interface this is set in: the simple view's or the usual one's.
+    screen = bpy.context.screen
+    key = _grid_key(screen)
     mode = 'LIMITED' if value == 1 else 'INFINITE'
-    if mode != _settings["grid"]:
-        _settings["grid"] = mode
+    if mode != _settings[key]:
+        _settings[key] = mode
         _save_settings()
-        _apply_grid_mode(force=True)
+        _apply_grid_mode(force=True, simple=_is_simple(screen))
+
+
+def _grid_visible_get(_self):
+    return _settings["grid_visible"]
+
+
+def _grid_visible_set(_self, value):
+    _settings["grid_visible"] = value
+    _save_settings()
+    _redraw_views()
 
 
 def _grid_size_get(_self):
@@ -226,6 +285,7 @@ def draw_grid_options(layout, context):
     """Options of the limited grid (drawn by the Overlays popover's Guides panel)."""
     if _limited():
         wm = context.window_manager
+        layout.prop(wm, "phantom_grid_visible")
         layout.prop(wm, "phantom_grid_size")
         layout.prop(wm, "phantom_grid_axis_colors")
 
@@ -237,8 +297,7 @@ def _on_load(_):
 
 def _enforce():
     # New 3D views (split areas, new windows) start with the floor on.
-    if _limited():
-        _apply_grid_mode()
+    _apply_grid_mode()
     return ENFORCE_INTERVAL
 
 
@@ -388,8 +447,52 @@ def _migrate_theme():
     _save_settings()
 
 
+def _theme_value(owner, name):
+    value = getattr(owner, name)
+    return list(value) if hasattr(value, "__len__") and not isinstance(value, str) else value
+
+
+def _same(a, b):
+    if isinstance(a, list) and isinstance(b, list):
+        return len(a) == len(b) and all(abs(x - y) < 0.01 for x, y in zip(a, b))
+    if isinstance(a, float) or isinstance(b, float):
+        return abs(a - b) < 1e-4
+    return a == b
+
+
+def _migrate_theme_v2():
+    """Version 2: the simple view's look everywhere (neutral graphite, the orange accent, flat
+    controls, a graphite viewport). Only what still has the earlier Phantom default changes, so
+    colors chosen by hand stay."""
+    if _settings["theme_version"] >= 2:
+        return
+    try:
+        from phantom_theme_update import CHANGES
+    except ImportError:
+        return
+    prefs = bpy.context.preferences
+    theme = prefs.themes[0]
+    changed = 0
+    for path, (old, new) in CHANGES.items():
+        *owners, name = path.split(".")
+        owner = theme
+        try:
+            for part in owners:
+                owner = getattr(owner, part)
+            if _same(_theme_value(owner, name), old):
+                setattr(owner, name, new)
+                changed += 1
+        except (AttributeError, TypeError, ValueError):
+            continue
+    if changed:
+        prefs.is_dirty = True
+    _settings["theme_version"] = 2
+    _save_settings()
+
+
 def _startup():
     _migrate_theme()
+    _migrate_theme_v2()
     _apply_grid_mode()
     return None
 
@@ -404,6 +507,10 @@ def register():
         items=(('INFINITE', "Infinite", "Blender's floor grid, reaching the horizon"),
                ('LIMITED', "Limited", "A square grid around the origin, like Maya's")),
         get=_grid_get, set=_grid_set,
+    )
+    WM.phantom_grid_visible = BoolProperty(
+        name="Show Grid", description="Show the limited grid", get=_grid_visible_get,
+        set=_grid_visible_set,
     )
     WM.phantom_grid_size = IntProperty(
         name="Grid Size", description="Grid cells from the center to each edge of the limited grid",
@@ -442,4 +549,5 @@ def unregister():
     bpy.utils.unregister_class(VIEW3D_OT_phantom_vertex_hover)
     del bpy.types.WindowManager.phantom_grid_axis_colors
     del bpy.types.WindowManager.phantom_grid_size
+    del bpy.types.WindowManager.phantom_grid_visible
     del bpy.types.WindowManager.phantom_grid

@@ -117,6 +117,11 @@ struct UndoStep {
   bool use_old_bmain_data;
   /** For use by undo systems that accumulate changes (mesh-sculpt & image-painting). */
   bool is_applied;
+  /**
+   * Phantom: #ID.name of the object in Sculpt Mode in the state this step holds (empty outside
+   * Sculpt Mode), so that undo in Sculpt Mode keeps to the sculpted object's own steps.
+   */
+  char phantom_sculpt_object[MAX_ID_NAME];
   /* Over alloc 'type->struct_size'. */
 };
 

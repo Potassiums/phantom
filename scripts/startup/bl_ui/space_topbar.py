@@ -17,6 +17,13 @@ class TOPBAR_HT_upper_bar(Header):
     def draw(self, context):
         region = context.region
 
+        # Phantom: the simple sculpting view's own top bar (see phantom_simple_view).
+        screen = context.screen
+        if screen is not None and screen.get("phantom_simple_view"):
+            import phantom_simple_view
+            phantom_simple_view.draw_top_bar(self.layout, context, region.alignment == 'RIGHT')
+            return
+
         if region.alignment == 'RIGHT':
             self.draw_right(context)
         else:

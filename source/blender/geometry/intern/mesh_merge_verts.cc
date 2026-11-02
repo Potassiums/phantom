@@ -1256,7 +1256,7 @@ static Mesh *create_merged_mesh(const Mesh &mesh,
                                     GMutableSpan(dst_span));
   }
 
-  for (const eCustomDataType type : {CD_MDISPS, CD_GRID_PAINT_MASK}) {
+  for (const eCustomDataType type : {CD_MDISPS, CD_GRID_PAINT_MASK, CD_GRID_PAINT_COLOR}) {
     if (!CustomData_has_layer(&mesh.corner_data, type)) {
       continue;
     }

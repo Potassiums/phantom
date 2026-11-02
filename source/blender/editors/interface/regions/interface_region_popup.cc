@@ -12,9 +12,11 @@
 #include <cstdarg>
 #include <cstdlib>
 #include <cstring>
+#include <optional>
 
 #include "MEM_guardedalloc.h"
 
+#include "DNA_theme_types.h"
 #include "DNA_userdef_types.h"
 
 #include "BLF_api.hh"
@@ -32,6 +34,8 @@
 #include "WM_types.hh"
 
 #include "ED_screen.hh"
+
+#include "UI_resources.hh"
 
 #include "interface_intern.hh"
 #include "interface_regions_intern.hh"
@@ -61,6 +65,125 @@ void popup_translate(ARegion *region, const int mdiff[2])
       BLI_rctf_translate(&saferct.safety, UNPACK2(mdiff));
     }
   }
+}
+
+/* Phantom: see #popup_anchor_set. */
+static rcti g_popup_anchor_rect = {0, 0, 0, 0};
+static char g_popup_anchor_side = 0;
+static bool g_popup_anchor_simple_style = false;
+
+void popup_anchor_set(const rcti &rect, const char side, const bool simple_style)
+{
+  g_popup_anchor_rect = rect;
+  g_popup_anchor_side = side;
+  g_popup_anchor_simple_style = side != 0 && simple_style;
+}
+
+bool popup_anchor_offset(const wmWindow *window,
+                         PopupBlockHandle &handle,
+                         const Block &block,
+                         const int margin,
+                         const int min_width,
+                         const int event_xy[2],
+                         int r_offset[2])
+{
+  if (g_popup_anchor_side == 0 || block.buttons_ptrs.is_empty()) {
+    return false;
+  }
+  rctf content;
+  BLI_rctf_init_minmax(&content);
+  for (const Button &but : block.buttons()) {
+    BLI_rctf_union(&content, &but.rect);
+  }
+  const float width = std::max(BLI_rctf_size_x(&content) + 2 * margin, float(min_width));
+  const float height = BLI_rctf_size_y(&content) + 2 * margin;
+  const rcti &anchor = g_popup_anchor_rect;
+  const float gap = 6.0f * UI_SCALE_FAC;
+  /* Where the popup's corner goes (its bounds included); the window clamps it later. Beside the
+   * anchor, it runs down from the anchor's top in the upper half of the window, up from its bottom
+   * in the lower half (keeping clear of what is along the window's bottom). */
+  const bool lower_half = BLI_rcti_cent_y(&anchor) < WM_window_native_pixel_size(window)[1] / 2;
+  const float ymin_beside = lower_half ? anchor.ymin : anchor.ymax - height;
+  float xmin, ymin;
+  switch (g_popup_anchor_side) {
+    case 'L':
+      xmin = anchor.xmin - gap - width;
+      ymin = ymin_beside;
+      break;
+    case 'U':
+      xmin = (anchor.xmin + anchor.xmax - width) / 2.0f;
+      ymin = anchor.ymax + gap;
+      break;
+    default:
+      xmin = anchor.xmax + gap;
+      ymin = ymin_beside;
+      break;
+  }
+  r_offset[0] = int(xmin - event_xy[0] - (content.xmin - margin));
+  r_offset[1] = int(ymin - event_xy[1] - (content.ymin - margin));
+  handle.phantom_simple_style = g_popup_anchor_simple_style;
+  return true;
+}
+
+/**
+ * Phantom: the simple sculpting view's look over the theme's widget colors, as its toolbars draw
+ * (`phantom_simple_view.py`): a graphite panel with a hairline and 12 px corners, controls as
+ * quiet surfaces with 10 px corners, and the orange accent only where something is chosen: the
+ * outline of a selected button, a slider's fill, a check mark.
+ */
+void simple_style_apply(ThemeUI &tui)
+{
+  const uchar panel[4] = {27, 27, 29, 240};
+  const uchar surface[4] = {255, 255, 255, 14};
+  const uchar raised[4] = {255, 255, 255, 34};
+  const uchar hairline[4] = {255, 255, 255, 20};
+  const uchar accent[4] = {255, 158, 87, 255};
+  const uchar text[4] = {235, 235, 242, 255};
+  const uchar editing[4] = {16, 16, 18, 255};
+  for (uiWidgetColors *wcol : {&tui.wcol_regular,
+                               &tui.wcol_tool,
+                               &tui.wcol_toolbar_item,
+                               &tui.wcol_text,
+                               &tui.wcol_radio,
+                               &tui.wcol_option,
+                               &tui.wcol_toggle,
+                               &tui.wcol_num,
+                               &tui.wcol_numslider,
+                               &tui.wcol_tab,
+                               &tui.wcol_menu,
+                               &tui.wcol_pulldown,
+                               &tui.wcol_menu_item,
+                               &tui.wcol_list_item})
+  {
+    copy_v4_v4_uchar(wcol->outline, hairline);
+    copy_v4_v4_uchar(wcol->outline_sel, accent);
+    copy_v4_v4_uchar(wcol->inner, surface);
+    copy_v4_v4_uchar(wcol->inner_sel, raised);
+    copy_v4_v4_uchar(wcol->item, accent);
+    copy_v4_v4_uchar(wcol->text, text);
+    copy_v4_v4_uchar(wcol->text_sel, text);
+    wcol->shaded = 0;
+    wcol->roundness = 0.5f;
+  }
+  /* Menu items: no box until the mouse is over one, then a quiet surface step. */
+  tui.wcol_menu_item.inner[3] = 0;
+  copy_v4_v4_uchar(tui.wcol_menu_item.outline_sel, raised);
+  tui.wcol_menu_item.roundness = 0.4f;
+  /* A slider's fill takes the alpha of its field: the same tone as the other controls, opaque. */
+  const uchar slider[4] = {40, 40, 43, 255};
+  copy_v4_v4_uchar(tui.wcol_numslider.inner, slider);
+  /* The fill is a darker shade of the accent, so the value written over it stays readable (about
+   * 5.5:1 with the text color). */
+  const uchar slider_fill[4] = {156, 86, 40, 255};
+  copy_v4_v4_uchar(tui.wcol_numslider.item, slider_fill);
+  /* Text being typed sits in a darker field. */
+  for (uiWidgetColors *wcol : {&tui.wcol_text, &tui.wcol_num, &tui.wcol_numslider}) {
+    copy_v4_v4_uchar(wcol->inner_sel, editing);
+  }
+  copy_v4_v4_uchar(tui.wcol_menu_back.inner, panel);
+  copy_v4_v4_uchar(tui.wcol_menu_back.outline, hairline);
+  copy_v4_v4_uchar(tui.wcol_menu_back.text, text);
+  tui.wcol_menu_back.roundness = 0.6f;
 }
 
 /* position block relative to but, result is in window space */
@@ -448,8 +571,20 @@ static void block_region_refresh(const bContext *C, ARegion *region)
 
 static void block_region_draw(const bContext *C, ARegion *region)
 {
+  /* Phantom: a popup of the simple view draws in its style; the theme is put back right after. */
+  bTheme *btheme = const_cast<bTheme *>(theme::theme_get());
+  std::optional<ThemeUI> theme_ui;
+  for (Block &block : region->runtime->uiblocks) {
+    if (block.phantom_simple_style && !theme_ui) {
+      theme_ui = btheme->tui;
+      simple_style_apply(btheme->tui);
+    }
+  }
   for (Block &block : region->runtime->uiblocks) {
     block_draw(C, &block);
+  }
+  if (theme_ui) {
+    btheme->tui = *theme_ui;
   }
 }
 
@@ -708,6 +843,15 @@ Block *popup_block_refresh(bContext *C, PopupBlockHandle *handle, ARegion *butre
   if (but && but->block->flag & BLOCK_NO_ACCELERATOR_KEYS) {
     block->flag |= BLOCK_NO_ACCELERATOR_KEYS;
   }
+  /* Phantom: popups opened from one in the simple view's style have its style too. */
+  if (but && but->block->phantom_simple_style) {
+    handle->phantom_simple_style = true;
+  }
+  /* Other popups opened while the simple view asks for its style (a confirmation...) too. */
+  if (!handle->refresh && g_popup_anchor_simple_style) {
+    handle->phantom_simple_style = true;
+  }
+  block->phantom_simple_style = handle->phantom_simple_style;
 
   /* callbacks _must_ leave this for us, otherwise we can't call block_update_from_old */
   BLI_assert(!block->endblock);

@@ -9,8 +9,12 @@
  * Sounds are WAV files in `datafiles/sounds/`, played through Blender's audio device.
  */
 
+#include <cstdio>
+#include <cstdlib>
+
 #include "DNA_userdef_types.h"
 
+#include "BLI_fileops.hh"
 #include "BLI_path_utils.hh"
 #include "BLI_rand.hh"
 #include "BLI_string.hh"
@@ -38,7 +42,8 @@ static const char *ui_sound_filename(const WMUISound sound)
     case WMUISound::Confirm:
       return "confirm.wav";
     case WMUISound::Cancel:
-      return "cancel.wav";
+      /* The soft cancel, the same as an interactive edit's (it replaced a harsher one). */
+      return "transform_cancel.wav";
     case WMUISound::Error:
       return "error.wav";
     case WMUISound::GrabStart:
@@ -73,6 +78,11 @@ static const char *ui_sound_filename(const WMUISound sound)
       return "loop_add.wav";
     case WMUISound::LoopRemove:
       return "loop_remove.wav";
+    case WMUISound::Delete:
+      /* Something deleted from the scene (objects, mesh elements...): an airy whoosh, fading
+       * away. The paper crumple (`delete.wav`) is the start picker's, for files: played by name,
+       * see #WM_ui_sound_play_by_name. */
+      return "delete_object.wav";
   }
   return nullptr;
 }
@@ -98,6 +108,17 @@ static double ui_sound_min_interval(const WMUISound sound)
   }
 }
 
+/** Phantom: with `PHANTOM_UI_SOUND_LOG` set, print each sound played (to check what an action
+ * plays without listening). */
+static void ui_sound_log(const char *filename)
+{
+  static const bool log = getenv("PHANTOM_UI_SOUND_LOG") != nullptr;
+  if (log) {
+    printf("Phantom UI sound: %s\n", filename);
+    fflush(stdout);
+  }
+}
+
 bool WM_ui_sound_play_by_name(const char *name, const float pitch)
 {
   for (int i = 0; i < WM_UI_SOUND_COUNT; i++) {
@@ -109,7 +130,33 @@ bool WM_ui_sound_play_by_name(const char *name, const float pitch)
       return true;
     }
   }
-  return false;
+  /* Phantom: a sound file that only scripts play (the start picker's paper crumple...), without a
+   * #WMUISound of its own. */
+  if (G.background || !U.ui_sounds || U.ui_sound_volume <= 0 || strchr(name, '/') ||
+      strchr(name, '\\') || strstr(name, ".."))
+  {
+    return false;
+  }
+  const std::optional<std::string> dir = BKE_appdir_folder_id(BLENDER_DATAFILES, "sounds");
+  if (!dir) {
+    return false;
+  }
+  char filename[FILE_MAXFILE];
+  SNPRINTF(filename, "%s.wav", name);
+  char filepath[FILE_MAX];
+  BLI_path_join(filepath, sizeof(filepath), dir->c_str(), filename);
+  if (!BLI_exists(filepath)) {
+    return false;
+  }
+  static double last_play_time = 0.0;
+  const double now = BLI_time_now_seconds();
+  if (now - last_play_time < 0.04) {
+    return true;
+  }
+  last_play_time = now;
+  ui_sound_log(filename);
+  BKE_sound_play_ui(filepath, float(U.ui_sound_volume) / 100.0f, pitch);
+  return true;
 }
 
 void WM_ui_sound_play(const WMUISound sound, const float pitch)
@@ -132,6 +179,7 @@ void WM_ui_sound_play(const WMUISound sound, const float pitch)
   }
   char filepath[FILE_MAX];
   BLI_path_join(filepath, sizeof(filepath), dir->c_str(), ui_sound_filename(sound));
+  ui_sound_log(ui_sound_filename(sound));
   BKE_sound_play_ui(filepath, float(U.ui_sound_volume) / 100.0f, pitch);
 }
 

@@ -727,6 +727,10 @@ static wmOperatorStatus ed_undo_exec(bContext *C, wmOperator *op)
     WM_ui_sound_play(WMUISound::Undo);
     return OPERATOR_FINISHED;
   }
+  /* Phantom: in Sculpt Mode, only the sculpted object's own steps. */
+  if (ed::sculpt_paint::undo::stack_leaves_object(C, false)) {
+    return OPERATOR_CANCELLED;
+  }
   wmOperatorStatus ret = ed_undo_step_direction(C, STEP_UNDO, op->reports);
   if (ret & OPERATOR_FINISHED) {
     ed_undo_refresh_for_op(C);
@@ -757,6 +761,9 @@ static wmOperatorStatus ed_redo_exec(bContext *C, wmOperator *op)
   if (ed::sculpt_paint::undo::history_step(C, true)) {
     WM_ui_sound_play(WMUISound::Redo);
     return OPERATOR_FINISHED;
+  }
+  if (ed::sculpt_paint::undo::stack_leaves_object(C, true)) {
+    return OPERATOR_CANCELLED;
   }
   wmOperatorStatus ret = ed_undo_step_direction(C, STEP_REDO, op->reports);
   if (ret & OPERATOR_FINISHED) {
@@ -816,7 +823,8 @@ static bool ed_undo_poll(bContext *C)
     return false;
   }
   UndoStack *undo_stack = CTX_wm_manager(C)->runtime->undo_stack;
-  return ((undo_stack->step_active != nullptr) && (undo_stack->step_active->prev != nullptr)) ||
+  return ((undo_stack->step_active != nullptr) && (undo_stack->step_active->prev != nullptr) &&
+          !ed::sculpt_paint::undo::stack_leaves_object(C, false)) ||
          ed::sculpt_paint::undo::history_step_instead(C, false);
 }
 
@@ -860,7 +868,8 @@ static bool ed_redo_poll(bContext *C)
     return false;
   }
   UndoStack *undo_stack = CTX_wm_manager(C)->runtime->undo_stack;
-  return ((undo_stack->step_active != nullptr) && (undo_stack->step_active->next != nullptr)) ||
+  return ((undo_stack->step_active != nullptr) && (undo_stack->step_active->next != nullptr) &&
+          !ed::sculpt_paint::undo::stack_leaves_object(C, true)) ||
          ed::sculpt_paint::undo::history_step_instead(C, true);
 }
 

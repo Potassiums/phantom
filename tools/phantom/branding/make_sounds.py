@@ -252,6 +252,74 @@ def knife_cut():
     return cozy(s, peak=0.15, cutoff=4500, reverb=0.1)
 
 
+def paper_crumple():
+    """Soft paper crumple for deleting: little creases crackling in two squeezes of the hand (the
+    second smaller) and settling, over a faint rustle."""
+    rng = random.Random(1028)
+    dur = 0.46
+    n = int(RATE * dur)
+
+    def bump(t, center, width):
+        return math.exp(-0.5 * ((t - center) / width) ** 2)
+
+    density = [bump(i / RATE, 0.075, 0.035) + 0.75 * bump(i / RATE, 0.215, 0.04) +
+               0.25 * bump(i / RATE, 0.33, 0.045) for i in range(n)]
+    top = max(density)
+    density = [d / top for d in density]
+    s = [0.0] * n
+    for i in range(n):
+        # Up to 1400 creases a second at the busiest, each a few milliseconds of noise; sharper
+        # ones brighter (more high-pass), softer ones duller.
+        if rng.random() < 1400 * density[i] / RATE:
+            amp = min(rng.lognormvariate(0.0, 0.35), 1.8) * (0.4 + 0.6 * density[i])
+            grain = noise_burst(rng.uniform(0.0008, 0.006), amp=amp, tau=rng.uniform(0.0006, 0.0016),
+                                highpass=rng.choice((0.92, 0.6)), seed=rng.randrange(1 << 30))
+            mix_into(s, grain, i / RATE)
+    rustle = noise_burst(dur, amp=1.0, tau=60.0, highpass=0.6, seed=1029)
+    for i in range(n):
+        s[i] += rustle[i] * (0.012 + 0.06 * density[i])
+    # Round off the loudest snaps so it stays soft, and fade it out.
+    loudest = sorted(abs(v) for v in s)[int(n * 0.995)]
+    s = [math.tanh(v / loudest * 0.8) for v in s]
+    tail = int(0.06 * RATE)
+    for i in range(tail):
+        s[-1 - i] *= (i / tail) ** 2
+    return cozy(s, peak=0.2, cutoff=5000, reverb=0.06)
+
+
+def fade_away():
+    """Soft fade for deleting something from the scene, after the airy synth tones of Halo's menus:
+    a glassy chord (a root and its fifth, each a little detuned for a gentle shimmer) sinking an
+    octave as it fades, over a whisper of air. Round attack, no hiss, a calm tail (the paper
+    crumple is the start picker's, for files)."""
+    dur = 0.62
+    # Round, glassy voices: mostly sine, a touch of the octave and the third harmonic.
+    glass = ((1, 1.0), (2, 0.12), (3, 0.04))
+    s = []
+    for freq, amp, delay in ((587.33, 1.0, 0.0), (880.0, 0.42, 0.012)):   # D5 and its fifth.
+        for detune in (1.0, 1.0035):
+            mix_into(s, tone(freq * detune, dur, amp=amp * 0.5, attack=0.035, tau=0.16,
+                             glide_to=freq * detune / 2.0, partials=glass), delay)
+    # A whisper of air, darkening as it goes, under the chord.
+    rng = random.Random(4096)
+    n = int(RATE * dur)
+    lp1 = lp2 = 0.0
+    air = []
+    for i in range(n):
+        t = i / RATE
+        fc = 1400.0 * (260.0 / 1400.0) ** (t / dur)
+        a = 1.0 - math.exp(-2 * math.pi * fc / RATE)
+        lp1 += a * (rng.uniform(-1, 1) - lp1)
+        lp2 += a * (lp1 - lp2)
+        swell = (t / 0.06) ** 2 if t < 0.06 else math.exp(-(t - 0.06) / 0.14)
+        air.append(lp2 * swell * 0.9)
+    mix_into(s, air)
+    tail = int(0.12 * RATE)
+    for i in range(tail):
+        s[-1 - i] *= (i / tail) ** 2
+    return cozy(s, peak=0.12, cutoff=2600, reverb=0.3)
+
+
 BELL = ((1, 1.0), (2, 0.25), (3, 0.06))
 REED = ((1, 1.0), (3, 0.22), (5, 0.08))
 BUZZ = ((1, 1.0), (3, 1 / 3), (5, 1 / 5), (7, 1 / 7))
@@ -283,12 +351,6 @@ def confirm():
     return finish(s, 0.3)
 
 
-def cancel():
-    s = tone(880.0, 0.12, tau=0.04, partials=REED)          # A5
-    mix_into(s, tone(659.3, 0.16, tau=0.05, partials=REED), 0.065)  # E5
-    return finish(s, 0.26)
-
-
 def error():
     s = tone(196.0, 0.09, tau=0.06, attack=0.003, partials=BUZZ)
     mix_into(s, tone(185.0, 0.12, tau=0.07, attack=0.003, partials=BUZZ), 0.12)
@@ -301,7 +363,6 @@ SOUNDS = {
     "toggle_off.wav": lambda: toggle(False),
     "menu_open.wav": menu_open,
     "confirm.wav": confirm,
-    "cancel.wav": cancel,
     "error.wav": error,
     "grab_start.wav": grab_start,
     "transform_confirm.wav": transform_confirm,
@@ -319,6 +380,8 @@ SOUNDS = {
     "measure_tick.wav": measure_tick,
     "loop_add.wav": loop_add,
     "loop_remove.wav": loop_remove,
+    "delete.wav": paper_crumple,
+    "delete_object.wav": fade_away,
 }
 
 

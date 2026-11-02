@@ -991,6 +991,22 @@ wmOperatorStatus popover_panel_invoke(
     bContext *C, const char *idname, bool keep_open, bool use_numselect, ReportList *reports);
 
 /**
+ * Phantom: popups opened while this is set (pop-overs and popup menus not attached to a button)
+ * open beside `rect` (window pixels) instead of under the mouse: `side` 'R' to its right, 'L' to
+ * its left, 'U' above it (aligned with its top, or centered above it). Side 0 clears it. Scripts
+ * set it around the call that opens the popup, like toolbars drawn without buttons. With
+ * `simple_style`, they (and the popups opened from them) are drawn in the simple sculpting view's
+ * style: its graphite panels, hairlines and orange accent instead of the theme's colors.
+ */
+void popup_anchor_set(const rcti &rect, char side, bool simple_style = false);
+
+/**
+ * Phantom: the simple sculpting view's look (see #popup_anchor_set) over the theme's widget
+ * colors. Callers put the theme back after drawing.
+ */
+void simple_style_apply(ThemeUI &tui);
+
+/**
  * Only return handler, and set optional title.
  *
  * \param from_active_button: Use the active button for positioning,

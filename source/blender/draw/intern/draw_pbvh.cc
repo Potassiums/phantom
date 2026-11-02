@@ -10,6 +10,7 @@
  */
 
 #include <algorithm>
+#include <array>
 
 #include "BLI_enumerable_thread_specific.hh"
 #include "BLI_function_ref.hh"
@@ -33,6 +34,7 @@
 
 #include "DEG_depsgraph_query.hh"
 
+#include "GPU_attribute_convert.hh"
 #include "GPU_batch.hh"
 #include "GPU_vertex_buffer.hh"
 
@@ -409,8 +411,9 @@ class DrawCacheImpl : public DrawCache {
   /** Phantom: back-face culling, see #ensure_normal_cones. */
   Array<NormalCone> normal_cones_;
   BitVector<> normal_cones_dirty_;
-  /** Whether the mesh is closed and wound outwards (its topology doesn't change while drawn). */
-  std::optional<bool> closed_outward_;
+  /** Whether the mesh is closed, and wound outwards (its topology doesn't change while drawn). */
+  std::optional<bool> closed_;
+  std::optional<bool> outward_;
   /** Whether any face is hidden, recalculated after visibility changes. */
   std::optional<bool> any_hidden_;
 
@@ -697,10 +700,15 @@ static ScratchOffsets build_vbo_initial_offsets(const Buffer &buffer, const Inde
   return result;
 }
 
+/**
+ * Phantom: the scratch buffer is only copied from, so where the backend supports it (Vulkan), it is
+ * the GPU's staging memory itself: the data is gathered straight into it (in parallel), with no
+ * CPU-side copy and single-threaded upload afterwards, and no intermediate GPU buffer.
+ */
 static gpu::VertBufPtr create_vbo_scratch_buffer(const GPUVertFormat &format, const int64_t total)
 {
-  gpu::VertBufPtr scratch = gpu::VertBufPtr(
-      GPU_vertbuf_create_with_format_ex(format, GPU_USAGE_STATIC));
+  gpu::VertBufPtr scratch = gpu::VertBufPtr(GPU_vertbuf_create_with_format_ex(
+      format, GPU_USAGE_STATIC | GPU_USAGE_FLAG_UPLOAD_SOURCE));
   scratch->allocate(uint32_t(total));
   return scratch;
 }
@@ -728,7 +736,7 @@ static void update_vbo_subrange(gpu::VertBuf &dst,
  * \brief Upload staged vertex data and commit it to the final vertex buffer.
  *
  * \note Will promote the staging buffer to the final vertex buffer for initial
- * uploads.
+ * uploads, or copy all of it into a new one when it lives in staging memory.
  */
 static void finalize_vbo_update(DrawCacheImpl::AttributeData &attr_vbo,
                                 const Buffer &vbo,
@@ -739,7 +747,16 @@ static void finalize_vbo_update(DrawCacheImpl::AttributeData &attr_vbo,
 {
   scratch_vbo->upload();
   if (attr_vbo.vbo == nullptr) {
-    attr_vbo.vbo = std::move(scratch_vbo);
+    if (!scratch_vbo->is_upload_source()) {
+      attr_vbo.vbo = std::move(scratch_vbo);
+      return;
+    }
+    const uint vertex_len = scratch_vbo->vertex_len;
+    attr_vbo.vbo = gpu::VertBufPtr(
+        GPU_vertbuf_create_with_format_ex(scratch_vbo->format, GPU_USAGE_DEVICE_ONLY));
+    attr_vbo.vbo->allocate(vertex_len);
+    attr_vbo.vbo->upload();
+    attr_vbo.vbo->copy_sub(*scratch_vbo, 0, 0, vertex_len);
     return;
   }
   attr_vbo.ensure_buffer_capacity(vert_len);
@@ -767,8 +784,9 @@ static const GPUVertFormat &position_format()
 
 static const GPUVertFormat &normal_format()
 {
+  /* Phantom: packed like Object Mode's normals, half the bytes of 16-bit components. */
   static const GPUVertFormat format = GPU_vertformat_from_attribute(
-      "nor", gpu::VertAttrType::SNORM_16_16_16_16);
+      "nor", gpu::VertAttrType::SNORM_10_10_10_2);
   return format;
 }
 
@@ -810,11 +828,11 @@ static GPUVertFormat attribute_format(const OrigMeshData &orig_mesh_data,
   return format;
 }
 
-inline short4 normal_float_to_short(const float3 &value)
+using PackedNormal = int1010102_norm;
+
+inline PackedNormal normal_to_gpu(const float3 &value)
 {
-  short3 result;
-  normal_float_to_short_v3(result, value);
-  return short4(result.x, result.y, result.z, 0);
+  return gpu::convert_normal<PackedNormal>(value);
 }
 
 template<typename T>
@@ -1367,14 +1385,15 @@ static void update_normals_mesh(const Object &object,
   gpu::VertBufPtr scratch_vbo = create_vbo_scratch_buffer(normal_format(), scratch_offsets.total);
   node_mask.foreach_index(
       [&](const int node_index, const int scratch_index) {
-        short4 *data = scratch_vbo->data<short4>().data() + scratch_offsets.offsets[scratch_index];
-        short4 *data_start = data;
+        PackedNormal *data = scratch_vbo->data<PackedNormal>().data() +
+                             scratch_offsets.offsets[scratch_index];
+        PackedNormal *data_start = data;
 
         if (!use_flat_layout[node_index]) {
           /* Nodes that store each vertex once have no sharp faces once normals are drawn
            * (#layout_uses_sharp_faces_). */
           for (const int vert : nodes[node_index].all_verts()) {
-            *data = normal_float_to_short(vert_normals[vert]);
+            *data = normal_to_gpu(vert_normals[vert]);
             data++;
           }
         }
@@ -1382,12 +1401,12 @@ static void update_normals_mesh(const Object &object,
           for (const int face : nodes[node_index].faces()) {
             if (!sharp_faces.is_empty() && sharp_faces[face]) {
               const int face_size = faces[face].size();
-              std::fill_n(data, face_size, normal_float_to_short(face_normals[face]));
+              std::fill_n(data, face_size, normal_to_gpu(face_normals[face]));
               data += face_size;
             }
             else {
               for (const int vert : corner_verts.slice(faces[face])) {
-                *data = normal_float_to_short(vert_normals[vert]);
+                *data = normal_to_gpu(vert_normals[vert]);
                 data++;
               }
             }
@@ -1684,8 +1703,9 @@ BLI_NOINLINE static void update_normals_grids(const Object &object,
   gpu::VertBufPtr scratch_vbo = create_vbo_scratch_buffer(normal_format(), scratch_offsets.total);
   node_mask.foreach_index(
       [&](const int node_index, const int scratch_index) {
-        short4 *data = scratch_vbo->data<short4>().data() + scratch_offsets.offsets[scratch_index];
-        short4 *data_start = data;
+        PackedNormal *data = scratch_vbo->data<PackedNormal>().data() +
+                             scratch_offsets.offsets[scratch_index];
+        PackedNormal *data_start = data;
 
         if (use_flat_layout[node_index]) {
           const int grid_size_1 = key.grid_size - 1;
@@ -1701,7 +1721,7 @@ BLI_NOINLINE static void update_normals_grids(const Object &object,
                                  grid_positions[CCG_grid_xy_to_index(key.grid_size, x + 1, y + 1)],
                                  grid_positions[CCG_grid_xy_to_index(key.grid_size, x + 1, y)],
                                  grid_positions[CCG_grid_xy_to_index(key.grid_size, x, y)]);
-                  std::fill_n(data, 4, normal_float_to_short(no));
+                  std::fill_n(data, 4, normal_to_gpu(no));
                   data += 4;
                 }
               }
@@ -1711,7 +1731,7 @@ BLI_NOINLINE static void update_normals_grids(const Object &object,
                 for (int x = 0; x < grid_size_1; x++) {
                   std::fill_n(data,
                               4,
-                              normal_float_to_short(
+                              normal_to_gpu(
                                   grid_normals[CCG_grid_xy_to_index(key.grid_size, x, y)]));
                   data += 4;
                 }
@@ -1723,7 +1743,7 @@ BLI_NOINLINE static void update_normals_grids(const Object &object,
           /* The non-flat VBO layout does not support sharp faces. */
           for (const int grid : nodes[node_index].grids()) {
             for (const float3 &normal : normals.slice(bke::ccg::grid_range(key, grid))) {
-              *data = normal_float_to_short(normal);
+              *data = normal_to_gpu(normal);
               data++;
             }
           }
@@ -2567,6 +2587,60 @@ BLI_NOINLINE static void fill_generic_face_attribute_grids(const Object &object,
       exec_mode::grain_size(1));
 }
 
+/** Phantom: Multires polypaint, #SubdivCCG::colors in the buffer format of a color attribute. */
+template<typename T>
+static typename AttributeConverter<T>::VBOType grid_color_to_vbo(const ColorGeometry4b &color);
+template<> ushort4 grid_color_to_vbo<ColorGeometry4b>(const ColorGeometry4b &color)
+{
+  return AttributeConverter<ColorGeometry4b>::convert(color);
+}
+template<> ColorGeometry4f grid_color_to_vbo<ColorGeometry4f>(const ColorGeometry4b &color)
+{
+  float3 rgb = {BLI_color_from_srgb_table[color.r],
+                BLI_color_from_srgb_table[color.g],
+                BLI_color_from_srgb_table[color.b]};
+  IMB_colormanagement_rec709_to_scene_linear(rgb, rgb);
+  return ColorGeometry4f(rgb.x, rgb.y, rgb.z, color.a * (1.0f / 255.0f));
+}
+
+template<typename T>
+static void fill_grid_colors(const SubdivCCG &subdiv_ccg,
+                             const Span<int> grids,
+                             const bool use_flat_layout,
+                             MutableSpan<typename AttributeConverter<T>::VBOType> dst)
+{
+  const int grid_size = subdiv_ccg.grid_size;
+  const int grid_area = subdiv_ccg.grid_area;
+  const Span<ColorGeometry4b> colors = subdiv_ccg.colors;
+  int64_t i = 0;
+  if (use_flat_layout) {
+    const int grid_size_1 = grid_size - 1;
+    for (const int grid : grids) {
+      const Span<ColorGeometry4b> grid_colors = colors.slice(int64_t(grid) * grid_area,
+                                                             grid_area);
+      for (int y = 0; y < grid_size_1; y++) {
+        for (int x = 0; x < grid_size_1; x++) {
+          dst[i++] = grid_color_to_vbo<T>(grid_colors[CCG_grid_xy_to_index(grid_size, x, y)]);
+          dst[i++] = grid_color_to_vbo<T>(
+              grid_colors[CCG_grid_xy_to_index(grid_size, x + 1, y)]);
+          dst[i++] = grid_color_to_vbo<T>(
+              grid_colors[CCG_grid_xy_to_index(grid_size, x + 1, y + 1)]);
+          dst[i++] = grid_color_to_vbo<T>(
+              grid_colors[CCG_grid_xy_to_index(grid_size, x, y + 1)]);
+        }
+      }
+    }
+  }
+  else {
+    for (const int grid : grids) {
+      for (const ColorGeometry4b &color : colors.slice(int64_t(grid) * grid_area, grid_area)) {
+        dst[i++] = grid_color_to_vbo<T>(color);
+      }
+    }
+  }
+  BLI_assert(i == dst.size());
+}
+
 BLI_NOINLINE static void update_generic_attribute_grids(const Object &object,
                                                         const OrigMeshData &orig_mesh_data,
                                                         const Buffer &vbo,
@@ -2590,12 +2664,53 @@ BLI_NOINLINE static void update_generic_attribute_grids(const Object &object,
   const GPUVertFormat format = attribute_format(orig_mesh_data, format_name, data_type);
   const bool is_uvs = attr && attr.domain == bke::AttrDomain::Corner &&
                       data_type == bke::AttrType::Float2;
+  /* Phantom: Multires polypaint replaces the base mesh's color attribute in Sculpt Mode. */
+  const SubdivCCG &subdiv_ccg = *object.runtime->sculpt_session->subdiv_ccg;
+  const bool use_grid_colors = attr && !subdiv_ccg.colors.is_empty() &&
+                               ELEM(attr.domain,
+                                    bke::AttrDomain::Point,
+                                    bke::AttrDomain::Corner) &&
+                               ELEM(data_type,
+                                    bke::AttrType::ColorFloat,
+                                    bke::AttrType::ColorByte) &&
+                               ELEM(name,
+                                    orig_mesh_data.active_color,
+                                    orig_mesh_data.default_color);
   if (node_mask.is_empty()) {
     return;
   }
   gpu::VertBufPtr scratch_vbo = create_vbo_scratch_buffer(format, scratch_offsets.total);
 
-  if (!attr) {
+  if (use_grid_colors) {
+    const Span<bke::pbvh::GridsNode> nodes =
+        bke::object::pbvh_get(object)->nodes<bke::pbvh::GridsNode>();
+    node_mask.foreach_index(
+        [&](const int node_index, const int scratch_index) {
+          const int64_t dst_len = vbo.acquired[node_index] ? vbo.sizes[node_index] : 0;
+          if (dst_len == 0) {
+            return;
+          }
+          const Span<int> grids = nodes[node_index].grids();
+          if (data_type == bke::AttrType::ColorByte) {
+            fill_grid_colors<ColorGeometry4b>(
+                subdiv_ccg,
+                grids,
+                use_flat_layout[node_index],
+                scratch_vbo->data<ushort4>().slice(scratch_offsets.offsets[scratch_index],
+                                                   dst_len));
+          }
+          else {
+            fill_grid_colors<ColorGeometry4f>(
+                subdiv_ccg,
+                grids,
+                use_flat_layout[node_index],
+                scratch_vbo->data<ColorGeometry4f>().slice(scratch_offsets.offsets[scratch_index],
+                                                           dst_len));
+          }
+        },
+        exec_mode::grain_size(1));
+  }
+  else if (!attr) {
     node_mask.foreach_index(
         [&](const int node_index, const int scratch_index) {
           const int64_t dst_len = vbo.acquired[node_index] ? vbo.sizes[node_index] : 0;
@@ -2710,8 +2825,9 @@ BLI_NOINLINE static void update_normals_bmesh(const Object &object,
   gpu::VertBufPtr scratch_vbo = create_vbo_scratch_buffer(normal_format(), scratch_offsets.total);
   node_mask.foreach_index(
       [&](const int node_index, const int scratch_index) {
-        short4 *data = scratch_vbo->data<short4>().data() + scratch_offsets.offsets[scratch_index];
-        short4 *data_start = data;
+        PackedNormal *data = scratch_vbo->data<PackedNormal>().data() +
+                             scratch_offsets.offsets[scratch_index];
+        PackedNormal *data_start = data;
         for (const BMFace *face :
              BKE_pbvh_bmesh_node_faces(&const_cast<bke::pbvh::BMeshNode &>(nodes[node_index])))
         {
@@ -2720,15 +2836,15 @@ BLI_NOINLINE static void update_normals_bmesh(const Object &object,
           }
           if (BM_elem_flag_test(face, BM_ELEM_SMOOTH)) {
             const BMLoop *l = face->l_first;
-            *data = normal_float_to_short(l->prev->v->no);
+            *data = normal_to_gpu(l->prev->v->no);
             data++;
-            *data = normal_float_to_short(l->v->no);
+            *data = normal_to_gpu(l->v->no);
             data++;
-            *data = normal_float_to_short(l->next->v->no);
+            *data = normal_to_gpu(l->next->v->no);
             data++;
           }
           else {
-            std::fill_n(data, 3, normal_float_to_short(face->no));
+            std::fill_n(data, 3, normal_to_gpu(face->no));
             data += 3;
           }
         }
@@ -4538,50 +4654,88 @@ void DrawCacheImpl::update_mesh_proxy_lines(const IndexMask &node_mask)
 /** \name Phantom: back-face culling of nodes
  * \{ */
 
+/** A 64-bit mix (SplitMix64's finalizer): close inputs give unrelated outputs. */
+static uint64_t closed_check_hash(uint64_t x)
+{
+  x += 0x9E3779B97F4A7C15ull;
+  x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ull;
+  x = (x ^ (x >> 27)) * 0x94D049BB133111EBull;
+  return x ^ (x >> 31);
+}
+
 /**
  * Whether every edge of the mesh joins exactly two faces that run along it in opposite
- * directions, and the faces are wound outwards (positive volume). Then, seen from outside, every
- * back face lies behind a front face and can be skipped.
+ * directions. If the faces are also wound outwards (#ensure_normal_cones checks that), every back
+ * face seen from outside lies behind a front face and can be skipped.
+ *
+ * Counting the faces of every edge means scattered writes to a table as big as the edges, which
+ * is slow on big meshes. Instead the corners are read once, in order, adding up hashes: of each
+ * corner's edge, where exactly two uses per edge sum to twice the edges' own sum; and of the edge
+ * times the difference of the hashes of the vertices the corner runs from and to along it, which
+ * cancels when the two uses run in opposite directions. A mesh that isn't closed would need a
+ * 64-bit hash collision to pass.
  */
-static bool mesh_is_closed_and_outward(const Mesh &mesh)
+static bool mesh_is_closed(const Mesh &mesh)
 {
   PRF_scope(ProfileCategory::Draw);
-  const Span<int2> edges = mesh.edges();
+  const int edges_num = mesh.edges_num;
   const OffsetIndices<int> faces = mesh.faces();
   const Span<int> corner_verts = mesh.corner_verts();
   const Span<int> corner_edges = mesh.corner_edges();
   if (faces.is_empty()) {
     return false;
   }
-  /* Per edge, one plus or minus 2^16 for each face using it, by the direction it runs along the
-   * edge: exactly 2 when two faces use it in opposite directions. */
-  Array<int32_t> edge_uses(edges.size(), 0);
-  threading::parallel_for(faces.index_range(), 4096, [&](const IndexRange range) {
-    for (const int face : range) {
-      for (const int corner : faces[face]) {
-        const int edge = corner_edges[corner];
-        const int32_t use = edges[edge][0] == corner_verts[corner] ? 1 + (1 << 16) :
-                                                                     1 - (1 << 16);
-        atomic_add_and_fetch_int32(&edge_uses[edge], use);
-      }
-    }
-  });
-  const bool closed = threading::parallel_reduce(
-      edge_uses.index_range(),
-      65536,
-      true,
-      [&](const IndexRange range, const bool init) {
-        return init && std::all_of(edge_uses.begin() + range.first(),
-                                   edge_uses.begin() + range.one_after_last(),
-                                   [](const int32_t uses) { return uses == 2; });
+  constexpr uint64_t edge_salt = 0x5851F42D4C957F2Dull;
+  const auto edge_hash = [](const int edge) {
+    return closed_check_hash(uint64_t(edge) ^ edge_salt);
+  };
+  using Sums = std::array<uint64_t, 2>;
+  const Sums corner_sums = threading::parallel_reduce(
+      faces.index_range(),
+      4096,
+      Sums{0, 0},
+      [&](const IndexRange range, Sums sums) {
+        for (const int face : range) {
+          const IndexRange face_corners = faces[face];
+          const uint64_t first_vert = closed_check_hash(uint64_t(corner_verts[face_corners[0]]));
+          uint64_t from = first_vert;
+          for (const int corner : face_corners) {
+            const uint64_t to = corner == face_corners.last() ?
+                                    first_vert :
+                                    closed_check_hash(uint64_t(corner_verts[corner + 1]));
+            const uint64_t edge = edge_hash(corner_edges[corner]);
+            sums[0] += (from - to) * edge;
+            sums[1] += edge;
+            from = to;
+          }
+        }
+        return sums;
       },
-      std::logical_and<>());
-  if (!closed) {
+      [](const Sums &a, const Sums &b) { return Sums{a[0] + b[0], a[1] + b[1]}; });
+  if (corner_sums[0] != 0) {
     return false;
   }
+  const uint64_t edges_sum = threading::parallel_reduce(
+      IndexRange(edges_num),
+      65536,
+      uint64_t(0),
+      [&](const IndexRange range, uint64_t sum) {
+        for (const int edge : range) {
+          sum += edge_hash(edge);
+        }
+        return sum;
+      },
+      std::plus<>());
+  return corner_sums[1] == edges_sum * 2;
+}
+
+/** Six times the signed volume the mesh's triangles enclose: positive when wound outwards. */
+static double mesh_volume(const Mesh &mesh)
+{
   const Span<float3> positions = mesh.vert_positions();
+  const Span<int> corner_verts = mesh.corner_verts();
   const Span<int3> corner_tris = mesh.corner_tris();
-  const double volume = threading::parallel_reduce(
+  return threading::parallel_reduce(
       corner_tris.index_range(),
       65536,
       0.0,
@@ -4595,7 +4749,6 @@ static bool mesh_is_closed_and_outward(const Mesh &mesh)
         return sum;
       },
       std::plus<>());
-  return volume > 0.0;
 }
 
 static bool any_face_hidden(const Object &object, const OrigMeshData &orig_mesh_data)
@@ -4627,75 +4780,129 @@ static bool any_face_hidden(const Object &object, const OrigMeshData &orig_mesh_
       std::logical_or<>());
 }
 
-/** Accumulates triangle normals into a #NormalCone. */
+/**
+ * Finds the cone around a given axis that holds a node's triangle normals. The axis comes from the
+ * cached normals, which is cheap; the angle comes from the triangles as drawn, so a folded face
+ * can't make the cone too narrow (which would cull a node that shows, and open a hole).
+ */
 struct NormalConeBuilder {
-  /** A buffer reused for every node a thread builds a cone for. */
-  Vector<float3> &normals;
-  float3 sum = float3(0.0f);
+  float3 axis = float3(0.0f);
+  /** The smallest squared cosine between a triangle normal and the axis so far. */
+  float min_cos_sq = 1.0f;
+  bool any = false;
+  bool valid;
 
-  NormalConeBuilder(Vector<float3> &buffer, const int64_t triangles_num) : normals(buffer)
+  explicit NormalConeBuilder(const float3 &axis_sum)
   {
-    normals.clear();
-    normals.reserve(triangles_num);
+    const float len = math::length(axis_sum);
+    valid = len > 1e-6f;
+    if (valid) {
+      axis = axis_sum / len;
+    }
   }
 
-  void add_triangle(const float3 &a, const float3 &b, const float3 &c)
+  /**
+   * Add a triangle by its (unnormalized) normal. Returns false once the triangles span a half
+   * space or more, after which the node can't be culled whatever else it holds.
+   */
+  bool add(const float3 &normal)
   {
-    const float3 n = math::cross(b - a, c - a);
-    const float len = math::length(n);
-    if (len > 1e-20f) {
-      normals.append(n / len);
-      sum += normals.last();
+    const float len_sq = math::length_squared(normal);
+    if (len_sq <= 1e-40f) {
+      return true;
     }
+    const float d = math::dot(normal, axis);
+    if (d <= 0.0f) {
+      valid = false;
+      return false;
+    }
+    min_cos_sq = std::min(min_cos_sq, d * d / len_sq);
+    any = true;
+    return true;
   }
 
   NormalCone finish() const
   {
     NormalCone cone;
-    const float len = math::length(sum);
-    if (normals.is_empty() || len < 1e-6f) {
+    if (!valid || !any) {
       return cone;
     }
-    cone.axis = sum / len;
-    float min_cos = 1.0f;
-    for (const float3 &n : normals) {
-      min_cos = std::min(min_cos, math::dot(n, cone.axis));
-    }
     /* A little margin for rounding: culling a node that shows would open a hole. */
-    min_cos -= 1e-3f;
+    const float min_cos = std::sqrt(min_cos_sq) - 1e-3f;
     if (min_cos <= 0.0f) {
       return cone;
     }
+    cone.axis = axis;
     cone.sin_angle = std::sqrt(1.0f - min_cos * min_cos);
     return cone;
   }
 };
 
+/**
+ * \param r_volume: When given, six times the signed volume under the node's triangles is added to
+ * it (#mesh_volume), and all of them are visited.
+ */
 static NormalCone calc_mesh_node_cone(const OffsetIndices<int> faces,
                                       const Span<int> corner_verts,
                                       const Span<int3> corner_tris,
                                       const Span<float3> positions,
+                                      const Span<float3> face_normals,
                                       const bke::pbvh::MeshNode &node,
-                                      Vector<float3> &buffer)
+                                      double *r_volume)
 {
-  NormalConeBuilder builder(buffer, node.faces().size() * 2);
+  float3 axis(0.0f);
+  for (const int face : node.faces()) {
+    axis += face_normals[face];
+  }
+  NormalConeBuilder builder(axis);
+  double volume = 0.0;
   for (const int face : node.faces()) {
     for (const int3 &tri : corner_tris.slice(bke::mesh::face_triangles_range(faces, face))) {
-      builder.add_triangle(positions[corner_verts[tri[0]]],
-                           positions[corner_verts[tri[1]]],
-                           positions[corner_verts[tri[2]]]);
+      const float3 &a = positions[corner_verts[tri[0]]];
+      const float3 normal = math::cross(positions[corner_verts[tri[1]]] - a,
+                                        positions[corner_verts[tri[2]]] - a);
+      if (r_volume) {
+        volume += double(math::dot(a, normal));
+        builder.add(normal);
+      }
+      else if (!builder.add(normal)) {
+        return NormalCone();
+      }
     }
+  }
+  if (r_volume) {
+    *r_volume += volume;
   }
   return builder.finish();
 }
 
 static NormalCone calc_grids_node_cone(const CCGKey &key,
                                        const Span<float3> positions,
-                                       const bke::pbvh::GridsNode &node,
-                                       Vector<float3> &buffer)
+                                       const Span<float3> normals,
+                                       const bke::pbvh::GridsNode &node)
 {
-  NormalConeBuilder builder(
-      buffer, int64_t(node.grids().size()) * (key.grid_size - 1) * (key.grid_size - 1) * 4);
+  float3 axis(0.0f);
+  if (!normals.is_empty()) {
+    for (const int grid : node.grids()) {
+      for (const float3 &normal : normals.slice(bke::ccg::grid_range(key, grid))) {
+        axis += normal;
+      }
+    }
+  }
+  if (!node.grids().is_empty() && key.grid_size > 1) {
+    /* The grids' normals may point either way relative to the drawn winding: follow the latter. */
+    const Span<float3> grid_positions = positions.slice(bke::ccg::grid_range(key, node.grids()[0]));
+    const float3 &p00 = grid_positions[CCG_grid_xy_to_index(key.grid_size, 0, 0)];
+    const float3 &p11 = grid_positions[CCG_grid_xy_to_index(key.grid_size, 1, 1)];
+    const float3 &p10 = grid_positions[CCG_grid_xy_to_index(key.grid_size, 1, 0)];
+    const float3 &p01 = grid_positions[CCG_grid_xy_to_index(key.grid_size, 0, 1)];
+    if (math::dot(axis, math::cross(p11 - p00, p10 - p00) + math::cross(p01 - p00, p11 - p00)) <
+        0.0f)
+    {
+      axis = -axis;
+    }
+  }
+  NormalConeBuilder builder(axis);
   for (const int grid : node.grids()) {
     const Span<float3> grid_positions = positions.slice(bke::ccg::grid_range(key, grid));
     for (int y = 0; y < key.grid_size - 1; y++) {
@@ -4706,10 +4913,13 @@ static NormalCone calc_grids_node_cone(const CCGKey &key,
         const float3 &p01 = grid_positions[CCG_grid_xy_to_index(key.grid_size, x, y + 1)];
         /* Both ways of splitting the quad, since either may be drawn, wound like the drawn
          * triangles (#create_tri_index_grids): the grid's x/y order runs clockwise. */
-        builder.add_triangle(p00, p11, p10);
-        builder.add_triangle(p00, p01, p11);
-        builder.add_triangle(p00, p01, p10);
-        builder.add_triangle(p10, p01, p11);
+        if (!builder.add(math::cross(p11 - p00, p10 - p00)) ||
+            !builder.add(math::cross(p01 - p00, p11 - p00)) ||
+            !builder.add(math::cross(p01 - p00, p10 - p00)) ||
+            !builder.add(math::cross(p01 - p10, p11 - p10)))
+        {
+          return NormalCone();
+        }
       }
     }
   }
@@ -4728,10 +4938,10 @@ Span<NormalCone> DrawCacheImpl::ensure_normal_cones(const Object &object,
   const Object &object_orig = *DEG_get_original(&object);
   const Mesh &mesh_orig = *id_cast<const Mesh *>(object_orig.data);
   const OrigMeshData orig_mesh_data{mesh_orig};
-  if (!closed_outward_) {
-    closed_outward_ = mesh_is_closed_and_outward(mesh_orig);
+  if (!closed_) {
+    closed_ = mesh_is_closed(mesh_orig);
   }
-  if (!*closed_outward_) {
+  if (!*closed_ || (outward_ && !*outward_)) {
     return {};
   }
   if (!any_hidden_) {
@@ -4747,15 +4957,19 @@ Span<NormalCone> DrawCacheImpl::ensure_normal_cones(const Object &object,
   }
   normal_cones_dirty_.resize(pbvh.nodes_num(), true);
   IndexMaskMemory memory;
-  const IndexMask dirty = IndexMask::from_bits(node_mask, normal_cones_dirty_, memory);
+  /* The first time, every node's cone: for a mesh, the same pass over its triangles finds which
+   * way they are wound. */
+  const bool find_winding = !outward_;
+  const IndexMask dirty = find_winding ?
+                              bke::pbvh::all_leaf_nodes(pbvh, memory) :
+                              IndexMask::from_bits(node_mask, normal_cones_dirty_, memory);
   if (dirty.is_empty()) {
     return normal_cones_;
   }
-  if (defer_changed) {
+  if (defer_changed && !find_winding) {
     dirty.foreach_index([&](const int i) { normal_cones_[i] = NormalCone(); });
     return normal_cones_;
   }
-  threading::EnumerableThreadSpecific<Vector<float3>> buffers;
   switch (pbvh.type()) {
     case bke::pbvh::Type::Mesh: {
       const Span<bke::pbvh::MeshNode> nodes = pbvh.nodes<bke::pbvh::MeshNode>();
@@ -4764,12 +4978,26 @@ Span<NormalCone> DrawCacheImpl::ensure_normal_cones(const Object &object,
       const Span<int> corner_verts = mesh.corner_verts();
       const Span<int3> corner_tris = mesh.corner_tris();
       const Span<float3> positions = bke::pbvh::vert_positions_eval_from_eval(object);
+      const Span<float3> face_normals = bke::pbvh::face_normals_eval_from_eval(object);
+      threading::EnumerableThreadSpecific<double> volumes;
       dirty.foreach_index(
           [&](const int i) {
-            normal_cones_[i] = calc_mesh_node_cone(
-                faces, corner_verts, corner_tris, positions, nodes[i], buffers.local());
+            normal_cones_[i] = calc_mesh_node_cone(faces,
+                                                   corner_verts,
+                                                   corner_tris,
+                                                   positions,
+                                                   face_normals,
+                                                   nodes[i],
+                                                   find_winding ? &volumes.local() : nullptr);
           },
           exec_mode::grain_size(1));
+      if (find_winding) {
+        double volume = 0.0;
+        for (const double node_volume : volumes) {
+          volume += node_volume;
+        }
+        outward_ = volume > 0.0;
+      }
       break;
     }
     case bke::pbvh::Type::Grids: {
@@ -4779,15 +5007,22 @@ Span<NormalCone> DrawCacheImpl::ensure_normal_cones(const Object &object,
       dirty.foreach_index(
           [&](const int i) {
             normal_cones_[i] = calc_grids_node_cone(
-                key, subdiv_ccg.positions, nodes[i], buffers.local());
+                key, subdiv_ccg.positions, subdiv_ccg.normals, nodes[i]);
           },
           exec_mode::grain_size(1));
+      if (find_winding) {
+        /* The base mesh is small, and wound like its grids. */
+        outward_ = mesh_volume(mesh_orig) > 0.0;
+      }
       break;
     }
     case bke::pbvh::Type::BMesh:
       break;
   }
   dirty.foreach_index([&](const int i) { normal_cones_dirty_[i].reset(); });
+  if (!*outward_) {
+    return {};
+  }
   return normal_cones_;
 }
 

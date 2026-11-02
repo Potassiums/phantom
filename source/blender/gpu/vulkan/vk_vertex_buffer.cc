@@ -152,8 +152,31 @@ void VKVertexBuffer::acquire_data()
   }
 
   /* Discard previous data if any. */
-  /* TODO: Use mapped memory. */
-  MEM_SAFE_DELETE(data_);
+  release_data();
+  /* Phantom: an upload source is written straight into mapped staging memory, which the GPU
+   * copies from; otherwise (or if that fails) the data is kept on the host until uploaded. */
+  upload_source_ = false;
+  if (upload_source_requested_ && this->size_alloc_get() > 0) {
+    if (buffer_.is_allocated()) {
+      buffer_.free();
+    }
+    buffer_.create(this->size_alloc_get(),
+                   VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                   VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE,
+                   VMA_ALLOCATION_CREATE_MAPPED_BIT |
+                       VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT,
+                   0.4f,
+                   false,
+                   "VertexBufferUploadSource");
+    if (buffer_.is_allocated() && buffer_.is_mapped()) {
+      upload_source_ = true;
+      data_ = static_cast<uchar *>(buffer_.mapped_memory_get());
+      return;
+    }
+    if (buffer_.is_allocated()) {
+      buffer_.free();
+    }
+  }
   data_ = MEM_new_array_uninitialized<uchar>(this->size_alloc_get(), __func__);
 }
 
@@ -162,6 +185,7 @@ void VKVertexBuffer::resize_data()
   if (usage_ == GPU_USAGE_DEVICE_ONLY) {
     return;
   }
+  BLI_assert_msg(!upload_source_, "An upload source can't be resized");
 
   data_ = static_cast<uchar *>(
       MEM_realloc_uninitialized(data_, sizeof(uchar) * this->size_alloc_get()));
@@ -169,6 +193,11 @@ void VKVertexBuffer::resize_data()
 
 void VKVertexBuffer::release_data()
 {
+  if (upload_source_) {
+    /* The buffer owns the memory. */
+    data_ = nullptr;
+    return;
+  }
   MEM_SAFE_DELETE(data_);
 }
 
@@ -207,6 +236,18 @@ void VKVertexBuffer::upload_data()
   }
 
   if (!ELEM(usage_, GPU_USAGE_STATIC, GPU_USAGE_STREAM, GPU_USAGE_DYNAMIC)) {
+    return;
+  }
+
+  if (upload_source_) {
+    /* The data was written where the GPU reads it. */
+    if (flag & GPU_VERTBUF_DATA_DIRTY) {
+      buffer_.flush();
+      data_ = nullptr;
+      data_uploaded_ = true;
+      flag &= ~GPU_VERTBUF_DATA_DIRTY;
+      flag |= GPU_VERTBUF_DATA_UPLOADED;
+    }
     return;
   }
 

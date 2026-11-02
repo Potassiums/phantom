@@ -52,6 +52,7 @@ struct wmEvent;
 struct wmKeyConfig;
 struct wmOperatorType;
 struct wmTimer;
+struct wmWindow;
 
 namespace gpu {
 class Batch;
@@ -727,6 +728,9 @@ struct ViewLink;
 struct Block {
   Block *next = nullptr, *prev = nullptr;
 
+  /** Phantom: in a popup drawn in the simple view's style (see #popup_anchor_set). */
+  bool phantom_simple_style = false;
+
   Vector<std::unique_ptr<Button>> buttons_ptrs;
   Vector<std::shared_ptr<TextWrapCache>> text_wrap_cache;
   Vector<std::shared_ptr<MarkdownLayoutCache>> markdown_layout_cache;
@@ -1117,6 +1121,8 @@ struct PopupBlockHandle {
    */
   bool can_refresh = false;
   bool refresh = false;
+  /** Phantom: drawn in the simple view's style (see #popup_anchor_set). */
+  bool phantom_simple_style = false;
 
   wmTimer *scrolltimer = nullptr;
   float scrolloffset = 0.0f;
@@ -1301,6 +1307,18 @@ void pie_menu_level_create(Block *block,
 void popup_translate(ARegion *region, const int mdiff[2]);
 void popup_block_free(bContext *C, PopupBlockHandle *handle);
 void popup_block_scrolltest(Block *block);
+/**
+ * Phantom: the bounds offset placing a new popup `block` (laid out, its bounds not computed yet)
+ * beside the anchor of #popup_anchor_set in `window`, for the mouse at `event_xy` and the `margin`
+ * its bounds will add. False without an anchor. Also gives `handle` the anchor's style.
+ */
+bool popup_anchor_offset(const wmWindow *window,
+                         PopupBlockHandle &handle,
+                         const Block &block,
+                         int margin,
+                         int min_width,
+                         const int event_xy[2],
+                         int r_offset[2]);
 
 /** \} */
 

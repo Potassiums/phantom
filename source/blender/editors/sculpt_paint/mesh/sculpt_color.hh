@@ -10,6 +10,7 @@
 
 #include "DNA_scene_types.h"
 
+#include "BLI_color_types.hh"
 #include "BLI_generic_span.hh"
 #include "BLI_math_vector_types.hh"
 #include "BLI_offset_indices.hh"
@@ -19,6 +20,8 @@ namespace blender {
 
 struct Depsgraph;
 struct Mesh;
+struct Object;
+struct SubdivCCG;
 namespace bke {
 enum class AttrDomain : int8_t;
 struct GAttributeReader;
@@ -62,6 +65,28 @@ float4 color_vert_get(OffsetIndices<int> faces,
                       int vert);
 
 float4 color_corner_get(const GSpan color_attribute, int corner_index);
+
+/* Phantom: Multires polypaint, #SubdivCCG::colors as float colors (scene linear). */
+
+/** Stores the colors of the grids' vertices into colors. */
+void gather_colors_grids(const SubdivCCG &subdiv_ccg,
+                         Span<int> grids,
+                         MutableSpan<float4> r_colors);
+/** Sets the colors of the grids' vertices. */
+void scatter_colors_grids(Span<float4> colors, SubdivCCG &subdiv_ccg, Span<int> grids);
+/** Swaps the colors of the grids' vertices with the values in colors. */
+void swap_gathered_colors_grids(SubdivCCG &subdiv_ccg,
+                                Span<int> grids,
+                                MutableSpan<float4> r_colors);
+float4 color_grids_get(const SubdivCCG &subdiv_ccg, int vert);
+float4 color_grids_decode(const ColorGeometry4b &color);
+ColorGeometry4b color_grids_encode(const float4 &color);
+
+/**
+ * Create #SubdivCCG::colors if the object is sculpted with Multires and they don't exist yet, from
+ * the active color attribute interpolated over the grids (what the viewport showed before).
+ */
+void ensure_grid_colors(Object &object);
 
 bke::GAttributeReader active_color_attribute(const Mesh &mesh);
 bke::GSpanAttributeWriter active_color_attribute_for_write(Mesh &mesh);

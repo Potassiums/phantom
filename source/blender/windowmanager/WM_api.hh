@@ -2665,8 +2665,11 @@ enum class WMUISound {
   /* Loop cut: a loop added or removed (mouse wheel). */
   LoopAdd,
   LoopRemove,
+  /* Something deleted (objects, mesh elements, files in the start picker...): a soft paper
+   * crumple. */
+  Delete,
 };
-#define WM_UI_SOUND_COUNT (int(WMUISound::LoopRemove) + 1)
+#define WM_UI_SOUND_COUNT (int(WMUISound::Delete) + 1)
 
 /** Play an interface sound effect, if enabled in the preferences. */
 void WM_ui_sound_play(WMUISound sound, float pitch = 1.0f);

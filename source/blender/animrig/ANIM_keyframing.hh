@@ -57,6 +57,9 @@ enum class SingleKeyingResult {
   NO_VALID_STRIP,
   NO_VALID_SLOT,
   CANNOT_RESOLVE_PATH,
+  /* Phantom: the NLA track being tweaked (an animation layer) is locked / muted. */
+  NLA_TRACK_LOCKED,
+  NLA_TRACK_MUTED,
   /* Make sure to always keep this at the end of the enum. */
   _KEYING_RESULT_MAX,
 };

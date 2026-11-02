@@ -352,6 +352,13 @@ struct StrokeCache {
      */
     Array<float4> mix_colors;
     Array<float4> prev_colors;
+    /**
+     * Phantom: Multires polypaint. #mix_colors per pbvh::Tree node (allocated when the node is
+     * first painted, the grids can be too many for one array), and #prev_colors as the grids'
+     * own byte colors.
+     */
+    Array<Array<float4>> mix_colors_grids;
+    Array<ColorGeometry4b> prev_colors_grids;
   } paint_brush;
 
   /* Pose brush */
@@ -863,6 +870,14 @@ std::optional<Span<float4>> orig_color_data_lookup_mesh(const Object &object,
 inline Span<float4> orig_color_data_get_mesh(const Object &object, const bke::pbvh::MeshNode &node)
 {
   return *orig_color_data_lookup_mesh(object, node);
+}
+/** Phantom: Multires polypaint. */
+std::optional<Span<float4>> orig_color_data_lookup_grids(const Object &object,
+                                                         const bke::pbvh::GridsNode &node);
+inline Span<float4> orig_color_data_get_grids(const Object &object,
+                                              const bke::pbvh::GridsNode &node)
+{
+  return *orig_color_data_lookup_grids(object, node);
 }
 
 std::optional<Span<int>> orig_face_set_data_lookup_mesh(const Object &object,

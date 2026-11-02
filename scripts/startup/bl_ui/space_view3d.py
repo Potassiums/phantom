@@ -920,6 +920,10 @@ class VIEW3D_HT_header(Header):
             )
         del act_mode_item
 
+        # Phantom: the simple sculpting view, laid out like ZBrush for iPad (see phantom_simple_view).
+        if mode_string == 'SCULPT':
+            layout.operator("view3d.phantom_simple_view_toggle", text="Simple", icon='FULLSCREEN_ENTER')
+
         layout.template_header_3D_mode()
 
         # Contains buttons like Mode, Pivot, Layer, Mesh Select Mode...

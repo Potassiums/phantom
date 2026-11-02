@@ -17,9 +17,11 @@
 
 #include "BLI_function_ref.hh"
 #include "BLI_listbase.hh"
+#include "BLI_math_vector_c.hh"
 #include "BLI_string_utf8.hh"
 
 #include "BKE_context.hh"
+#include "BKE_idprop.hh"
 #include "BKE_idtype.hh"
 #include "BKE_main.hh"
 #include "BKE_screen.hh"
@@ -27,6 +29,7 @@
 #include "BLT_translation.hh"
 
 #include "DNA_screen_types.h"
+#include "DNA_userdef_types.h"
 
 #include "ED_asset_list.hh"
 #include "ED_screen.hh"
@@ -608,8 +611,44 @@ void region_layout(const bContext *C, ARegion *region)
   block_end(C, block);
 }
 
+/**
+ * Phantom: in the simple sculpting view (`phantom_simple_view.py` marks its screen) the shelf takes
+ * the look of the view's toolbars and popups, as long as it draws; the theme is put back after.
+ */
+class SimpleStyleScope {
+  bTheme *btheme_ = nullptr;
+  ThemeUI tui_;
+  ThemeRegionsAssetShelf shelf_;
+
+ public:
+  explicit SimpleStyleScope(const bContext *C)
+  {
+    const bScreen *screen = CTX_wm_screen(C);
+    if (!screen || !screen->id.properties ||
+        !IDP_GetPropertyFromGroup(screen->id.properties, "phantom_simple_view"))
+    {
+      return;
+    }
+    btheme_ = const_cast<bTheme *>(ui::theme::theme_get());
+    tui_ = btheme_->tui;
+    shelf_ = btheme_->regions.asset_shelf;
+    ui::simple_style_apply(btheme_->tui);
+    const uchar panel[4] = {27, 27, 29, 240};
+    copy_v4_v4_uchar(btheme_->regions.asset_shelf.back, panel);
+    copy_v4_v4_uchar(btheme_->regions.asset_shelf.header_back, panel);
+  }
+  ~SimpleStyleScope()
+  {
+    if (btheme_) {
+      btheme_->tui = tui_;
+      btheme_->regions.asset_shelf = shelf_;
+    }
+  }
+};
+
 void region_draw(const bContext *C, ARegion *region)
 {
+  const SimpleStyleScope simple_style(C);
   ED_region_clear(C, region, TH_BACK);
 
   /* Set view2d view matrix for scrolling. */
@@ -682,6 +721,7 @@ void header_region_init(wmWindowManager * /*wm*/, ARegion *region)
 
 void header_region(const bContext *C, ARegion *region)
 {
+  const SimpleStyleScope simple_style(C);
   ED_region_header_with_button_sections(C, region, ui::ButtonSectionsAlign::Bottom);
 }
 

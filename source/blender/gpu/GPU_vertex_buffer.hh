@@ -55,6 +55,13 @@ enum GPUUsageType {
    * format matches the texture exactly. Can be masked with other properties, and is stripped
    * during VertBuf::init. */
   GPU_USAGE_FLAG_BUFFER_TEXTURE_ONLY = 1 << 3,
+  /**
+   * Phantom: the buffer is only written once by the CPU and then copied into other buffers
+   * (#VertBuf::copy_sub), never drawn from. Backends that support it hand out their staging
+   * memory as #VertBuf::data, so the data is written where the GPU copies it from, without a
+   * separate CPU copy and upload; see #VertBuf::is_upload_source. Stripped during #VertBuf::init.
+   */
+  GPU_USAGE_FLAG_UPLOAD_SOURCE = 1 << 4,
 };
 
 ENUM_OPERATORS(GPUUsageType);
@@ -112,6 +119,11 @@ class VertBuf {
 
   /** Usage hint for GL optimization. */
   GPUUsageType usage_ = GPU_USAGE_STATIC;
+
+  /** Phantom: #GPU_USAGE_FLAG_UPLOAD_SOURCE was requested. */
+  bool upload_source_requested_ = false;
+  /** Phantom: the backend gave #data_ in its staging memory, see #is_upload_source. */
+  bool upload_source_ = false;
 
  private:
   /** This counter will only avoid freeing the #VertBuf, not the data. */
@@ -211,6 +223,16 @@ class VertBuf {
   GPUUsageType get_usage_type() const
   {
     return usage_;
+  }
+
+  /**
+   * Phantom: whether this buffer (created with #GPU_USAGE_FLAG_UPLOAD_SOURCE) only lives in the
+   * backend's staging memory: it can be a #copy_sub source, but not be drawn or bound. When
+   * false, it is an ordinary buffer.
+   */
+  bool is_upload_source() const
+  {
+    return upload_source_;
   }
 
   /**

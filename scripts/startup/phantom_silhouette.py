@@ -48,6 +48,8 @@ DEFAULT_SETTINGS = {
 }
 MIN_SIZE = 80
 GRIP_SIZE = 14
+# Unscaled pixels: the panel's rounded corners, like the simple view's toolbars.
+CORNER_RADIUS = 12
 GRIP_FADE_TIME = 0.15
 SAVE_DELAY = 0.5
 # Unscaled pixels: how close to the tools the panel must be dragged to dock,
@@ -239,6 +241,15 @@ def panel_rect(area, region):
     return x, y, w, h
 
 
+def visible_rect(context):
+    """The panel's rectangle in the current 3D View region, or None when it isn't shown (the simple
+    sculpting view puts its toolbar under it)."""
+    region = context.region
+    if region is None or not _enabled(context) or region.width < MIN_SIZE or region.height < MIN_SIZE:
+        return None
+    return panel_rect(context.area, region)
+
+
 # Docked lower than this fraction of the viewport height, the panel is clear of the text.
 TEXT_AREA_FRACTION = 0.45
 
@@ -278,6 +289,9 @@ def _silhouette_shader():
         info.push_constant('MAT4', "ModelViewProjectionMatrix")
         # Where the viewport image sits inside the panel: origin xy, size zw (panel UVs).
         info.push_constant('VEC4', "image_rect")
+        # The panel's size and corner radius in pixels, for its rounded corners.
+        info.push_constant('VEC2', "panel_size")
+        info.push_constant('FLOAT', "corner_radius")
         info.sampler(0, 'FLOAT_2D', "depth_tx")
         info.vertex_in(0, 'VEC2', "pos")
         info.vertex_in(1, 'VEC2', "texco")
@@ -290,13 +304,17 @@ def _silhouette_shader():
             "}")
         info.fragment_source(
             "void main() {"
+            # Rounded corners: fade out past the rounded rectangle's edge (one pixel of smoothing).
+            "  vec2 q = abs(uv * panel_size - panel_size * 0.5) - (panel_size * 0.5 - corner_radius);"
+            "  float edge = length(max(q, vec2(0.0))) + min(max(q.x, q.y), 0.0) - corner_radius;"
+            "  float alpha = clamp(0.5 - edge, 0.0, 1.0);"
             "  vec2 t = (uv - image_rect.xy) / image_rect.zw;"
             "  if (any(lessThan(t, vec2(0.0))) || any(greaterThan(t, vec2(1.0)))) {"
-            "    fragColor = vec4(1.0);"
+            "    fragColor = vec4(1.0, 1.0, 1.0, alpha);"
             "    return;"
             "  }"
             "  float depth = texture(depth_tx, t).r;"
-            "  fragColor = (depth < 1.0) ? vec4(0.0, 0.0, 0.0, 1.0) : vec4(1.0);"
+            "  fragColor = vec4(vec3((depth < 1.0) ? 0.0 : 1.0), alpha);"
             "}")
         _shader = gpu.shader.create_from_info(info)
     return _shader
@@ -324,35 +342,59 @@ def _draw_silhouette(depth, region, x, y, w, h):
         "ModelViewProjectionMatrix",
         gpu.matrix.get_projection_matrix() @ gpu.matrix.get_model_view_matrix())
     shader.uniform_float("image_rect", _image_rect(region, w, h))
+    shader.uniform_float("panel_size", (w, h))
+    shader.uniform_float("corner_radius", _corner_radius(w, h))
     shader.uniform_sampler("depth_tx", depth)
+    gpu.state.blend_set('ALPHA')
     batch.draw(shader)
+    gpu.state.blend_set('NONE')
 
 
-def _grip_triangle(x, y, w, g):
-    """The resize grip: lower-left when floating (anchored top-right), lower-right when docked."""
+def _corner_radius(w, h):
+    return min(CORNER_RADIUS * _ui_scale(), w / 2.0, h / 2.0)
+
+
+def _rounded_outline(x, y, w, h, radius, segments=8):
+    """The panel's rounded rectangle as a closed line, back to its first point."""
+    corners = ((x + w - radius, y + h - radius, 0.0), (x + radius, y + h - radius, 0.5 * math.pi),
+               (x + radius, y + radius, math.pi), (x + w - radius, y + radius, 1.5 * math.pi))
+    points = []
+    for cx, cy, start in corners:
+        for i in range(segments + 1):
+            a = start + 0.5 * math.pi * i / segments
+            points.append((cx + radius * math.cos(a), cy + radius * math.sin(a)))
+    return points + [points[0]]
+
+
+def _grip_triangle(x, y, w, g, radius):
+    """The resize grip: lower-left when floating (anchored top-right), lower-right when docked.
+    Its corner sits on the rounded corner's arc, so it stays inside the panel."""
+    c = radius * (1.0 - math.sqrt(0.5))
     if _docked():
-        return ((x + w, y), (x + w - g, y), (x + w, y + g))
-    return ((x, y), (x + g, y), (x, y + g))
+        return ((x + w - c, y + c), (x + w - c - g, y + c), (x + w - c, y + c + g))
+    return ((x + c, y + c), (x + c + g, y + c), (x + c, y + c + g))
 
 
 def _draw_frame(x, y, w, h, grip_alpha):
-    shader = gpu.shader.from_builtin('UNIFORM_COLOR')
     gpu.state.blend_set('ALPHA')
-    gpu.state.line_width_set(max(1.0, _ui_scale()))
+    radius = _corner_radius(w, h)
 
-    # The border is always faintly visible and brightens with the grip.
-    border = batch_for_shader(
-        shader, 'LINE_LOOP', {"pos": ((x, y), (x + w, y), (x + w, y + h), (x, y + h))})
-    shader.uniform_float("color", (*BORDER_COLOR, 0.35 + 0.65 * grip_alpha))
-    border.draw(shader)
+    # The border is always faintly visible and brightens with the grip. A closed strip, not a
+    # 'LINE_LOOP': Vulkan has no line loops, so one side would be missing.
+    lines = gpu.shader.from_builtin('POLYLINE_UNIFORM_COLOR')
+    lines.bind()
+    lines.uniform_float("viewportSize", gpu.state.viewport_get()[2:])
+    lines.uniform_float("lineWidth", max(1.0, _ui_scale()))
+    lines.uniform_float("color", (*BORDER_COLOR, 0.35 + 0.65 * grip_alpha))
+    batch_for_shader(lines, 'LINE_STRIP', {"pos": _rounded_outline(x, y, w, h, radius)}).draw(lines)
 
     if grip_alpha > 0.001:
+        shader = gpu.shader.from_builtin('UNIFORM_COLOR')
         g = GRIP_SIZE * _ui_scale()
-        grip = batch_for_shader(shader, 'TRIS', {"pos": _grip_triangle(x, y, w, g)})
+        grip = batch_for_shader(shader, 'TRIS', {"pos": _grip_triangle(x, y, w, g, radius)})
         shader.uniform_float("color", (*GRIP_COLOR, grip_alpha))
         grip.draw(shader)
 
-    gpu.state.line_width_set(1.0)
     gpu.state.blend_set('NONE')
 
 

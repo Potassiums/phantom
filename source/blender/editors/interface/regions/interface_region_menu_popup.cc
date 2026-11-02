@@ -306,7 +306,17 @@ static Block *block_func_POPUP(bContext *C, PopupBlockHandle *handle, void *arg_
     /* offset the mouse position, possibly based on earlier selection */
     if (!handle->refresh) {
       Button *bt;
-      if ((block->flag & BLOCK_POPUP_MEMORY) && (bt = popup_menu_memory_get(block))) {
+      if (popup_anchor_offset(CTX_wm_window(C),
+                              *handle,
+                              *block,
+                              1,
+                              minwidth,
+                              handle->popup_create_vars.event_xy,
+                              offset))
+      {
+        /* Phantom: beside the anchor of #popup_anchor_set. */
+      }
+      else if ((block->flag & BLOCK_POPUP_MEMORY) && (bt = popup_menu_memory_get(block))) {
         /* position mouse on last clicked item, at 0.8*width of the
          * button, so it doesn't overlap the text too much, also note
          * the offset is negative because we are inverse moving the

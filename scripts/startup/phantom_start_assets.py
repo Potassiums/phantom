@@ -12,12 +12,12 @@ parts), which ship with Phantom in the Essentials asset library
 (``datafiles/assets/human_base_meshes``, CC0, by Blender Studio artists), plus Phantom's own base
 meshes (``datafiles/assets/phantom/base_meshes``, see ``PHANTOM_BASE_MESHES``).
 
-Click a thumbnail to select it and double-click, press Enter or click **Open** to start: the mesh
+Click a thumbnail to select it and double-click, press Enter or click **Open Project** to start: the mesh
 is appended, framed from the front and put in Sculpt Mode. Scroll for more; Esc, right-click or a
 click outside closes it. The picker is also in the 3D View's Add menu ("Base Mesh...").
 
 Along the top: Phantom's splash image, then a search field (type to filter the meshes by name),
-**Open...** (a .blend from disk) and **Import...** (Blender's import menu: OBJ, FBX, STL, PLY,
+**Open File...** (a .blend from disk) and **Import...** (Blender's import menu: OBJ, FBX, STL, PLY,
 glTF...; the imported mesh is framed and sculpted like a base mesh), then the **New File** choices
 of the splash screen with their icons (General, 2D Animation, Sculpting...). Down the right side:
 **Recent Files**, then **Project Files** (the .blend files in the projects folder, by default
@@ -73,8 +73,32 @@ TILE_FADE_OUT = 0.06
 SETTINGS_FILE = "phantom_start.json"
 # How long (s) to wait for an import started from the picker to bring in a mesh.
 IMPORT_WAIT = 600.0
-# Played when the picker is closed without choosing (a click off it, Esc): the soft cancel.
+# Played when the picker (or its Delete and Rename questions) closes without choosing (a click
+# off it, Esc, Cancel): the soft cancel.
 CLOSE_SOUND = "transform_cancel"
+
+# Colors: one graphite ramp, like the simple sculpting view's toolbars, three text roles, and one
+# accent, Phantom orange (the logo's), with dark text on it. Red only for deleting.
+PANEL = (0.105, 0.105, 0.115)
+FIELD = (0.075, 0.075, 0.08)
+TILE = (0.15, 0.15, 0.16)
+TILE_HOVER = (0.21, 0.21, 0.22)
+CONTROL = (0.19, 0.19, 0.20)
+CONTROL_HOVER = (0.26, 0.26, 0.27)
+MENU = (0.14, 0.14, 0.15)
+HAIRLINE = (1.0, 1.0, 1.0)  # At 8%.
+TEXT = (0.93, 0.93, 0.94)
+TEXT_SECONDARY = (0.68, 0.68, 0.70)
+TEXT_MUTED = (0.54, 0.54, 0.56)
+ACCENT = (1.0, 0.62, 0.34)
+ACCENT_HOVER = (1.0, 0.70, 0.46)
+ON_ACCENT = (0.09, 0.09, 0.10)
+# Filled buttons (Open Project, Rename, the chosen startup screen): a deeper orange than the accent,
+# calmer on the eyes as a large area, with near-white text on it (about 5:1).
+PRIMARY = (0.61, 0.34, 0.16)
+PRIMARY_HOVER = (0.68, 0.39, 0.19)
+ON_PRIMARY = (0.97, 0.95, 0.93)
+DANGER = (0.80, 0.30, 0.30)
 
 # (key, label, kind, name in the bundle, thumbnail). Kind: 'SPHERE', 'COLLECTION' or 'OBJECT'.
 # The first ones are listed under "Start with", the rest under "More base meshes".
@@ -777,13 +801,13 @@ class _Layout:
         self.s = s
         self.tile = 148 * s
         self.thumb = self.thumb_w = 124 * s
-        self.label = 22 * s
-        self.gap = 10 * s
+        self.label = 24 * s
+        self.gap = 12 * s
         self.pad = 20 * s
         self.banner = BANNER_HEIGHT * s
         self.header = self.banner + 150 * s
         self.footer = 56 * s
-        self.section = 30 * s
+        self.section = 32 * s
         starter_row_h = self.thumb + self.label + self.gap
         grid_view = _picker["view"] != 'STARTERS'
         # The base meshes on the left, the recent and project files down the right; View All puts
@@ -830,7 +854,7 @@ class _Layout:
         # bottom: the settings and Open. Each (x, y, w, h).
         top = self.y + self.height - self.banner
         self.title_y = top - 34 * s
-        bar_y, bar_h, button_w = top - 88 * s, 30 * s, 92 * s
+        bar_y, bar_h, button_w = top - 88 * s, 30 * s, 104 * s
         right = self.x + self.width - self.pad
         self.buttons = {
             'IMPORT': (right - button_w, bar_y, button_w, bar_h),
@@ -1253,7 +1277,7 @@ class PHANTOM_OT_start_picker(Operator):
             _play("error")
         else:
             _picker["dialog"] = None
-            _play("click")
+            _play("delete" if dialog["kind"] == 'DELETE' else "click")
             self._refresh_recent(select=new_path)
         self.area.tag_redraw()
         return {'RUNNING_MODAL'}
@@ -1275,7 +1299,7 @@ class PHANTOM_OT_start_picker(Operator):
         if (event.type in {'ESC', 'RIGHTMOUSE'} or button == 'DIALOG_CANCEL' or
                 (event.type == 'LEFTMOUSE' and not layout._over(layout.dialog_box, mx, my))):
             _picker.update(dialog=None, button=None)
-            _play("cancel")
+            _play(CLOSE_SOUND)
             self.area.tag_redraw()
             return {'RUNNING_MODAL'}
         if dialog["kind"] == 'RENAME':
@@ -1480,8 +1504,8 @@ def _draw():
     _rounded_rect(0, 0, region.width, region.height, 0, (0.0, 0.0, 0.0, 0.35 * ease))
     rise = (1.0 - ease) * 12 * s
     x, y, w, h = layout.x, layout.y - rise, layout.width, layout.height
-    _rounded_rect(x - s, y - s, w + 2 * s, h + 2 * s, 12 * s, (0.0, 0.0, 0.0, 0.45 * ease))
-    _rounded_rect(x, y, w, h, 11 * s, (0.125, 0.125, 0.145, 0.98 * ease))
+    _rounded_rect(x - s, y - s, w + 2 * s, h + 2 * s, 13 * s, (*HAIRLINE, 0.08 * ease))
+    _rounded_rect(x, y, w, h, 12 * s, (*PANEL, 0.98 * ease))
     # The splash image across the top: at full height in the middle, its edge columns stretched
     # out to the sides (its background is a gradient from top to bottom).
     splash = _texture("SPLASH")
@@ -1494,26 +1518,29 @@ def _draw():
         _image(splash, x, by, ix - x + 1, bh, ease, 0.0, edge)
         _image(splash, ix + iw - 1, by, x + w - ix - iw + 1, bh, ease, 1.0 - edge, 1.0)
         _image(splash, ix, by, iw, bh, ease)
-    _text(x + w / 2.0, layout.title_y - rise, "Where would you like to start?", 17 * s, (1.0, 1.0, 1.0, ease))
+    _text(x + w / 2.0, layout.title_y - rise, "Where would you like to start?", 17 * s, (*TEXT, ease))
 
     def button(name, label, primary=False, enabled=True):
         bx, by, bw, bh = layout.buttons[name]
         by -= rise
         hovered = _picker["button"] == name and enabled
         if primary:
-            color = (0.56, 0.54, 1.0, ease) if hovered else (0.48, 0.46, 1.0, ease if enabled else 0.35 * ease)
+            color = (*PRIMARY_HOVER, ease) if hovered else (*PRIMARY, ease if enabled else 0.35 * ease)
         else:
-            color = (0.3, 0.3, 0.35, ease) if hovered else (0.22, 0.22, 0.26, ease)
-        _rounded_rect(bx, by, bw, bh, 6 * s, color)
-        _text(bx + bw / 2.0, by + bh / 2.0 - 4 * s, label, 12 * s, (1.0, 1.0, 1.0, ease if enabled else 0.5 * ease))
+            color = (*CONTROL_HOVER, ease) if hovered else (*CONTROL, ease)
+        _rounded_rect(bx, by, bw, bh, 8 * s, color)
+        size = 13 * s if primary else 12 * s
+        blf.size(0, size)
+        _text(bx + bw / 2.0, by + (bh - blf.dimensions(0, "H")[1]) / 2.0, label, size,
+              (*(ON_PRIMARY if primary else TEXT), ease if enabled else 0.5 * ease))
 
     # Search field: what's typed, or a hint.
     sx, sy, sw, sh = layout.buttons['SEARCH']
     sy -= rise
-    _rounded_rect(sx, sy, sw, sh, 6 * s, (0.09, 0.09, 0.11, ease))
+    _rounded_rect(sx, sy, sw, sh, 8 * s, (*FIELD, ease))
     query = _picker["query"]
     if query:
-        _text(sx + 12 * s, sy + sh / 2.0 - 4 * s, query, 12 * s, (1.0, 1.0, 1.0, ease), align='LEFT')
+        _text(sx + 12 * s, sy + sh / 2.0 - 4 * s, query, 12 * s, (*TEXT, ease), align='LEFT')
         blf.size(0, 12 * s)
         caret_x = sx + 12 * s + blf.dimensions(0, query)[0] + 2 * s
         if int(time.perf_counter() * 2.0) % 2 == 0:
@@ -1522,13 +1549,13 @@ def _draw():
         # Ready to type: a blinking cursor at the start, and what it's for.
         if int(time.perf_counter() * 2.0) % 2 == 0:
             _rounded_rect(sx + 12 * s, sy + 7 * s, 1.5 * s, sh - 14 * s, 0, (1.0, 1.0, 1.0, 0.8 * ease))
-        _text(sx + 18 * s, sy + sh / 2.0 - 4 * s, "Search", 12 * s, (0.55, 0.55, 0.6, ease), align='LEFT')
-    button('OPEN', "Open...")
+        _text(sx + 18 * s, sy + sh / 2.0 - 4 * s, "Search", 12 * s, (*TEXT_MUTED, ease), align='LEFT')
+    button('OPEN', "Open File...")
     button('IMPORT', "Import...")
 
     # New File, like the splash screen.
     lx, ly = layout.new_label
-    _text(lx, ly - rise - 4 * s, "New File", 12 * s, (0.65, 0.65, 0.7, ease), align='LEFT')
+    _text(lx, ly - rise - 4 * s, "New File", 12 * s, (*TEXT_SECONDARY, ease), align='LEFT')
     icon_size = 16 * s
     for name in layout.buttons:
         if not (isinstance(name, tuple) and name[0] == "NEW"):
@@ -1536,14 +1563,14 @@ def _draw():
         bx, by, bw, bh = layout.buttons[name]
         by -= rise
         hovered = _picker["button"] == name
-        _rounded_rect(bx, by, bw, bh, 6 * s, (0.3, 0.3, 0.35, ease) if hovered else (0.22, 0.22, 0.26, ease))
+        _rounded_rect(bx, by, bw, bh, 8 * s, (*CONTROL_HOVER, ease) if hovered else (*CONTROL, ease))
         blf.size(0, 12 * s)
         label_w = blf.dimensions(0, name[2])[0]
         left = bx + (bw - (icon_size + 6 * s + label_w)) / 2.0
         bpy.types.WindowManager.phantom_draw_icon(
             new_file_icon(name[1]), left, by + (bh - icon_size) / 2.0, icon_size, alpha=ease)
         gpu.state.blend_set('ALPHA')
-        _text(left + icon_size + 6 * s, by + bh / 2.0 - 4 * s, name[2], 12 * s, (1.0, 1.0, 1.0, ease), align='LEFT')
+        _text(left + icon_size + 6 * s, by + bh / 2.0 - 4 * s, name[2], 12 * s, (*TEXT, ease), align='LEFT')
 
     def checkbox(name, label, on):
         tx_, ty_, tw_, th_ = layout.buttons[name]
@@ -1551,11 +1578,11 @@ def _draw():
         box = 16 * s
         bx_, by_ = tx_ + 6 * s, ty_ + (th_ - box) / 2.0
         if _picker["button"] == name:
-            _rounded_rect(tx_, ty_, tw_, th_, 5 * s, (0.24, 0.24, 0.28, ease))
-        _rounded_rect(bx_, by_, box, box, 4 * s, (0.48, 0.46, 1.0, ease) if on else (0.26, 0.26, 0.3, ease))
+            _rounded_rect(tx_, ty_, tw_, th_, 8 * s, (*CONTROL, ease))
+        _rounded_rect(bx_, by_, box, box, 4 * s, (*ACCENT, ease) if on else (*CONTROL_HOVER, ease))
         if on:
-            _text(bx_ + box / 2.0, by_ + 3 * s, "\u2713", 13 * s, (1.0, 1.0, 1.0, ease))
-        _text(bx_ + box + 8 * s, ty_ + th_ / 2.0 - 4 * s, label, 12 * s, (0.85, 0.85, 0.9, ease), align='LEFT')
+            _text(bx_ + box / 2.0, by_ + 3 * s, "\u2713", 13 * s, (*ON_ACCENT, ease))
+        _text(bx_ + box + 8 * s, ty_ + th_ / 2.0 - 4 * s, label, 12 * s, (*TEXT, ease), align='LEFT')
 
     def trash_button(name, alpha):
         if name not in layout.buttons:
@@ -1563,7 +1590,7 @@ def _draw():
         bx, by, bw, bh = layout.buttons[name]
         by -= rise
         hovered = _picker["button"] == name
-        _rounded_rect(bx, by, bw, bh, 5 * s, (0.85, 0.22, 0.22, alpha) if hovered else (0.08, 0.08, 0.1, 0.75 * alpha))
+        _rounded_rect(bx, by, bw, bh, 6 * s, (*DANGER, alpha) if hovered else (*FIELD, 0.8 * alpha))
         icon_size = 14 * s
         bpy.types.WindowManager.phantom_draw_icon(
             'TRASH', bx + (bw - icon_size) / 2.0, by + (bh - icon_size) / 2.0, icon_size, alpha=alpha)
@@ -1574,9 +1601,9 @@ def _draw():
         by -= rise
         hovered = _picker["button"] == name
         if hovered:
-            _rounded_rect(bx, by, bw, bh, 5 * s, (0.24, 0.24, 0.28, ease))
+            _rounded_rect(bx, by, bw, bh, 6 * s, (*CONTROL, ease))
         _text(bx + bw / 2.0, by + bh / 2.0 - 4 * s, label, 11 * s,
-              (0.62, 0.6, 1.0, ease) if hovered else (0.52, 0.5, 0.95, ease))
+              (*ACCENT_HOVER, ease) if hovered else (*ACCENT, ease))
 
     def side_list(kind, rows):
         menu_path = (_picker["menu"] or {}).get("path")
@@ -1584,7 +1611,7 @@ def _draw():
             by -= rise
             hovered = _picker["button"] in {(kind, path), ("TRASH", path, kind)} or path == menu_path
             if hovered:
-                _rounded_rect(bx, by, bw, bh, 5 * s, (0.24, 0.24, 0.28, ease))
+                _rounded_rect(bx, by, bw, bh, 6 * s, (*CONTROL, ease))
             name = bpy.path.basename(path)
             blf.size(0, 12 * s)
             # Room for the trash can when it shows.
@@ -1592,7 +1619,7 @@ def _draw():
             while len(name) > 4 and blf.dimensions(0, name)[0] > room:
                 name = name[:-4] + "..."
             _text(bx + 8 * s, by + bh / 2.0 - 4 * s, name, 12 * s,
-                  (1.0, 1.0, 1.0, ease) if hovered else (0.85, 0.85, 0.9, ease), align='LEFT')
+                  (*TEXT, ease) if hovered else (*TEXT_SECONDARY, ease), align='LEFT')
             if hovered:
                 trash_button(("TRASH", path, kind), ease)
 
@@ -1610,47 +1637,47 @@ def _draw():
         bx, by, bw, bh = layout.buttons['BACK']
         by -= rise
         if _picker["button"] == 'BACK':
-            _rounded_rect(bx, by, bw, bh, 5 * s, (0.3, 0.3, 0.35, ease))
+            _rounded_rect(bx, by, bw, bh, 6 * s, (*CONTROL_HOVER, ease))
         icon_size = 14 * s
         bpy.types.WindowManager.phantom_draw_icon(
             'BACK', bx + (bw - icon_size) / 2.0, by + (bh - icon_size) / 2.0, icon_size, alpha=ease)
         gpu.state.blend_set('ALPHA')
         tx, ty = layout.back_title
         title = "Project Files" if _picker["view"] == 'PROJECTS' else "Recent Files"
-        _text(tx + 24 * s, ty - rise, title, 12 * s, (0.75, 0.75, 0.8, ease), align='LEFT')
+        _text(tx + 24 * s, ty - rise, title, 12 * s, (*TEXT_SECONDARY, ease), align='LEFT')
         if _picker["view"] == 'PROJECTS':
             blf.size(0, 12 * s)
             px = tx + 24 * s + blf.dimensions(0, title)[0] + 12 * s
             _text(px, ty - rise, fit_path(projects_folder(), x + w - layout.pad - px, 11 * s), 11 * s,
-                  (0.55, 0.55, 0.6, ease), align='LEFT')
+                  (*TEXT_MUTED, ease), align='LEFT')
         if isinstance(_picker["hover"], tuple):
             hovered_path = _picker["hover"][1]
     else:
         # Recent files down the right side, then project files, with View All by their titles.
         rx, ry = layout.recent_title
-        _text(rx, ry - rise, "Recent Files", 12 * s, (0.75, 0.75, 0.8, ease), align='LEFT')
+        _text(rx, ry - rise, "Recent Files", 12 * s, (*TEXT_SECONDARY, ease), align='LEFT')
         if not layout.recent:
-            _text(rx, ry - rise - 30 * s, "None yet", 11 * s, (0.55, 0.55, 0.6, ease), align='LEFT')
+            _text(rx, ry - rise - 30 * s, "None yet", 11 * s, (*TEXT_MUTED, ease), align='LEFT')
         if 'VIEW_ALL' in layout.buttons:
             link('VIEW_ALL', "View All")
         side_list("RECENT", layout.recent)
         px, py = layout.projects_title
-        _text(px, py - rise, "Project Files", 12 * s, (0.75, 0.75, 0.8, ease), align='LEFT')
+        _text(px, py - rise, "Project Files", 12 * s, (*TEXT_SECONDARY, ease), align='LEFT')
         if 'VIEW_ALL_PROJECTS' in layout.buttons:
             link('VIEW_ALL_PROJECTS', "View All")
         if not layout.projects:
-            _text(px, py - rise - 30 * s, "Files you save go here", 11 * s, (0.55, 0.55, 0.6, ease), align='LEFT')
+            _text(px, py - rise - 30 * s, "Files you save go here", 11 * s, (*TEXT_MUTED, ease), align='LEFT')
         side_list("PROJECT", layout.projects)
         # The hovered file's folder, along the bottom of the column.
         if isinstance(_picker["button"], tuple) and _picker["button"][0] in {"RECENT", "PROJECT", "TRASH"}:
             folder = fit_path(os.path.dirname(_picker["button"][1]), layout.side_w - layout.pad - 8 * s, 10 * s)
-            _text(rx, layout.view_bottom - rise + 4 * s, folder, 10 * s, (0.55, 0.55, 0.6, ease), align='LEFT')
+            _text(rx, layout.view_bottom - rise + 4 * s, folder, 10 * s, (*TEXT_MUTED, ease), align='LEFT')
 
     # Bottom: the cogwheel for the picker's settings on the left, Open on the right.
     bx, by, bw, bh = layout.buttons['SETTINGS']
     by -= rise
     if _picker["settings"] or _picker["button"] == 'SETTINGS':
-        _rounded_rect(bx, by, bw, bh, 6 * s, (0.3, 0.3, 0.35, ease))
+        _rounded_rect(bx, by, bw, bh, 8 * s, (*CONTROL_HOVER, ease))
     icon_size = 16 * s
     bpy.types.WindowManager.phantom_draw_icon(
         'PREFERENCES', bx + (bw - icon_size) / 2.0, by + (bh - icon_size) / 2.0, icon_size, alpha=ease)
@@ -1662,9 +1689,9 @@ def _draw():
         blf.size(0, 10 * s)
         while len(folder) > 4 and blf.dimensions(0, folder)[0] > room:
             folder = "..." + folder[4:]
-        _text(bx + bw + 12 * s, by + bh / 2.0 - 4 * s, folder, 10 * s, (0.55, 0.55, 0.6, ease), align='LEFT')
+        _text(bx + bw + 12 * s, by + bh / 2.0 - 4 * s, folder, 10 * s, (*TEXT_MUTED, ease), align='LEFT')
     selected = _picker["file"] if grid_view else _picker["selected"]
-    button('ACCEPT', "Open", primary=True, enabled=selected is not None)
+    button('ACCEPT', "Open Project", primary=True, enabled=selected is not None)
 
     # The scrolling part, clipped between the bars.
     gpu.state.scissor_test_set(True)
@@ -1672,9 +1699,9 @@ def _draw():
     if not layout.tiles and not _picker["anim"]:
         empty = ("Nothing called \"%s\"" % query if query else
                  "No project files yet" if _picker["view"] == 'PROJECTS' else "No recent files")
-        _text(x + layout.content_w / 2.0, layout.view_top - 50 * s, empty, 12 * s, (0.7, 0.7, 0.75, ease))
+        _text(x + layout.content_w / 2.0, layout.view_top - 50 * s, empty, 12 * s, (*TEXT_SECONDARY, ease))
     for label, ly in layout.sections:
-        _text(x + layout.pad, ly - rise, label, 12 * s, (0.75, 0.75, 0.8, ease), align='LEFT')
+        _text(x + layout.pad, ly - rise, label, 12 * s, (*TEXT_SECONDARY, ease), align='LEFT')
     tile_h = layout.tile_h
     shown = {key for key, _x, _y in layout.tiles}
     # Leaving tiles underneath the ones staying.
@@ -1686,14 +1713,13 @@ def _draw():
         hovered = key == _picker["hover"]
         selected = key == _picker["file" if isinstance(key, tuple) else "selected"]
         if selected:
-            _rounded_rect(tx - 2 * s, ty - 2 * s, layout.tile + 4 * s, tile_h + 4 * s, 9 * s, (0.48, 0.46, 1.0, a))
-        _rounded_rect(tx, ty, layout.tile, tile_h, 8 * s,
-                      (0.24, 0.24, 0.28, a) if hovered else (0.17, 0.17, 0.2, a))
+            _rounded_rect(tx - 2 * s, ty - 2 * s, layout.tile + 4 * s, tile_h + 4 * s, 12 * s, (*ACCENT, a))
+        _rounded_rect(tx, ty, layout.tile, tile_h, 10 * s, (*TILE_HOVER, a) if hovered else (*TILE, a))
         if isinstance(key, tuple):
             # A file: the picture saved with it, as large as the card's picture area allows (all of
             # it), or the file icon.
             px, py = tx + (layout.tile - layout.thumb_w) / 2.0, ty + layout.label
-            _rounded_rect(px, py, layout.thumb_w, layout.thumb, 4 * s, (0.1, 0.1, 0.12, a))
+            _rounded_rect(px, py, layout.thumb_w, layout.thumb, 6 * s, (*FIELD, a))
             texture = _file_texture(key[1])
             if texture is not None:
                 fit = min(layout.thumb_w / texture.width, layout.thumb / texture.height)
@@ -1717,7 +1743,7 @@ def _draw():
         while len(name) > 4 and blf.dimensions(0, name)[0] > layout.tile - 12 * s:
             name = name[:-4] + "..."
         _text(tx + layout.tile / 2.0, ty + (layout.label - 11 * s) / 2.0 + 1 * s, name, 11 * s,
-              (1.0, 1.0, 1.0, a) if hovered or selected else (0.82, 0.82, 0.86, a))
+              (*TEXT, a) if hovered or selected else (*TEXT_SECONDARY, a))
     gpu.state.scissor_test_set(False)
 
     if layout.max_scroll > 0.0:
@@ -1730,8 +1756,8 @@ def _draw():
     if layout.settings:
         bx, by, bw, bh = layout.settings_box
         by -= rise
-        _rounded_rect(bx - s, by - s, bw + 2 * s, bh + 2 * s, 9 * s, (0.0, 0.0, 0.0, 0.5 * ease))
-        _rounded_rect(bx, by, bw, bh, 8 * s, (0.16, 0.16, 0.19, ease))
+        _rounded_rect(bx - s, by - s, bw + 2 * s, bh + 2 * s, 11 * s, (*HAIRLINE, 0.08 * ease))
+        _rounded_rect(bx, by, bw, bh, 10 * s, (*MENU, ease))
         values = {'ASSOCIATE': _picker.get("associated"), 'PREVIEWS': _picker.get("previews")}
         for kind, name, label, (rx_, ry_, rw_, rh_) in layout.settings:
             ry_ -= rise
@@ -1739,7 +1765,7 @@ def _draw():
                 checkbox(name, label, bool(values[name]))
                 continue
             if kind == 'STARTUP':
-                _text(rx_ + 6 * s, ry_ + rh_ / 2.0 - 4 * s, label, 12 * s, (0.85, 0.85, 0.9, ease), align='LEFT')
+                _text(rx_ + 6 * s, ry_ + rh_ / 2.0 - 4 * s, label, 12 * s, (*TEXT, ease), align='LEFT')
                 current = startup_screen()
                 for choice, text in (('PICKER', "Start Picker"), ('SPLASH', "Splash Screen")):
                     name_ = 'STARTUP_' + choice
@@ -1747,25 +1773,26 @@ def _draw():
                     by -= rise
                     on = current == choice
                     hovered = _picker["button"] == name_
-                    _rounded_rect(bx, by, bw, bh, 6 * s, (0.48, 0.46, 1.0, ease) if on else
-                                  ((0.3, 0.3, 0.35, ease) if hovered else (0.22, 0.22, 0.26, ease)))
-                    _text(bx + bw / 2.0, by + bh / 2.0 - 4 * s, text, 11 * s, (1.0, 1.0, 1.0, ease))
+                    _rounded_rect(bx, by, bw, bh, 8 * s, (*PRIMARY, ease) if on else
+                                  ((*CONTROL_HOVER, ease) if hovered else (*CONTROL, ease)))
+                    _text(bx + bw / 2.0, by + bh / 2.0 - 4 * s, text, 11 * s,
+                          (*(ON_PRIMARY if on else TEXT), ease))
                 continue
             # The projects folder: where it is, and Change...
             bx, by, bw, bh = layout.buttons[name]
             by -= rise
-            _text(rx_ + 6 * s, ry_ + rh_ - 18 * s, label, 12 * s, (0.85, 0.85, 0.9, ease), align='LEFT')
+            _text(rx_ + 6 * s, ry_ + rh_ - 18 * s, label, 12 * s, (*TEXT, ease), align='LEFT')
             _text(rx_ + 6 * s, ry_ + 9 * s, fit_path(projects_folder(), bx - rx_ - 16 * s, 10 * s), 10 * s,
-                  (0.55, 0.55, 0.6, ease), align='LEFT')
+                  (*TEXT_MUTED, ease), align='LEFT')
             hovered = _picker["button"] == name
-            _rounded_rect(bx, by, bw, bh, 6 * s, (0.3, 0.3, 0.35, ease) if hovered else (0.22, 0.22, 0.26, ease))
-            _text(bx + bw / 2.0, by + bh / 2.0 - 4 * s, "Change...", 11 * s, (1.0, 1.0, 1.0, ease))
+            _rounded_rect(bx, by, bw, bh, 8 * s, (*CONTROL_HOVER, ease) if hovered else (*CONTROL, ease))
+            _text(bx + bw / 2.0, by + bh / 2.0 - 4 * s, "Change...", 11 * s, (*TEXT, ease))
 
     # A recent file's right-click menu.
     if layout.menu_box is not None:
         bx, by, bw, bh = layout.menu_box
-        _rounded_rect(bx - s, by - s, bw + 2 * s, bh + 2 * s, 8 * s, (0.0, 0.0, 0.0, 0.55 * ease))
-        _rounded_rect(bx, by, bw, bh, 7 * s, (0.16, 0.16, 0.19, ease))
+        _rounded_rect(bx - s, by - s, bw + 2 * s, bh + 2 * s, 11 * s, (*HAIRLINE, 0.08 * ease))
+        _rounded_rect(bx, by, bw, bh, 10 * s, (*MENU, ease))
         icon_size = 14 * s
         for entry in layout.menu_items:
             if entry[0] is None:
@@ -1774,22 +1801,22 @@ def _draw():
             (action, label, icon), (ix, iy, iw, ih), enabled = entry
             hovered = _picker["button"] == ("MENU", action)
             if hovered:
-                _rounded_rect(ix, iy, iw, ih, 5 * s, (0.85, 0.22, 0.22, ease) if action == 'DELETE' else
-                              (0.48, 0.46, 1.0, ease))
+                _rounded_rect(ix, iy, iw, ih, 6 * s, (*DANGER, ease) if action == 'DELETE' else
+                              (*CONTROL_HOVER, ease))
             alpha = ease if enabled else 0.35 * ease
             bpy.types.WindowManager.phantom_draw_icon(icon, ix + 8 * s, iy + (ih - icon_size) / 2.0, icon_size,
                                                       alpha=alpha)
             gpu.state.blend_set('ALPHA')
             _text(ix + 30 * s, iy + ih / 2.0 - 4 * s, label, 12 * s,
-                  (1.0, 1.0, 1.0, alpha) if hovered else (0.88, 0.88, 0.92, alpha), align='LEFT')
+                  (*TEXT, alpha) if hovered else (*TEXT_SECONDARY, alpha), align='LEFT')
 
     # Delete or Rename, asked over a dimmed picker.
     dialog = _picker["dialog"]
     if dialog and layout.dialog_box is not None:
         _rounded_rect(x, y, w, h, 11 * s, (0.0, 0.0, 0.0, 0.65 * ease))
         dx, dy, dw, dh = layout.dialog_box
-        _rounded_rect(dx - s, dy - s, dw + 2 * s, dh + 2 * s, 11 * s, (0.0, 0.0, 0.0, 0.6 * ease))
-        _rounded_rect(dx, dy, dw, dh, 10 * s, (0.15, 0.15, 0.18, ease))
+        _rounded_rect(dx - s, dy - s, dw + 2 * s, dh + 2 * s, 13 * s, (*HAIRLINE, 0.08 * ease))
+        _rounded_rect(dx, dy, dw, dh, 12 * s, (*MENU, ease))
         name = bpy.path.basename(dialog["path"])
         blf.size(0, 14 * s)
         while len(name) > 4 and blf.dimensions(0, name)[0] > dw - 120 * s:
@@ -1798,26 +1825,26 @@ def _draw():
             title = "Delete %s?" % name
             note = ("It goes to the Recycle Bin, where it can be restored." if sys.platform == "win32"
                     else "It's deleted for good.")
-            ok, ok_color = "Delete", (0.85, 0.22, 0.22)
+            ok, ok_color = "Delete", DANGER
         else:
             title = "Rename %s" % name
             note = None
-            ok, ok_color = "Rename", (0.48, 0.46, 1.0)
-        _text(dx + 20 * s, dy + dh - 34 * s, title, 14 * s, (1.0, 1.0, 1.0, ease), align='LEFT')
+            ok, ok_color = "Rename", PRIMARY
+        _text(dx + 20 * s, dy + dh - 34 * s, title, 14 * s, (*TEXT, ease), align='LEFT')
         if note:
-            _text(dx + 20 * s, dy + dh - 62 * s, note, 12 * s, (0.7, 0.7, 0.75, ease), align='LEFT')
+            _text(dx + 20 * s, dy + dh - 62 * s, note, 12 * s, (*TEXT_SECONDARY, ease), align='LEFT')
         if layout.dialog_field is not None:
             fx, fy, fw, fh = layout.dialog_field
-            _rounded_rect(fx - s, fy - s, fw + 2 * s, fh + 2 * s, 7 * s, (0.48, 0.46, 1.0, ease))
-            _rounded_rect(fx, fy, fw, fh, 6 * s, (0.09, 0.09, 0.11, ease))
+            _rounded_rect(fx - s, fy - s, fw + 2 * s, fh + 2 * s, 9 * s, (*ACCENT, ease))
+            _rounded_rect(fx, fy, fw, fh, 8 * s, (*FIELD, ease))
             text, suffix = dialog["text"], ".blend"
             blf.size(0, 12 * s)
             # The end of a long name, where the typing is.
             while len(text) > 1 and blf.dimensions(0, text + suffix)[0] > fw - 30 * s:
                 text = text[1:]
-            _text(fx + 10 * s, fy + fh / 2.0 - 4 * s, text, 12 * s, (1.0, 1.0, 1.0, ease), align='LEFT')
+            _text(fx + 10 * s, fy + fh / 2.0 - 4 * s, text, 12 * s, (*TEXT, ease), align='LEFT')
             caret_x = fx + 10 * s + blf.dimensions(0, text)[0] + 1 * s
-            _text(caret_x + 2 * s, fy + fh / 2.0 - 4 * s, suffix, 12 * s, (0.5, 0.5, 0.55, ease), align='LEFT')
+            _text(caret_x + 2 * s, fy + fh / 2.0 - 4 * s, suffix, 12 * s, (*TEXT_MUTED, ease), align='LEFT')
             if int(time.perf_counter() * 2.0) % 2 == 0:
                 _rounded_rect(caret_x, fy + 7 * s, 1.5 * s, fh - 14 * s, 0, (1.0, 1.0, 1.0, 0.8 * ease))
         if dialog["error"]:
@@ -1827,12 +1854,13 @@ def _draw():
             bx, by, bw, bh = layout.buttons[name_]
             hovered = _picker["button"] == name_
             if color is None:
-                fill = (0.3, 0.3, 0.35, ease) if hovered else (0.22, 0.22, 0.26, ease)
+                fill = (*CONTROL_HOVER, ease) if hovered else (*CONTROL, ease)
             else:
                 lift = 0.08 if hovered else 0.0
                 fill = (min(1.0, color[0] + lift), min(1.0, color[1] + lift), min(1.0, color[2] + lift), ease)
-            _rounded_rect(bx, by, bw, bh, 6 * s, fill)
-            _text(bx + bw / 2.0, by + bh / 2.0 - 4 * s, label, 12 * s, (1.0, 1.0, 1.0, ease))
+            _rounded_rect(bx, by, bw, bh, 8 * s, fill)
+            _text(bx + bw / 2.0, by + bh / 2.0 - 4 * s, label, 12 * s,
+                  (*(ON_PRIMARY if color == PRIMARY else TEXT), ease))
     gpu.state.blend_set('NONE')
 
 

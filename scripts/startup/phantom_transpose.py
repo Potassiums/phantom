@@ -22,6 +22,9 @@ the surface under them. Each end and the middle have an outer ring and an inner 
   - Rotate: an end rotates it about the other end; the middle, dragged along the line, twists it
     around the line. Hold Shift to snap the angle to 15 degree steps.
 
+The line takes the color of the mode (Move orange, Rotate red, Scale green) and stays on screen
+when switching between them, also when Transpose was picked from the toolbar.
+
 Holding Shift while drawing the line or placing an end snaps its on-screen direction to 15 degree
 steps too. Each inner circle is labelled with what it does in the current mode, and notches
 between the circles mark the line. While rotating or snapping, the dragged circle shows the
@@ -59,11 +62,11 @@ STYLE_ITEMS = (
 INNER_RADIUS = 8
 OUTER_RADIUS = 17
 LINE_PICK = 6
-# Colors: line, outer rings, and the inner circles per mode.
-LINE_COLOR = (1.0, 0.54, 0.24, 1.0)
-RING_COLOR = (1.0, 0.83, 0.3, 1.0)
-INNER_COLORS = {'MOVE': (1.0, 0.54, 0.24, 1.0), 'SCALE': (0.49, 1.0, 0.23, 1.0),
-                'ROTATE': (1.0, 0.3, 0.42, 1.0)}
+# Colors per mode: the line, its notches and the inner circles take the mode's color, the outer
+# rings a lighter one, so switching between Move, Rotate and Scale shows on the line.
+MODE_COLORS = {'MOVE': (1.0, 0.54, 0.24, 1.0), 'SCALE': (0.49, 1.0, 0.23, 1.0),
+               'ROTATE': (1.0, 0.3, 0.42, 1.0)}
+RING_LIGHTEN = 0.45
 OUTLINE_COLOR = (0.0, 0.0, 0.0, 0.6)
 LABEL_COLOR = (1.0, 1.0, 1.0, 0.95)
 # Shift snaps rotations to this step.
@@ -150,6 +153,17 @@ def _transform_tool_active(context):
     return idname == TRANSPOSE_TOOL or idname in GIZMO_TOOLS.values()
 
 
+def _style_in_use(context):
+    """The style of the transform tool in use (also when it was picked from the toolbar), else the
+    one chosen last."""
+    idname = _active_tool(context)
+    if idname == TRANSPOSE_TOOL:
+        return 'TRANSPOSE'
+    if idname in GIZMO_TOOLS.values():
+        return 'GIZMO'
+    return _settings["style"]
+
+
 class SCULPT_OT_phantom_transform_tool(Operator):
     """Move, rotate or scale the model, with the gizmo or the Transpose action line"""
     bl_idname = "sculpt.phantom_transform_tool"
@@ -168,6 +182,8 @@ class SCULPT_OT_phantom_transform_tool(Operator):
 
     def execute(self, context):
         _settings["mode"] = self.mode
+        # Switching modes keeps the style in use: Transpose stays, with its action line.
+        _settings["style"] = _style_in_use(context)
         _save_settings()
         _activate(context)
         return {'FINISHED'}
@@ -205,9 +221,10 @@ def draw_transform_icons(layout, context):
         row.operator(SCULPT_OT_phantom_transform_tool.bl_idname, text="", icon=icon,
                      depress=on).mode = mode
     row = layout.row(align=True)
+    style_in_use = _style_in_use(context)
     for style, _name, _desc, icon, _value in STYLE_ITEMS:
         row.operator(SCULPT_OT_phantom_transform_style.bl_idname, text="", icon=icon,
-                     depress=_settings["style"] == style).style = style
+                     depress=style_in_use == style).style = style
 
 
 # -----------------------------------------------------------------------------
@@ -592,27 +609,28 @@ def _draw():
         return
     m = (a + b) / 2.0
     s = _ui_scale(context)
-    inner_color = INNER_COLORS[_settings["mode"]]
+    mode_color = MODE_COLORS[_settings["mode"]]
+    ring_color = (*(c + (1.0 - c) * RING_LIGHTEN for c in mode_color[:3]), 1.0)
 
     gpu.state.blend_set('ALPHA')
     lines = gpu.shader.from_builtin('POLYLINE_UNIFORM_COLOR')
     lines.bind()
     lines.uniform_float("viewportSize", (region.width, region.height))
     # The line, outlined so it reads on any surface.
-    for width, color in ((4.0, OUTLINE_COLOR), (2.0, LINE_COLOR)):
+    for width, color in ((4.0, OUTLINE_COLOR), (2.0, mode_color)):
         lines.uniform_float("lineWidth", width * s)
         lines.uniform_float("color", color)
         batch_for_shader(lines, 'LINES', {"pos": [a, b]}).draw(lines)
     # Notches between the circles.
     ticks = _notches(a, b, s)
     if ticks:
-        for width, color in ((4.0, OUTLINE_COLOR), (2.0, LINE_COLOR)):
+        for width, color in ((4.0, OUTLINE_COLOR), (2.0, mode_color)):
             lines.uniform_float("lineWidth", width * s)
             lines.uniform_float("color", color)
             batch_for_shader(lines, 'LINES', {"pos": ticks}).draw(lines)
     # Outer rings.
     for center in (a, b, m):
-        for width, color in ((4.0, OUTLINE_COLOR), (2.0, RING_COLOR)):
+        for width, color in ((4.0, OUTLINE_COLOR), (2.0, ring_color)):
             lines.uniform_float("lineWidth", width * s)
             lines.uniform_float("color", color)
             batch_for_shader(lines, 'LINE_STRIP', {"pos": _circle(center, OUTER_RADIUS * s)}).draw(lines)
@@ -620,7 +638,7 @@ def _draw():
     fill = gpu.shader.from_builtin('UNIFORM_COLOR')
     fill.bind()
     for center in (a, b, m):
-        for radius, color in ((INNER_RADIUS * s + 1.5 * s, OUTLINE_COLOR), (INNER_RADIUS * s, inner_color)):
+        for radius, color in ((INNER_RADIUS * s + 1.5 * s, OUTLINE_COLOR), (INNER_RADIUS * s, mode_color)):
             fill.uniform_float("color", color)
             batch_for_shader(fill, 'TRI_FAN', {"pos": [center] + _circle(center, radius)}).draw(fill)
 

@@ -69,12 +69,16 @@ void multires_customdata_delete(Mesh *mesh)
     if (CustomData_has_layer(&bm->ldata, CD_GRID_PAINT_MASK)) {
       BM_data_layer_free(bm, &bm->ldata, CD_GRID_PAINT_MASK);
     }
+    if (CustomData_has_layer(&bm->ldata, CD_GRID_PAINT_COLOR)) {
+      BM_data_layer_free(bm, &bm->ldata, CD_GRID_PAINT_COLOR);
+    }
   }
   else {
     CustomData_external_remove(&mesh->corner_data, &mesh->id, CD_MDISPS, mesh->corners_num);
     CustomData_free_layer_active(&mesh->corner_data, CD_MDISPS);
 
     CustomData_free_layer_active(&mesh->corner_data, CD_GRID_PAINT_MASK);
+    CustomData_free_layer_active(&mesh->corner_data, CD_GRID_PAINT_COLOR);
   }
 }
 
@@ -319,7 +323,7 @@ void multires_flush_sculpt_updates(Object *object)
     return;
   }
 
-  if (!subdiv_ccg->dirty.coords && !subdiv_ccg->dirty.hidden) {
+  if (!subdiv_ccg->dirty.coords && !subdiv_ccg->dirty.hidden && !subdiv_ccg->dirty.colors) {
     return;
   }
 
@@ -344,6 +348,14 @@ void multires_flush_sculpt_updates(Object *object)
   }
 
   if (!mmd) {
+    return;
+  }
+
+  /* Phantom: polypaint doesn't need the (slower) reshape. */
+  if (subdiv_ccg->dirty.colors) {
+    BKE_subdiv_ccg_colors_to_mesh(*subdiv_ccg, *mesh, mmd->totlvl);
+  }
+  if (!subdiv_ccg->dirty.coords && !subdiv_ccg->dirty.hidden) {
     return;
   }
 

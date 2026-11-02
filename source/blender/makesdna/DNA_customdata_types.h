@@ -112,7 +112,10 @@ enum eCustomDataType : int {
 
   CD_PROP_QUATERNION = 52,
 
-  CD_NUMTYPES = 53,
+  /** Phantom: Multires polypaint, colors of the grids (#GridPaintColor). */
+  CD_GRID_PAINT_COLOR = 53,
+
+  CD_NUMTYPES = 54,
 };
 
 /* Bits for #eCustomDataMask */
@@ -138,6 +141,7 @@ enum eCustomDataType : int {
 #define CD_MASK_BM_ELEM_PYPTR (1LL << CD_BM_ELEM_PYPTR)
 
 #define CD_MASK_GRID_PAINT_MASK (1LL << CD_GRID_PAINT_MASK)
+#define CD_MASK_GRID_PAINT_COLOR (1LL << CD_GRID_PAINT_COLOR)
 #define CD_MASK_MLOOPTANGENT (1LL << CD_MLOOPTANGENT)
 #define CD_MASK_TESSLOOPNORMAL (1LL << CD_TESSLOOPNORMAL)
 #define CD_MASK_PROP_COLOR (1ULL << CD_PROP_COLOR)
@@ -152,7 +156,7 @@ enum eCustomDataType : int {
 #define CD_MASK_PROP_FLOAT4X4 (1ULL << CD_PROP_FLOAT4X4)
 
 /** Multi-resolution loop data. */
-#define CD_MASK_MULTIRES_GRIDS (CD_MASK_MDISPS | CD_GRID_PAINT_MASK)
+#define CD_MASK_MULTIRES_GRIDS (CD_MASK_MDISPS | CD_GRID_PAINT_MASK | CD_MASK_GRID_PAINT_COLOR)
 
 /** All data layers. */
 #define CD_MASK_ALL (~0LL)
@@ -243,11 +247,12 @@ struct CustomData {
    * Runtime only map from types to indices of first layer of that type,
    * Correct size of #CD_NUMTYPES is ensured by CustomData_update_typemap.
    */
-  int typemap[53] = {};
+  int typemap[54] = {};
   /** Number of layers, size of layers array. */
   int totlayer = 0, maxlayer = 0;
   /** In editmode, total size of all data layers. */
   int totsize = 0;
+  char _pad0[4] = {};
   /** (BMesh Only): Memory pool for allocation of blocks. */
   struct BLI_mempool *pool = nullptr;
   /** External file storing custom-data layers. */

@@ -376,7 +376,11 @@ static void animdata_copy_id_action(Main *bmain,
 
   AnimData *adt = BKE_animdata_from_id(id);
   if (adt) {
-    if (adt->action && (do_linked_id || !ID_IS_LINKED(adt->action))) {
+    /* Phantom: in NLA tweak mode the assigned Action is the tweaked strip's. Like every NLA strip Action it
+     * is shared with the copy (assigning a clone would be refused while tweaking); animation layers give the
+     * copy its own Actions afterwards. */
+    const bool tweaking = (adt->flag & ADT_NLA_EDIT_ON) != 0;
+    if (adt->action && !tweaking && (do_linked_id || !ID_IS_LINKED(adt->action))) {
       bAction *cloned_action = reinterpret_cast<bAction *>(BKE_id_copy(bmain, &adt->action->id));
 
       cloned_action->id.us = 0;

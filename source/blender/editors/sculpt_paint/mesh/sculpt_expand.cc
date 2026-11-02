@@ -2968,6 +2968,13 @@ static wmOperatorStatus sculpt_expand_invoke(bContext *C, wmOperator *op, const 
     expand_cache_free(ss);
     return OPERATOR_CANCELLED;
   }
+  /* Phantom: colors are only expanded on plain meshes (Multires polypaint isn't handled here). */
+  if (ss.expand_cache->target == TargetType::Colors && pbvh.type() != bke::pbvh::Type::Mesh) {
+    BKE_report(
+        op->reports, RPT_ERROR, "Color expand is only supported on meshes without Multires");
+    expand_cache_free(ss);
+    return OPERATOR_CANCELLED;
+  }
 
   ensure_sculptsession_data(ob);
 

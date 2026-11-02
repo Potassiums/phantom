@@ -13,6 +13,7 @@
 
 #include "BLI_array.hh"
 #include "BLI_array_utils.hh"
+#include "BLI_color.hh"
 #include "BLI_listbase_iterator.hh"
 #include "BLI_math_vector.hh"
 #include "BLI_math_vector_c.hh"
@@ -26,6 +27,7 @@
 #include "BKE_mesh.hh"
 #include "BKE_mesh_mapping.hh"
 #include "BKE_subdiv.hh"
+#include "BKE_subdiv_ccg.hh"
 #include "BKE_subdiv_deform.hh"
 #include "BKE_subdiv_eval.hh"
 #include "BKE_subdiv_foreach.hh"
@@ -121,6 +123,15 @@ struct SubdivMeshContext {
   Array<int> vert_to_edge_offsets;
   Array<int> vert_to_edge_indices;
   GroupedSpan<int> vert_to_edge_map;
+
+  /**
+   * Phantom: Multires polypaint, sampled into the active color attribute (point domain) instead
+   * of interpolating it. The face and corner of each ptex face.
+   */
+  const GridPaintColor *grid_colors = nullptr;
+  StringRef grid_color_name;
+  Array<int2> grid_color_ptex_face_corner;
+  GSpanAttributeWriter grid_color_attr;
 };
 
 static void subdiv_mesh_ctx_cache_uv_layers(SubdivMeshContext *ctx)
@@ -842,6 +853,9 @@ static bool subdiv_mesh_topology_info(const ForeachContext *foreach_context,
   for (const bDeformGroup &group : coarse_mesh.vertex_group_names) {
     vert_skip_names.add(group.name);
   }
+  if (subdiv_context->grid_colors) {
+    vert_skip_names.add(subdiv_context->grid_color_name);
+  }
   create_attrs_and_retrieve_interp_spans(coarse_attrs,
                                          AttrDomain::Point,
                                          vert_skip_names,
@@ -850,6 +864,15 @@ static bool subdiv_mesh_topology_info(const ForeachContext *foreach_context,
                                          subdiv_context->coarse_vert_attr_spans,
                                          subdiv_context->subdiv_vert_attrs,
                                          subdiv_context->subdiv_vert_attr_spans);
+  if (subdiv_context->grid_colors) {
+    subdiv_context->grid_color_attr = attributes.lookup_or_add_for_write_only_span(
+        subdiv_context->grid_color_name,
+        AttrDomain::Point,
+        coarse_attrs.lookup_meta_data(subdiv_context->grid_color_name)->data_type);
+    if (!subdiv_context->grid_color_attr) {
+      subdiv_context->grid_colors = nullptr;
+    }
+  }
 
   create_attrs_and_retrieve_interp_spans(coarse_attrs,
                                          AttrDomain::Edge,
@@ -1032,6 +1055,75 @@ static void subdiv_mesh_vert_displacement_every_edge(const ForeachContext *forea
       foreach_context, tls, ptex_face_index, u, v, subdiv_vert_index);
 }
 
+/** Phantom: Multires polypaint, see #SubdivMeshContext::grid_colors. */
+static void subdiv_mesh_grid_color_init(SubdivMeshContext &ctx)
+{
+  const Mesh &coarse_mesh = *ctx.coarse_mesh;
+  ctx.grid_colors = static_cast<const GridPaintColor *>(
+      CustomData_get_layer(&coarse_mesh.corner_data, CD_GRID_PAINT_COLOR));
+  if (ctx.grid_colors == nullptr || coarse_mesh.active_color_attribute == nullptr) {
+    ctx.grid_colors = nullptr;
+    return;
+  }
+  const StringRef name = coarse_mesh.active_color_attribute;
+  const std::optional<AttributeMetaData> meta_data = coarse_mesh.attributes().lookup_meta_data(
+      name);
+  if (!meta_data || meta_data->domain != AttrDomain::Point ||
+      !ELEM(meta_data->data_type, AttrType::ColorFloat, AttrType::ColorByte))
+  {
+    ctx.grid_colors = nullptr;
+    return;
+  }
+  ctx.grid_color_name = name;
+  Vector<int2> ptex_face_corner;
+  for (const int face_index : ctx.coarse_faces.index_range()) {
+    const IndexRange face = ctx.coarse_faces[face_index];
+    if (face.size() == 4) {
+      ptex_face_corner.append({face_index, 0});
+    }
+    else {
+      for (const int corner : face.index_range()) {
+        ptex_face_corner.append({face_index, corner});
+      }
+    }
+  }
+  ctx.grid_color_ptex_face_corner = ptex_face_corner.as_span();
+}
+
+static void subdiv_mesh_vert_grid_color(const SubdivMeshContext *ctx,
+                                        const int ptex_face_index,
+                                        const float u,
+                                        const float v,
+                                        const int subdiv_vert_index)
+{
+  if (ctx->grid_colors == nullptr) {
+    return;
+  }
+  const int2 face_corner = ctx->grid_color_ptex_face_corner[ptex_face_index];
+  const IndexRange face = ctx->coarse_faces[face_corner.x];
+  int grid;
+  float grid_u, grid_v;
+  if (face.size() == 4) {
+    float corner_u, corner_v;
+    const int corner = rotate_quad_to_corner(u, v, &corner_u, &corner_v);
+    grid = face.start() + corner;
+    ptex_face_uv_to_grid_uv(corner_u, corner_v, &grid_u, &grid_v);
+  }
+  else {
+    grid = face.start() + face_corner.y;
+    ptex_face_uv_to_grid_uv(u, v, &grid_u, &grid_v);
+  }
+  const ColorGeometry4b color = BKE_grid_paint_color_sample(
+      ctx->grid_colors[grid], grid_u, grid_v);
+  const GMutableSpan dst = ctx->grid_color_attr.span;
+  if (dst.type().is<ColorGeometry4b>()) {
+    dst.typed<ColorGeometry4b>()[subdiv_vert_index] = color;
+  }
+  else {
+    dst.typed<ColorGeometry4f>()[subdiv_vert_index] = color::decode(color);
+  }
+}
+
 static void subdiv_mesh_vert_corner(const ForeachContext *foreach_context,
                                     void * /*tls*/,
                                     const int ptex_face_index,
@@ -1046,6 +1138,7 @@ static void subdiv_mesh_vert_corner(const ForeachContext *foreach_context,
   SubdivMeshContext *ctx = static_cast<SubdivMeshContext *>(foreach_context->user_data);
   evaluate_vert_and_apply_displacement_copy(
       ctx, ptex_face_index, u, v, coarse_vert_index, subdiv_vert_index);
+  subdiv_mesh_vert_grid_color(ctx, ptex_face_index, u, v, subdiv_vert_index);
 }
 
 static void subdiv_mesh_ensure_vert_interpolation(SubdivMeshContext *ctx,
@@ -1083,6 +1176,7 @@ static void subdiv_mesh_vert_edge(const ForeachContext *foreach_context,
   subdiv_mesh_ensure_vert_interpolation(ctx, tls, coarse_face_index, coarse_corner);
   evaluate_vert_and_apply_displacement_interpolate(
       ctx, ptex_face_index, u, v, tls->vert_interpolation, subdiv_vert_index);
+  subdiv_mesh_vert_grid_color(ctx, ptex_face_index, u, v, subdiv_vert_index);
 }
 
 static bool subdiv_mesh_is_center_vert(const IndexRange coarse_face, const float u, const float v)
@@ -1129,6 +1223,7 @@ static void subdiv_mesh_vert_inner(const ForeachContext *foreach_context,
   ctx->subdiv_positions[subdiv_vert_index] = eval_final_point(subdiv, ptex_face_index, u, v);
   subdiv_mesh_tag_center_vert(coarse_face, subdiv_vert_index, u, v, ctx);
   subdiv_vert_orco_evaluate(ctx, ptex_face_index, u, v, subdiv_vert_index);
+  subdiv_mesh_vert_grid_color(ctx, ptex_face_index, u, v, subdiv_vert_index);
 }
 
 /** \} */
@@ -1490,6 +1585,7 @@ Mesh *subdiv_to_mesh(Subdiv *subdiv, const ToMeshSettings *settings, const Mesh 
 
   subdiv_context.subdiv = subdiv;
   subdiv_context.have_displacement = (subdiv->displacement_evaluator != nullptr);
+  subdiv_mesh_grid_color_init(subdiv_context);
   /* Multi-threaded traversal/evaluation. */
   stats_begin(&subdiv->stats, SUBDIV_STATS_SUBDIV_TO_MESH_GEOMETRY);
   ForeachContext foreach_context;
@@ -1542,6 +1638,9 @@ Mesh *subdiv_to_mesh(Subdiv *subdiv, const ToMeshSettings *settings, const Mesh 
   }
   for (bke::GSpanAttributeWriter &attr : subdiv_context.subdiv_corner_attrs) {
     attr.finish();
+  }
+  if (subdiv_context.grid_color_attr) {
+    subdiv_context.grid_color_attr.finish();
   }
 
   stats_end(&subdiv->stats, SUBDIV_STATS_SUBDIV_TO_MESH);

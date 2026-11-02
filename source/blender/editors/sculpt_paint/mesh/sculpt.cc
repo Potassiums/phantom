@@ -4808,6 +4808,9 @@ static void brush_stroke_init(bContext *C, const wmOperator *op)
    * earlier steps modifying the data. */
   Depsgraph *depsgraph = CTX_data_ensure_evaluated_depsgraph(C);
   BKE_sculptsession_update_for_edit(depsgraph, &ob, brush_type_is_paint(brush->sculpt_brush_type));
+  if (brush_type_is_paint(brush->sculpt_brush_type)) {
+    color::ensure_grid_colors(ob);
+  }
 
   ED_paint_brush_type_update_sticky_shading_color(C, &ob);
 }
@@ -4920,7 +4923,13 @@ void flush_update_step(ViewContext &vc, Object &object, const UpdateType update_
 
   const SculptSession &ss = *object.runtime->sculpt_session;
   const MultiresModifierData *mmd = ss.multires_modifier;
-  if (mmd != nullptr) {
+  if (mmd != nullptr && update_type == UpdateType::Color) {
+    /* Phantom: Multires polypaint is written back without reshaping the grids. */
+    if (ss.subdiv_ccg) {
+      ss.subdiv_ccg->dirty.colors = true;
+    }
+  }
+  else if (mmd != nullptr) {
     multires_mark_as_modified(vc.depsgraph, &object, MULTIRES_COORDS_MODIFIED);
   }
 
@@ -5253,10 +5262,8 @@ bool color_supported_check(const Scene &scene, Object &object, ReportList *repor
     BKE_report(reports, RPT_ERROR, "Not supported in dynamic topology mode");
     return false;
   }
-  if (BKE_sculpt_multires_active(&scene, &object)) {
-    BKE_report(reports, RPT_ERROR, "Not supported in multiresolution mode");
-    return false;
-  }
+  /* Phantom: Multires polypaint is stored in the grids (#SubdivCCG::colors). */
+  UNUSED_VARS(scene);
 
   return true;
 }
@@ -6413,6 +6420,10 @@ template void gather_data_grids<float3>(const SubdivCCG &,
                                         Span<float3>,
                                         Span<int>,
                                         MutableSpan<float3>);
+template void gather_data_grids<float4>(const SubdivCCG &,
+                                        Span<float4>,
+                                        Span<int>,
+                                        MutableSpan<float4>);
 template void gather_data_bmesh<int>(Span<int>, const Set<BMVert *, 0> &, MutableSpan<int>);
 template void gather_data_bmesh<float>(Span<float>, const Set<BMVert *, 0> &, MutableSpan<float>);
 template void gather_data_bmesh<float3>(Span<float3>,

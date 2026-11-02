@@ -275,8 +275,15 @@ def _sync_sidebars():
     if wm is None:
         return SYNC_INTERVAL
 
+    import phantom_simple_view
     seen = set()
+    # The simple view shows and hides the sidebar itself: leave those windows (and the areas
+    # they set aside while maximized) alone.
+    skipped = False
     for window in wm.windows:
+        if phantom_simple_view.manages(window):
+            skipped = True
+            continue
         active = window.view_layer.objects.active
         sculpting = active is not None and active.mode == 'SCULPT'
         for area in window.screen.areas:
@@ -315,7 +322,7 @@ def _sync_sidebars():
                 _pending_tool_tab.discard(key)
 
     # Forget areas that were closed.
-    for key in list(_moved):
+    for key in list(_moved) if not skipped else ():
         if key not in seen:
             del _moved[key]
             _pending_tool_tab.discard(key)

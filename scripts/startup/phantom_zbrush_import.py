@@ -10,11 +10,13 @@ Reads the geometry of ZBrush tools and projects with ``phantom_zbrush_io`` (the 
 named after the file. ZBrush points Y down; by default the meshes are turned to Blender's Z up
 (X stays, ZBrush's depth becomes Blender's Y), standing on their feet and facing the front view.
 
-Only geometry is read: polygroups, UVs, masks and subdivision levels are not (yet). Older files
-(version 1005, like ZBrush's own LightBox tools) are not supported and say so.
+Subdivision levels become Multires levels (the base mesh is ZBrush's lowest level, the top level
+has ZBrush's shape) and polygroups become face sets. UVs, masks and polypaint are not read (yet).
+Older files (version 1005, like ZBrush's own LightBox tools) are not supported and say so.
 """
 
 import os
+import time
 
 import bpy
 from bpy.props import BoolProperty, CollectionProperty, StringProperty
@@ -45,11 +47,24 @@ class IMPORT_SCENE_OT_phantom_zbrush(Operator, ImportHelper):
         description="Turn the meshes from ZBrush's Y-down axes to Blender's Z up, standing on their feet",
         default=True,
     )
+    subdivision_levels: BoolProperty(
+        name="Subdivision Levels",
+        description="Bring subtools' subdivision levels as Multires levels, shaped like ZBrush's highest "
+        "level (off: only the lowest level, faster)",
+        default=True,
+    )
+    polygroups: BoolProperty(
+        name="Polygroups",
+        description="Turn polygroups into face sets",
+        default=True,
+    )
 
     def draw(self, _context):
         layout = self.layout
         layout.use_property_split = True
         layout.prop(self, "convert_axes")
+        layout.prop(self, "subdivision_levels")
+        layout.prop(self, "polygroups")
 
     def _paths(self):
         if self.files and self.directory:
@@ -64,13 +79,21 @@ class IMPORT_SCENE_OT_phantom_zbrush(Operator, ImportHelper):
         for ob in context.selected_objects:
             ob.select_set(False)
 
+        try:
+            from phantom_sculpt_ui import OBJECT_MODE_FACES_MAX
+        except ImportError:
+            OBJECT_MODE_FACES_MAX = 1 << 25
+
         wm = context.window_manager
         added = []
+        flat = []
+        timings = {'read': 0.0, 'mesh': 0.0, 'levels': 0.0}
         for path in self._paths():
             name = os.path.splitext(os.path.basename(path))[0]
             wm.progress_begin(0, 1)
+            t = time.perf_counter()
             try:
-                meshes = zbrush_io.read_meshes(path)
+                meshes = zbrush_io.read_meshes(path, levels=self.subdivision_levels)
             except zbrush_io.UnsupportedFormat as ex:
                 self.report({'WARNING'}, f"{name}: {ex}")
                 continue
@@ -79,6 +102,7 @@ class IMPORT_SCENE_OT_phantom_zbrush(Operator, ImportHelper):
                 continue
             finally:
                 wm.progress_end()
+            timings['read'] += time.perf_counter() - t
             if not meshes:
                 self.report({'WARNING'}, f"{name}: no geometry this reader can decode (an older "
                             "ZBrush file version?)")
@@ -86,14 +110,28 @@ class IMPORT_SCENE_OT_phantom_zbrush(Operator, ImportHelper):
             collection = bpy.data.collections.new(name)
             context.scene.collection.children.link(collection)
             wm.progress_begin(0, len(meshes))
+            matrix = ZBRUSH_TO_BLENDER if self.convert_axes else None
             for i, mesh in enumerate(meshes):
+                t = time.perf_counter()
+                if not self.polygroups:
+                    mesh['groups'] = None
                 me = zbrush_io.build_blender_mesh(mesh)
-                if self.convert_axes:
-                    me.transform(ZBRUSH_TO_BLENDER)
+                if matrix is not None:
+                    me.transform(matrix)
                 ob = bpy.data.objects.new(mesh['name'], me)
                 collection.objects.link(ob)
                 ob.select_set(True)
                 added.append(ob)
+                timings['mesh'] += time.perf_counter() - t
+                if mesh['levels']:
+                    t = time.perf_counter()
+                    try:
+                        zbrush_io.add_multires_levels(ob, mesh, matrix=matrix,
+                                                      max_viewport_faces=OBJECT_MODE_FACES_MAX)
+                    except ValueError:
+                        flat.append(ob.name)
+                    timings['levels'] += time.perf_counter() - t
+                mesh['top_points'] = None       # free it as soon as it is used
                 wm.progress_update(i + 1)
             wm.progress_end()
 
@@ -101,7 +139,12 @@ class IMPORT_SCENE_OT_phantom_zbrush(Operator, ImportHelper):
             return {'CANCELLED'}
         # The biggest subtool is the one to work on.
         context.view_layer.objects.active = max(added, key=lambda ob: len(ob.data.vertices))
-        self.report({'INFO'}, f"Imported {len(added)} subtool{'s' if len(added) != 1 else ''}")
+        if flat:
+            self.report({'WARNING'}, f"Imported only the lowest level of {', '.join(flat)}: its "
+                        "subdivision levels did not match Multires")
+        self.report({'INFO'}, f"Imported {len(added)} subtool{'s' if len(added) != 1 else ''} in "
+                    f"{sum(timings.values()):.1f} s (read {timings['read']:.1f}, meshes "
+                    f"{timings['mesh']:.1f}, subdivision levels {timings['levels']:.1f})")
         return {'FINISHED'}
 
 

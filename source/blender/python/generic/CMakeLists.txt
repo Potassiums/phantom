@@ -17,6 +17,7 @@ set(SRC
   idprop_py_api.cc
   idprop_py_ui_api.cc
   imbuf_py_api.cc
+  phantom_zbrush_py_api.cc
   py_capi_rna.cc
   py_capi_utils.cc
   python_compat.cc
@@ -26,6 +27,7 @@ set(SRC
   idprop_py_api.hh
   idprop_py_ui_api.hh
   imbuf_py_api.hh
+  phantom_zbrush_py_api.hh
   py_capi_rna.hh
   py_capi_utils.hh
   python_compat.hh

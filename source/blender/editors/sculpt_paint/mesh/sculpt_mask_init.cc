@@ -106,6 +106,9 @@ static void init_mask_grids(
       exec_mode::grain_size(1));
   pbvh.tag_masks_changed(node_mask);
   BKE_subdiv_ccg_average_grids(subdiv_ccg);
+  /* Phantom: the grids must be written back to the modifier, or the mask is lost when the grids
+   * are rebuilt (leaving Sculpt Mode, adding a color attribute). */
+  multires_mark_as_modified(&depsgraph, &object, MULTIRES_COORDS_MODIFIED);
 }
 
 static wmOperatorStatus sculpt_mask_init_exec(bContext *C, wmOperator *op)

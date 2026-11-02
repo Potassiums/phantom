@@ -35,6 +35,7 @@
 #include "DNA_object_force_types.h"
 #include "DNA_object_types.h"
 #include "DNA_scene_types.h"
+#include "DNA_windowmanager_types.h"
 
 #include "BKE_anim_visualization.h"
 #include "BKE_armature.hh"
@@ -2069,7 +2070,9 @@ static wmOperatorStatus object_mode_set_exec(bContext *C, wmOperator *op)
   if (garment != garment_before && ob && (garment || mode_compat_test(ob, mode))) {
     SET_FLAG_FROM_TEST(scene->flag, garment, SCE_PHANTOM_GARMENT_MODE);
     WM_event_add_notifier(C, NC_SCENE | ND_MODE, scene);
-    if (ob->mode == mode) {
+    /* Phantom: only for a switch the user made, not one run by another operator (a script
+     * moving on to another mesh...). */
+    if (ob->mode == mode && CTX_wm_manager(C)->op_undo_depth == 0) {
       WM_ui_sound_play(WMUISound::ModeSwitch, garment ? 1.0f : 0.88f);
     }
   }
@@ -2148,7 +2151,8 @@ static wmOperatorStatus object_mode_set_exec(bContext *C, wmOperator *op)
     }
   }
 
-  if (ob->mode != mode_before) {
+  /* Phantom: only for a switch the user made, not one run by another operator. */
+  if (ob->mode != mode_before && CTX_wm_manager(C)->op_undo_depth == 0) {
     /* Slightly lower when returning to Object Mode, like stepping back out. */
     WM_ui_sound_play(WMUISound::ModeSwitch, (ob->mode == OB_MODE_OBJECT) ? 0.88f : 1.0f);
   }

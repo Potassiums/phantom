@@ -38,6 +38,7 @@
 #include "BLI_listbase.hh"
 #include "BLI_map.hh"
 #include "BLI_memory_counter.hh"
+#include "BLI_string.hh"
 #include "BLI_string_utf8.hh"
 #include "BLI_task_c.hh"
 #include "BLI_utildefines.hh"
@@ -790,6 +791,23 @@ static void restore_color(Object &object,
   color_attribute.finish();
 }
 
+/** Phantom: Multires polypaint. */
+static void restore_color_grids(Object &object,
+                                Node &unode,
+                                const MutableSpan<bool> modified_grids)
+{
+  PRF_scope(ProfileCategory::Editor);
+  SculptSession &ss = *object.runtime->sculpt_session;
+  SubdivCCG &subdiv_ccg = *ss.subdiv_ccg;
+  if (subdiv_ccg.colors.is_empty()) {
+    subdiv_ccg.colors = Array<ColorGeometry4b>(subdiv_ccg.positions.size(),
+                                               ColorGeometry4b(255, 255, 255, 255));
+  }
+  color::swap_gathered_colors_grids(subdiv_ccg, unode.grids, unode.col);
+  modified_grids.fill_indices(unode.grids.as_span(), true);
+  subdiv_ccg.dirty.colors = true;
+}
+
 static void restore_mask_mesh(Object &object, Node &unode, const MutableSpan<bool> modified_verts)
 {
   PRF_scope(ProfileCategory::Editor);
@@ -1413,9 +1431,24 @@ static void restore_list(bContext *C, Depsgraph *depsgraph, StepData &step_data)
         return;
       }
 
+      const Mesh &mesh = *id_cast<const Mesh *>(object.data);
+      if (use_multires_undo(step_data, ss)) {
+        const Span<bke::pbvh::GridsNode> nodes = pbvh.nodes<bke::pbvh::GridsNode>();
+        Array<bool> modified_grids(ss.subdiv_ccg->grids_num, false);
+        for (std::unique_ptr<Node> &unode : step_data.nodes) {
+          restore_color_grids(object, *unode, modified_grids);
+        }
+        const IndexMask changed_nodes = IndexMask::from_predicate(
+            node_mask,
+            memory,
+            [&](const int i) { return indices_contain_true(modified_grids, nodes[i].grids()); },
+            exec_mode::grain_size(1));
+        pbvh.tag_attribute_changed(changed_nodes, mesh.active_color_attribute);
+        break;
+      }
+
       const Span<bke::pbvh::MeshNode> nodes = pbvh.nodes<bke::pbvh::MeshNode>();
 
-      const Mesh &mesh = *id_cast<const Mesh *>(object.data);
       Array<bool> modified_verts(mesh.verts_num, false);
       restore_color(object, step_data, modified_verts);
       const IndexMask changed_nodes = IndexMask::from_predicate(
@@ -1763,7 +1796,14 @@ static void fill_node_data_grids(const Object &object,
       break;
     }
     case Type::Color: {
-      BLI_assert_unreachable();
+      /* Phantom: Multires polypaint. */
+      unode.col.reinitialize(verts_num);
+      if (subdiv_ccg.colors.is_empty()) {
+        unode.col.fill(float4(1.0f));
+      }
+      else {
+        color::gather_colors_grids(subdiv_ccg, unode.grids, unode.col);
+      }
       break;
     }
     case Type::DyntopoBegin:
@@ -2270,6 +2310,7 @@ void push_end_ex(Object &ob, const bool use_nested_undo)
   if (wm->op_undo_depth == 0 || use_nested_undo) {
     UndoStack *ustack = ED_undo_stack_get();
     BKE_undosys_step_push(ustack, nullptr, nullptr, UndoEncodeHints::None);
+    STRNCPY(ustack->step_active->phantom_sculpt_object, ob.id.name);
     if (wm->op_undo_depth == 0) {
       BKE_undosys_stack_limit_steps_and_memory_defaults(ustack);
     }
@@ -2491,6 +2532,30 @@ void history_jump_end(Object &ob)
   push_end(ob);
 }
 
+bool stack_leaves_object(const bContext *C, const bool redo)
+{
+  const Object *ob = CTX_data_active_object(C);
+  const UndoStack *ustack = ED_undo_stack_get();
+  if (ob == nullptr || !(ob->mode & OB_MODE_SCULPT) || ustack == nullptr ||
+      ustack->step_active == nullptr)
+  {
+    return false;
+  }
+  /* The step whose state undo (or redo) would load, past the skipped ones like the stack. */
+  const UndoStep *us = ustack->step_active;
+  do {
+    us = redo ? us->next : us->prev;
+  } while (us && us->skip);
+  if (us == nullptr) {
+    return false;
+  }
+  StringRef sculpt_object = us->phantom_sculpt_object;
+  if (sculpt_object.is_empty() && us->type == BKE_UNDOSYS_TYPE_SCULPT) {
+    sculpt_object = reinterpret_cast<const SculptUndoStep *>(us)->data.object_name;
+  }
+  return sculpt_object != ob->id.name;
+}
+
 /** The history step undo (or redo) should go to directly, or -1 when the undo stack does it. */
 static int history_step_target(const bContext *C, const bool redo)
 {
@@ -2520,8 +2585,10 @@ static int history_step_target(const bContext *C, const bool redo)
   if (redo && us) {
     us = us->next;
   }
-  /* (Undo can't undo the first step of the stack.) */
-  const bool undo_can_run = us && (redo || us->prev != nullptr);
+  /* (Undo can't undo the first step of the stack.) Steps into another object's sculpting (or out
+   * of Sculpt Mode) don't run: the history goes on with this object's earlier steps. */
+  const bool undo_can_run = us && (redo || us->prev != nullptr) &&
+                            !stack_leaves_object(C, redo);
   if (undo_can_run && us->type != BKE_UNDOSYS_TYPE_SCULPT) {
     /* Another kind of step (an Extract, a new object...): the undo stack undoes that. */
     return -1;
@@ -2759,6 +2826,7 @@ void geometry_end(Object &ob)
   if (wm->op_undo_depth == 0) {
     UndoStack *ustack = ED_undo_stack_get();
     BKE_undosys_step_push(ustack, nullptr, nullptr, UndoEncodeHints::None);
+    STRNCPY(ustack->step_active->phantom_sculpt_object, ob.id.name);
     if (wm->op_undo_depth == 0) {
       BKE_undosys_stack_limit_steps_and_memory_defaults(ustack);
     }
@@ -2904,6 +2972,16 @@ void orig_position_data_gather_bmesh(const BMLog &bm_log,
 
 std::optional<Span<float4>> orig_color_data_lookup_mesh(const Object & /*object*/,
                                                         const bke::pbvh::MeshNode &node)
+{
+  const undo::Node *unode = undo::get_node(&node, undo::Type::Color);
+  if (!unode) {
+    return std::nullopt;
+  }
+  return unode->col.as_span();
+}
+
+std::optional<Span<float4>> orig_color_data_lookup_grids(const Object & /*object*/,
+                                                         const bke::pbvh::GridsNode &node)
 {
   const undo::Node *unode = undo::get_node(&node, undo::Type::Color);
   if (!unode) {

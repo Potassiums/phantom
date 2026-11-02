@@ -50,7 +50,8 @@ void VertBuf::init(const GPUVertFormat &format, GPUUsageType usage)
   }
 #endif
   /* Strip extended usage flags. */
-  usage_ = usage & ~GPU_USAGE_FLAG_BUFFER_TEXTURE_ONLY;
+  usage_ = usage & ~(GPU_USAGE_FLAG_BUFFER_TEXTURE_ONLY | GPU_USAGE_FLAG_UPLOAD_SOURCE);
+  upload_source_requested_ = (usage & GPU_USAGE_FLAG_UPLOAD_SOURCE) != 0;
 #ifndef NDEBUG
   /* Store extended usage. */
   extended_usage_ = usage;

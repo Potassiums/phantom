@@ -71,6 +71,7 @@
 #include "../generic/blf_py_api.hh"
 #include "../generic/idprop_py_api.hh"
 #include "../generic/imbuf_py_api.hh"
+#include "../generic/phantom_zbrush_py_api.hh"
 #include "../gpu/gpu_py_api.hh"
 #include "../mathutils/mathutils.hh"
 
@@ -348,6 +349,8 @@ static _inittab bpy_internal_modules[] = {
 #endif
     {"gpu", BPyInit_gpu},
     {"idprop", BPyInit_idprop},
+    /* Phantom: native helpers for the ZBrush importer. */
+    {"_phantom_zbrush", BPyInit_phantom_zbrush},
 #ifdef WITH_HYDRA
     {"_bpy_hydra", BPyInit_hydra},
 #endif

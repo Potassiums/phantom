@@ -90,6 +90,12 @@ size_t step_memory_size_get(UndoStep *step);
  * steps for it, or the next undo step starts from another history step).
  */
 bool history_step_instead(const bContext *C, bool redo);
+/**
+ * Phantom: whether undo (or `redo`) on the undo stack would leave the sculpting of the active
+ * object in Sculpt Mode: load a step of another object, or from outside Sculpt Mode. Undo in
+ * Sculpt Mode keeps to the object's own steps (then its sculpt history, see #history_step).
+ */
+bool stack_leaves_object(const bContext *C, bool redo);
 /** Phantom: step the sculpt history back (or forward with `redo`), without an undo step. */
 bool history_step(bContext *C, bool redo);
 /**

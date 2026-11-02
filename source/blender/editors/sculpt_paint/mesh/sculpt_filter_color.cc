@@ -23,6 +23,7 @@
 #include "BKE_object_types.hh"
 #include "BKE_paint.hh"
 #include "BKE_paint_bvh.hh"
+#include "BKE_subdiv_ccg.hh"
 
 #include "IMB_colormanagement.hh"
 
@@ -126,6 +127,7 @@ struct LocalData {
   Vector<int> neighbor_data;
   Vector<float4> average_colors;
   Vector<float4> new_colors;
+  Vector<float4> pre_smoothed;
 };
 
 BLI_NOINLINE static void clamp_factors(const MutableSpan<float> factors,
@@ -137,32 +139,21 @@ BLI_NOINLINE static void clamp_factors(const MutableSpan<float> factors,
   }
 }
 
-static void color_filter_task(const Depsgraph &depsgraph,
-                              Object &ob,
-                              const OffsetIndices<int> faces,
-                              const Span<int> corner_verts,
-                              const GroupedSpan<int> vert_to_face_map,
-                              const MeshAttributeData &attribute_data,
-                              const FilterType mode,
-                              const float filter_strength,
-                              const float3 &filter_fill_color,
-                              const bke::pbvh::MeshNode &node,
-                              LocalData &tls,
-                              bke::GSpanAttributeWriter &color_attribute)
+/**
+ * The filtered colors of a node's vertices. For #FilterType::Smooth, \a colors are the current
+ * colors, \a average_colors the averages of their neighbors and \a pre_smoothed_colors (only
+ * needed for negative strengths) the #filter::Cache::pre_smoothed_color of the vertices.
+ */
+static void calc_filtered_colors(const FilterType mode,
+                                 const float3 &filter_fill_color,
+                                 const MutableSpan<float> factors,
+                                 const Span<float4> orig_colors,
+                                 const Span<float4> colors,
+                                 const MutableSpan<float4> average_colors,
+                                 const Span<float4> pre_smoothed_colors,
+                                 const MutableSpan<float4> new_colors)
 {
-  SculptSession &ss = *ob.runtime->sculpt_session;
-
-  const Span<float4> orig_colors = orig_color_data_get_mesh(ob, node);
-
-  const Span<int> verts = node.verts();
-
-  Array<float, bke::pbvh::MESH_LEAF_LIMIT> factors(verts.size());
-  fill_factor_from_hide_and_mask(attribute_data.hide_vert, attribute_data.mask, verts, factors);
-  auto_mask::calc_vert_factors(
-      depsgraph, ob, ss.filter_cache->automasking.get(), node, verts, factors);
-  scale_factors(factors, filter_strength);
-
-  Array<float4, bke::pbvh::MESH_LEAF_LIMIT> new_colors(verts.size());
+  const IndexRange verts = factors.index_range();
 
   /* Copy alpha. */
   for (const int i : verts.index_range()) {
@@ -279,36 +270,7 @@ static void color_filter_task(const Depsgraph &depsgraph,
     case FilterType::Smooth: {
       clamp_factors(factors, -1.0f, 1.0f);
 
-      Array<float4, bke::pbvh::MESH_LEAF_LIMIT> colors(verts.size());
       for (const int i : verts.index_range()) {
-        colors[i] = color_vert_get(faces,
-                                   corner_verts,
-                                   vert_to_face_map,
-                                   color_attribute.span,
-                                   color_attribute.domain,
-                                   verts[i]);
-      }
-
-      const GroupedSpan<int> neighbors = calc_vert_neighbors(faces,
-                                                             corner_verts,
-                                                             vert_to_face_map,
-                                                             {},
-                                                             verts,
-                                                             tls.neighbor_offsets,
-                                                             tls.neighbor_data);
-
-      Array<float4, bke::pbvh::MESH_LEAF_LIMIT> average_colors(verts.size());
-      smooth::neighbor_color_average(faces,
-                                     corner_verts,
-                                     vert_to_face_map,
-                                     color_attribute.span,
-                                     color_attribute.domain,
-                                     neighbors,
-                                     average_colors);
-
-      for (const int i : verts.index_range()) {
-        const int vert = verts[i];
-
         if (factors[i] < 0.0f) {
           interp_v4_v4v4(average_colors[i], average_colors[i], colors[i], 0.5f);
         }
@@ -319,7 +281,7 @@ static void color_filter_task(const Depsgraph &depsgraph,
           float4 delta_color;
 
           /* Unsharp mask. */
-          copy_v4_v4(delta_color, ss.filter_cache->pre_smoothed_color[vert]);
+          copy_v4_v4(delta_color, pre_smoothed_colors[i]);
           delta_color -= average_colors[i];
 
           copy_v4_v4(new_colors[i], colors[i]);
@@ -339,6 +301,81 @@ static void color_filter_task(const Depsgraph &depsgraph,
       break;
     }
   }
+}
+
+static void color_filter_task(const Depsgraph &depsgraph,
+                              Object &ob,
+                              const OffsetIndices<int> faces,
+                              const Span<int> corner_verts,
+                              const GroupedSpan<int> vert_to_face_map,
+                              const MeshAttributeData &attribute_data,
+                              const FilterType mode,
+                              const float filter_strength,
+                              const float3 &filter_fill_color,
+                              const bke::pbvh::MeshNode &node,
+                              LocalData &tls,
+                              bke::GSpanAttributeWriter &color_attribute)
+{
+  SculptSession &ss = *ob.runtime->sculpt_session;
+
+  const Span<float4> orig_colors = orig_color_data_get_mesh(ob, node);
+
+  const Span<int> verts = node.verts();
+
+  Array<float, bke::pbvh::MESH_LEAF_LIMIT> factors(verts.size());
+  fill_factor_from_hide_and_mask(attribute_data.hide_vert, attribute_data.mask, verts, factors);
+  auto_mask::calc_vert_factors(
+      depsgraph, ob, ss.filter_cache->automasking.get(), node, verts, factors);
+  scale_factors(factors, filter_strength);
+
+  Array<float4, bke::pbvh::MESH_LEAF_LIMIT> colors;
+  Array<float4, bke::pbvh::MESH_LEAF_LIMIT> average_colors;
+  Array<float4, bke::pbvh::MESH_LEAF_LIMIT> pre_smoothed_colors;
+  if (mode == FilterType::Smooth) {
+    colors.reinitialize(verts.size());
+    for (const int i : verts.index_range()) {
+      colors[i] = color_vert_get(faces,
+                                 corner_verts,
+                                 vert_to_face_map,
+                                 color_attribute.span,
+                                 color_attribute.domain,
+                                 verts[i]);
+    }
+
+    const GroupedSpan<int> neighbors = calc_vert_neighbors(faces,
+                                                           corner_verts,
+                                                           vert_to_face_map,
+                                                           {},
+                                                           verts,
+                                                           tls.neighbor_offsets,
+                                                           tls.neighbor_data);
+
+    average_colors.reinitialize(verts.size());
+    smooth::neighbor_color_average(faces,
+                                   corner_verts,
+                                   vert_to_face_map,
+                                   color_attribute.span,
+                                   color_attribute.domain,
+                                   neighbors,
+                                   average_colors);
+
+    if (!ss.filter_cache->pre_smoothed_color.is_empty()) {
+      pre_smoothed_colors.reinitialize(verts.size());
+      gather_data_mesh(ss.filter_cache->pre_smoothed_color.as_span(),
+                       verts,
+                       pre_smoothed_colors.as_mutable_span());
+    }
+  }
+
+  Array<float4, bke::pbvh::MESH_LEAF_LIMIT> new_colors(verts.size());
+  calc_filtered_colors(mode,
+                       filter_fill_color,
+                       factors,
+                       orig_colors,
+                       colors,
+                       average_colors,
+                       pre_smoothed_colors,
+                       new_colors);
 
   for (const int i : verts.index_range()) {
     color_vert_set(faces,
@@ -351,10 +388,128 @@ static void color_filter_task(const Depsgraph &depsgraph,
   }
 }
 
+/** Phantom: Multires polypaint. */
+static void color_filter_task_grids(const Depsgraph &depsgraph,
+                                    Object &ob,
+                                    const FilterType mode,
+                                    const float filter_strength,
+                                    const float3 &filter_fill_color,
+                                    const bke::pbvh::GridsNode &node,
+                                    LocalData &tls)
+{
+  SculptSession &ss = *ob.runtime->sculpt_session;
+  SubdivCCG &subdiv_ccg = *ss.subdiv_ccg;
+  const CCGKey key = BKE_subdiv_ccg_key_top_level(subdiv_ccg);
+
+  const Span<float4> orig_colors = orig_color_data_get_grids(ob, node);
+
+  const Span<int> grids = node.grids();
+  const int verts_num = grids.size() * key.grid_area;
+
+  tls.factors.resize(verts_num);
+  const MutableSpan<float> factors = tls.factors;
+  fill_factor_from_hide_and_mask(subdiv_ccg, grids, factors);
+  auto_mask::calc_grids_factors(
+      depsgraph, ob, ss.filter_cache->automasking.get(), node, grids, factors);
+  scale_factors(factors, filter_strength);
+
+  Span<float4> colors;
+  MutableSpan<float4> average_colors;
+  Span<float4> pre_smoothed_colors;
+  if (mode == FilterType::Smooth) {
+    tls.colors.resize(verts_num);
+    gather_colors_grids(subdiv_ccg, grids, tls.colors);
+    colors = tls.colors;
+
+    tls.average_colors.resize(verts_num);
+    average_colors = tls.average_colors;
+    SubdivCCGNeighbors neighbors;
+    for (const int i : IndexRange(verts_num)) {
+      const int offset = i % key.grid_area;
+      const SubdivCCGCoord coord{
+          grids[i / key.grid_area], short(offset % key.grid_size), short(offset / key.grid_size)};
+      BKE_subdiv_ccg_neighbor_coords_get(subdiv_ccg, coord, false, neighbors);
+      float4 sum(0.0f);
+      for (const SubdivCCGCoord neighbor : neighbors.coords) {
+        sum += color_grids_get(subdiv_ccg, neighbor.to_index(key));
+      }
+      average_colors[i] = math::safe_divide(sum, float(neighbors.coords.size()));
+    }
+
+    if (!ss.filter_cache->pre_smoothed_color.is_empty()) {
+      pre_smoothed_colors = gather_data_grids(
+          subdiv_ccg, ss.filter_cache->pre_smoothed_color.as_span(), grids, tls.pre_smoothed);
+    }
+  }
+
+  tls.new_colors.resize(verts_num);
+  const MutableSpan<float4> new_colors = tls.new_colors;
+  calc_filtered_colors(mode,
+                       filter_fill_color,
+                       factors,
+                       orig_colors,
+                       colors,
+                       average_colors,
+                       pre_smoothed_colors,
+                       new_colors);
+
+  scatter_colors_grids(new_colors, subdiv_ccg, grids);
+}
+
+/** Phantom: Multires polypaint. */
+static void sculpt_color_presmooth_init_grids(Object &object)
+{
+  SculptSession &ss = *object.runtime->sculpt_session;
+  bke::pbvh::Tree &pbvh = *bke::object::pbvh_get(object);
+  MutableSpan<bke::pbvh::GridsNode> nodes = pbvh.nodes<bke::pbvh::GridsNode>();
+  const IndexMask &node_mask = ss.filter_cache->node_mask;
+  const SubdivCCG &subdiv_ccg = *ss.subdiv_ccg;
+  const int grid_area = subdiv_ccg.grid_area;
+
+  if (ss.filter_cache->pre_smoothed_color.is_empty()) {
+    ss.filter_cache->pre_smoothed_color = Array<float4>(subdiv_ccg.positions.size());
+  }
+  const MutableSpan<float4> pre_smoothed_color = ss.filter_cache->pre_smoothed_color;
+
+  node_mask.foreach_index(
+      [&](const int i) {
+        for (const int grid : nodes[i].grids()) {
+          for (const int vert : IndexRange(int64_t(grid) * grid_area, grid_area)) {
+            pre_smoothed_color[vert] = color_grids_get(subdiv_ccg, vert);
+          }
+        }
+      },
+      exec_mode::grain_size(1));
+
+  threading::EnumerableThreadSpecific<Vector<float4>> all_tls;
+  for ([[maybe_unused]] const int iteration : IndexRange(2)) {
+    node_mask.foreach_index(
+        [&](const int i) {
+          Vector<float4> &averaged_colors = all_tls.local();
+          const Span<int> grids = nodes[i].grids();
+          averaged_colors.resize(grids.size() * grid_area);
+          smooth::average_data_grids(
+              subdiv_ccg, pre_smoothed_color.as_span(), grids, averaged_colors.as_mutable_span());
+          for (const int j : grids.index_range()) {
+            const IndexRange range(int64_t(grids[j]) * grid_area, grid_area);
+            for (const int k : IndexRange(grid_area)) {
+              pre_smoothed_color[range[k]] = math::interpolate(
+                  pre_smoothed_color[range[k]], averaged_colors[j * grid_area + k], 0.5f);
+            }
+          }
+        },
+        exec_mode::grain_size(1));
+  }
+}
+
 static void sculpt_color_presmooth_init(const Mesh &mesh, Object &object)
 {
   SculptSession &ss = *object.runtime->sculpt_session;
   bke::pbvh::Tree &pbvh = *bke::object::pbvh_get(object);
+  if (pbvh.type() == bke::pbvh::Type::Grids) {
+    sculpt_color_presmooth_init_grids(object);
+    return;
+  }
   MutableSpan<bke::pbvh::MeshNode> nodes = pbvh.nodes<bke::pbvh::MeshNode>();
   const IndexMask &node_mask = ss.filter_cache->node_mask;
   const OffsetIndices<int> faces = mesh.faces();
@@ -416,7 +571,6 @@ static void sculpt_color_filter_apply(bContext *C, wmOperator *op, Object &ob)
   const Sculpt &sd = *CTX_data_tool_settings(C)->sculpt;
   SculptSession &ss = *ob.runtime->sculpt_session;
   bke::pbvh::Tree &pbvh = *bke::object::pbvh_get(ob);
-  MutableSpan<bke::pbvh::MeshNode> nodes = pbvh.nodes<bke::pbvh::MeshNode>();
 
   const FilterType mode = FilterType(RNA_enum_get(op->ptr, "type"));
   float filter_strength = RNA_float_get(op->ptr, "strength");
@@ -434,6 +588,23 @@ static void sculpt_color_filter_apply(bContext *C, wmOperator *op, Object &ob)
   {
     ss.filter_cache->automasking->calc_cavity_factor(depsgraph, ob, node_mask);
   }
+
+  if (pbvh.type() == bke::pbvh::Type::Grids) {
+    /* Phantom: Multires polypaint. */
+    MutableSpan<bke::pbvh::GridsNode> nodes = pbvh.nodes<bke::pbvh::GridsNode>();
+    threading::EnumerableThreadSpecific<LocalData> all_tls;
+    node_mask.foreach_index(
+        [&](const int i) {
+          LocalData &tls = all_tls.local();
+          color_filter_task_grids(
+              depsgraph, ob, mode, filter_strength, fill_color, nodes[i], tls);
+        },
+        exec_mode::grain_size(1));
+    pbvh.tag_attribute_changed(node_mask, mesh.active_color_attribute);
+    flush_update_step(C, UpdateType::Color);
+    return;
+  }
+  MutableSpan<bke::pbvh::MeshNode> nodes = pbvh.nodes<bke::pbvh::MeshNode>();
 
   const OffsetIndices<int> faces = mesh.faces();
   const Span<int> corner_verts = mesh.corner_verts();
@@ -551,7 +722,7 @@ static int sculpt_color_filter_init(bContext *C, wmOperator *op)
     }
   }
 
-  /* Disable for multires and dyntopo for now */
+  /* Disable for dyntopo for now. */
   if (!color_supported_check(scene, ob, op->reports)) {
     return OPERATOR_CANCELLED;
   }
@@ -566,6 +737,7 @@ static int sculpt_color_filter_init(bContext *C, wmOperator *op)
    * creation of color layer data. */
   Depsgraph *depsgraph = CTX_data_ensure_evaluated_depsgraph(C);
   BKE_sculptsession_update_for_edit(depsgraph, &ob, true);
+  ensure_grid_colors(ob);
 
   filter::cache_init(C,
                      ob,

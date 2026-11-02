@@ -38,9 +38,12 @@
 #include "BKE_mesh.hh"
 #include "BKE_mesh_sample.hh"
 #include "BKE_object.hh"
+#include "BKE_object_types.hh"
 #include "BKE_paint.hh"
+#include "BKE_paint_bvh.hh"
 #include "BKE_paint_types.hh"
 #include "BKE_report.hh"
+#include "BKE_subdiv_ccg.hh"
 
 #include "DEG_depsgraph_query.hh"
 
@@ -264,6 +267,18 @@ static std::optional<float3> sample_mesh_attribute_color(ViewContext &vc,
   const bke::GAttributeReader color_attribute = color::active_color_attribute(mesh);
 
   std::optional<ActiveElementInfo> active_element = active_element_info_get(vc, float2(mval));
+
+  /* Phantom: Multires polypaint, the active vertex indexes all grid vertices. */
+  const SculptSession *ss = object.runtime->sculpt_session;
+  const bke::pbvh::Tree *pbvh = bke::object::pbvh_get(object);
+  if (ss && pbvh && pbvh->type() == bke::pbvh::Type::Grids) {
+    if (!active_element || !std::holds_alternative<int>(active_element->vert) ||
+        ss->subdiv_ccg == nullptr || ss->subdiv_ccg->colors.is_empty())
+    {
+      return std::nullopt;
+    }
+    return color::color_grids_get(*ss->subdiv_ccg, std::get<int>(active_element->vert)).xyz();
+  }
 
   if (!color_attribute || !active_element || !std::holds_alternative<int>(active_element->vert)) {
     return std::nullopt;

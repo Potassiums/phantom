@@ -6,10 +6,12 @@
 Phantom: the sculpt history timeline.
 
 With Sculpt History on (a preference), every sculpt edit of a mesh is a step, from the first
-stroke on each object. In Sculpt Mode a timeline bar shows them: a tick per step (taller and
-orange for keyframes, where the topology changed), "Start" and "End" at its ends, and a handle at
-the step the mesh is at. Click or drag it to scrub (``sculpt.phantom_history_scrub``): the mesh
-follows, and releasing makes it one undo step. Sculpting after going back drops the steps after
+stroke on each object. In Sculpt Mode a timeline bar shows them: a tick per step (a diamond
+for keyframes, where the topology changed; past 25 strokes the ticks fade away and it is a plain
+bar, the diamonds stay), "Start" and "End" at its ends, and a knob at the step
+the mesh is at, the track filled in orange up to it. Click or drag it to scrub
+(``sculpt.phantom_history_scrub``): the mesh follows, the knob glides and grows under the cursor,
+a soft tick sounds per step, and releasing makes it one undo step. Sculpting after going back drops the steps after
 it.
 
 The Sculpt Mode header has History: its checkbox shows or hides the bar, and its dropdown holds
@@ -34,28 +36,46 @@ import gpu
 from bpy.types import Operator, Panel
 from gpu_extras.batch import batch_for_shader
 
-# Unscaled pixels.
-THICKNESS = 22
-MARGIN = 10
+# Unscaled pixels, on a 4 px grid.
+THICKNESS = 24
+MARGIN = 12
 MAX_LENGTH = 640
-PAD = 14
-TICK = 5
+PAD = 16
+TICK = 4
 TEXT_SIZE = 11
-# Room left at the bottom for the mask actions bar (its height and margin).
-MASK_BAR_ROOM = 42
+# Gap between the bar and its labels, the bar's corners (like the simple view's toolbars), the
+# knob (and while hovered or dragged), and a keyframe diamond (half its diagonal).
+LABEL_GAP = 8
+CORNER = 12
+KNOB = 6
+KNOB_ACTIVE = 8
+DIAMOND = 4
+# Room left at the bottom for the mask actions bar (its height, 52, and margin).
+MASK_BAR_ROOM = 64
 # Room left at the right for the navigation gizmos.
 GIZMO_ROOM = 70
 # How quickly the bar glides to its place when panels open or close (seconds, time constant).
 EASE_TIME = 0.06
 
-BAR_COLOR = (0.105, 0.105, 0.125, 0.85)
-TRACK_COLOR = (1.0, 1.0, 1.0, 0.18)
-TICK_COLOR = (0.75, 0.75, 0.8, 0.55)
-KEYFRAME_COLOR = (1.0, 0.62, 0.34, 0.9)    # Phantom orange.
-HANDLE_COLOR = (0.55, 0.55, 1.0, 1.0)      # Phantom periwinkle.
-HOVER_COLOR = (1.0, 1.0, 1.0, 0.5)
+# The simple view's graphite and hairline; one accent (Phantom orange) for where the mesh is.
+BAR_COLOR = (0.105, 0.105, 0.115, 0.93)
+HAIRLINE_COLOR = (1.0, 1.0, 1.0, 0.07)
+TRACK_COLOR = (1.0, 1.0, 1.0, 0.16)
+TICK_COLOR = (0.92, 0.92, 0.95, 0.35)
+KEYFRAME_COLOR = (0.92, 0.92, 0.95, 0.8)
+ACCENT = (1.0, 0.62, 0.34, 1.0)            # Phantom orange.
+KNOB_COLOR = (1.0, 1.0, 1.0, 1.0)
+HOVER_COLOR = (1.0, 1.0, 1.0, 0.35)
 TEXT_COLOR = (0.92, 0.92, 0.95, 0.9)
-DIM_TEXT_COLOR = (0.92, 0.92, 0.95, 0.5)
+DIM_TEXT_COLOR = (0.92, 0.92, 0.95, 0.55)
+# Scrubbing: at most one tick sound per this many seconds.
+TICK_SOUND_GAP = 0.03
+# Up to this many strokes the bar has a notch per step; from one more, the notches fade away and
+# it is a plain bar (a comb of notches is noisy). They fade back in when the history gets shorter.
+NOTCHES_UP_TO = 25
+NOTCH_FADE = 0.25
+# Steps the track holds before it fills (then it holds twice as many, and so on).
+BUILD_UP = 32
 
 DOCKS = (
     ('TOP', "Top", "Dock the timeline at the top of the viewport", 'TRIA_UP'),
@@ -79,8 +99,13 @@ _draw_handle = None
 _addon_keymaps = []
 # The step index under the cursor, or None.
 _hover = None
-# Eased insets, by (area pointer, side): [value, last update time, target].
+# Eased insets (and the knob's position), by (area pointer, side): [value, last update time,
+# target].
 _eased = {}
+# The step a tick last sounded for while scrubbing, and when.
+_tick = {"step": None, "time": 0.0}
+# How much the notches show (0 to 1), easing toward `target`; None until first drawn.
+_notches = {"value": None, "target": 1.0, "last": 0.0}
 
 
 # -----------------------------------------------------------------------------
@@ -197,6 +222,29 @@ def _side_insets(area, region):
     return left, right
 
 
+def _simple_view_insets(area, region):
+    """How far the simple sculpting view's own toolbars reach in from the left, right and bottom
+    (they are drawn over the viewport, not regions), else zeros."""
+    try:
+        import phantom_simple_view
+    except ImportError:
+        return 0, 0, 0
+    left, right = phantom_simple_view.side_reserve(area, region)
+    return left, right, phantom_simple_view.bottom_reserve(area, region)
+
+
+def _silhouette_rect(region):
+    """The silhouette thumbnail's rectangle in `region`, or None when it isn't shown."""
+    context = bpy.context
+    if context.region is None or context.region.as_pointer() != region.as_pointer():
+        return None
+    try:
+        import phantom_silhouette
+    except ImportError:
+        return None
+    return phantom_silhouette.visible_rect(context)
+
+
 def _overlap(area, region, types, side):
     """How far regions of `types` drawn over the viewport reach in from its top or bottom."""
     inset = 0
@@ -258,10 +306,50 @@ class Layout:
         t = THICKNESS * s
         m = MARGIN * s
         W, H = region.width, region.height
+        g = LABEL_GAP * s
         left, right = _side_insets(area, region)
-        top = _ease(area, 'TOP', _overlap(area, region, {'HEADER', 'TOOL_HEADER'}, 'TOP'), advance)
-        bottom = _ease(area, 'BOTTOM', _overlap(
-            area, region, {'ASSET_SHELF', 'ASSET_SHELF_HEADER'}, 'BOTTOM'), advance)
+        top = _overlap(area, region, {'HEADER', 'TOOL_HEADER'}, 'TOP')
+        bottom = _overlap(area, region, {'ASSET_SHELF', 'ASSET_SHELF_HEADER'}, 'BOTTOM')
+        # The simple view's toolbars are drawn over the viewport: clear of them too.
+        simple_left, simple_right, simple_bottom = _simple_view_insets(area, region)
+        left, right, bottom = max(left, simple_left), max(right, simple_right), max(
+            bottom, simple_bottom)
+        # Clear of the silhouette thumbnail where it would touch the bar: a horizontal bar stays
+        # centered and gets shorter from both ends (room left for its Start and End labels), or
+        # goes below the thumbnail when that would leave too short a bar; a vertical one starts
+        # below it.
+        max_length = MAX_LENGTH * s
+        sil = _silhouette_rect(region)
+        if sil is not None:
+            sx, sy, sw, sh = sil
+            blf.size(0, TEXT_SIZE * s)
+            label = blf.dimensions(0, "Start")[0] + g
+            text = 16 * s
+            if self.vertical:
+                bx = left + m if dock == 'LEFT' else W - right - GIZMO_ROOM * s - m - t
+                if sx < bx + t and sx + sw > bx:
+                    top = max(top, H - sy + g + text)
+            else:
+                by = H - top - m - t if dock == 'TOP' else bottom + MASK_BAR_ROOM * s + m
+                band = (by - g - text, by + t) if dock == 'TOP' else (by, by + t + g + text)
+                if sy < band[1] and sy + sh > band[0]:
+                    center = left + (W - left - right) / 2
+                    length = max(min(max_length, (W - left - right) * 0.6), 120 * s)
+                    if sx + sw / 2 < center:
+                        fits = 2 * (center - (sx + sw + g + label))
+                    else:
+                        fits = 2 * ((sx - g - label) - center)
+                    if length <= fits:
+                        pass
+                    elif fits >= 240 * s:
+                        max_length = fits
+                    elif dock == 'TOP':
+                        # No room beside it (a large thumbnail, a narrow view): below it instead.
+                        top = max(top, H - sy + g - m)
+                    else:
+                        bottom = max(bottom, sy + sh + g - MASK_BAR_ROOM * s - m)
+        top = _ease(area, 'TOP', top, advance)
+        bottom = _ease(area, 'BOTTOM', bottom, advance)
         left = _ease(area, 'LEFT', left, advance)
         right = _ease(area, 'RIGHT', right, advance)
 
@@ -274,14 +362,14 @@ class Layout:
             # Oldest at the top, like reading down a list.
             self.track = (y + length - PAD * s, y + PAD * s)
             cx = x + t / 2
-            self.start_label = (cx, y + length + 4 * s, 'CENTER', 'BOTTOM')
-            self.end_label = (cx, y - 4 * s, 'CENTER', 'TOP')
+            self.start_label = (cx, y + length + g, 'CENTER', 'BOTTOM')
+            self.end_label = (cx, y - g, 'CENTER', 'TOP')
             if dock == 'LEFT':
-                self.status = (x + t + 8 * s, y + length / 2, 'LEFT', 'MIDDLE')
+                self.status = (x + t + g, y + length / 2, 'LEFT', 'MIDDLE')
             else:
-                self.status = (x - 8 * s, y + length / 2, 'RIGHT', 'MIDDLE')
+                self.status = (x - g, y + length / 2, 'RIGHT', 'MIDDLE')
         else:
-            length = max(min(MAX_LENGTH * s, (W - left - right) * 0.6), 120 * s)
+            length = max(min(max_length, (W - left - right) * 0.6), 120 * s)
             x = left + (W - left - right - length) / 2
             if dock == 'TOP':
                 y = H - top - m - t
@@ -290,22 +378,26 @@ class Layout:
             self.bar = (x, y, length, t)
             self.track = (x + PAD * s, x + length - PAD * s)
             cy = y + t / 2
-            self.start_label = (x - 6 * s, cy, 'RIGHT', 'MIDDLE')
-            self.end_label = (x + length + 6 * s, cy, 'LEFT', 'MIDDLE')
+            self.start_label = (x - g, cy, 'RIGHT', 'MIDDLE')
+            self.end_label = (x + length + g, cy, 'LEFT', 'MIDDLE')
             if dock == 'TOP':
-                self.status = (x + length / 2, y - 6 * s, 'CENTER', 'TOP')
+                self.status = (x + length / 2, y - g, 'CENTER', 'TOP')
             else:
-                self.status = (x + length / 2, y + t + 6 * s, 'CENTER', 'BOTTOM')
+                self.status = (x + length / 2, y + t + g, 'CENTER', 'BOTTOM')
 
     def step_pos(self, index, count):
         a, b = self.track
-        return a + (b - a) * index / max(count - 1, 1)
+        return a + (b - a) * index / span(count)
+
+    def last_pos(self, count):
+        """Where the newest step is: the track past it is room for strokes still to come."""
+        return self.step_pos(max(count - 1, 0), count)
 
     def index_at(self, mx, my, count):
         a, b = self.track
         pos = my if self.vertical else mx
         t = min(max((pos - a) / (b - a), 0.0), 1.0) if b != a else 0.0
-        return round(t * (count - 1))
+        return min(round(t * span(count)), max(count - 1, 0))
 
     def mid(self):
         x, y, w, h = self.bar
@@ -328,8 +420,99 @@ def _draw(shader, kind, coords, color):
     batch.draw(shader)
 
 
+def span(count):
+    """How many steps the whole track holds: BUILD_UP at first, doubling each time it fills, so
+    the knob walks from Start toward End stroke by stroke instead of sitting at End."""
+    total = BUILD_UP
+    while total < count - 1:
+        total *= 2
+    return total
+
+
 def _rect(x, y, w, h):
     return [(x, y), (x + w, y), (x + w, y + h), (x, y), (x + w, y + h), (x, y + h)]
+
+
+def _rounded(x, y, w, h, radius, segments=6):
+    """The outline of a rounded rectangle, counter-clockwise."""
+    radius = max(0.0, min(radius, w / 2.0, h / 2.0))
+    corners = ((x + w - radius, y + h - radius, 0.0), (x + radius, y + h - radius, 0.5 * math.pi),
+               (x + radius, y + radius, math.pi), (x + w - radius, y + radius, 1.5 * math.pi))
+    points = []
+    for cx, cy, start in corners:
+        for i in range(segments + 1):
+            a = start + 0.5 * math.pi * i / segments
+            points.append((cx + radius * math.cos(a), cy + radius * math.sin(a)))
+    return points
+
+
+def _panel(shader, rect, radius, fill, line=HAIRLINE_COLOR):
+    """A rounded panel with a hairline: the outline is a strip back to its first point, since
+    Vulkan has no line loops."""
+    x, y, w, h = rect
+    points = _rounded(x, y, w, h, radius)
+    _draw(shader, 'TRI_FAN', [(x + w / 2, y + h / 2)] + points + [points[0]], fill)
+    if line is not None:
+        _draw(shader, 'LINE_STRIP', points + [points[0]], line)
+
+
+def _disc(shader, cx, cy, radius, color, segments=24):
+    points = [(cx + radius * math.cos(2 * math.pi * i / segments),
+               cy + radius * math.sin(2 * math.pi * i / segments)) for i in range(segments + 1)]
+    _draw(shader, 'TRI_FAN', [(cx, cy)] + points, color)
+
+
+def _diamond(cx, cy, r):
+    return [(cx, cy - r), (cx + r, cy), (cx, cy + r), (cx, cy - r), (cx, cy + r), (cx - r, cy)]
+
+
+def _scrubbing(context):
+    """Whether the timeline is being dragged right now."""
+    window = context.window
+    return window is not None and any(
+        op.bl_idname == "SCULPT_OT_phantom_history_scrub"
+        for op in getattr(window, "modal_operators", ()))
+
+
+def _play_tick(current):
+    """While scrubbing: Phantom's soft measuring tick, once per step reached (not too often)."""
+    now = time.perf_counter()
+    if _tick["step"] is not None and current != _tick["step"] and (
+            now - _tick["time"] >= TICK_SOUND_GAP):
+        play = getattr(bpy.types.WindowManager, "phantom_ui_sound_play", None)
+        if play is not None:
+            play("measure_tick")
+        _tick["time"] = now
+    _tick["step"] = current
+
+
+def _notch_fade_tick():
+    n = _notches
+    now = time.perf_counter()
+    step = (now - n["last"]) / NOTCH_FADE
+    n["last"] = now
+    if n["value"] < n["target"]:
+        n["value"] = min(n["target"], n["value"] + step)
+    else:
+        n["value"] = max(n["target"], n["value"] - step)
+    _redraw_views()
+    return None if n["value"] == n["target"] else 1.0 / 60.0
+
+
+def _notch_alpha(count):
+    """How much the notches show for a history of `count` steps (the first one is the mesh before
+    any stroke), fading when that crosses #NOTCHES_UP_TO strokes."""
+    n = _notches
+    target = 1.0 if count - 1 <= NOTCHES_UP_TO else 0.0
+    if n["value"] is None:
+        # First drawn (a file just opened...): as it is, no fade.
+        n["value"] = n["target"] = target
+    elif target != n["target"]:
+        n["target"] = target
+        n["last"] = time.perf_counter()
+        if not bpy.app.timers.is_registered(_notch_fade_tick):
+            bpy.app.timers.register(_notch_fade_tick, first_interval=0.0)
+    return n["value"]
 
 
 def _across(lay, pos, half_width, half_length):
@@ -366,15 +549,17 @@ def _status_text(context, history, index):
 # this many (fewer go without asking).
 ASK_ABOVE_STEPS = 25
 WARNING_FADE = 0.14
-WARNING_PAD = 14
-LINE_GAP = 6
-BUTTON_W = 110
-BUTTON_H = 22
-WARNING_BORDER_COLOR = (1.0, 1.0, 1.0, 0.14)
-CONTINUE_COLOR = (1.0, 0.62, 0.34, 0.30)
-CONTINUE_HOVER_COLOR = (1.0, 0.62, 0.34, 0.50)
-CANCEL_COLOR = (1.0, 1.0, 1.0, 0.08)
-CANCEL_HOVER_COLOR = (1.0, 1.0, 1.0, 0.16)
+WARNING_PAD = 16
+LINE_GAP = 8
+BUTTON_W = 112
+BUTTON_H = 28
+BUTTON_CORNER = 8
+# Keep Sculpting is the one primary action (the accent, dark text on it); the others are quiet.
+PRIMARY_COLOR = ACCENT
+PRIMARY_HOVER_COLOR = (1.0, 0.70, 0.46, 1.0)
+PRIMARY_TEXT_COLOR = (0.09, 0.09, 0.10, 1.0)
+QUIET_COLOR = (1.0, 1.0, 1.0, 0.08)
+QUIET_HOVER_COLOR = (1.0, 1.0, 1.0, 0.16)
 
 # A stroke on an older step is held back, and the warning fades in at the middle of the viewport
 # asking what to do: Keep Sculpting (the later steps are deleted and strokes go ahead), Yes, Don't
@@ -454,7 +639,7 @@ def _draw_warning(shader, region, s):
     lines = [
         [("The current active Undo History is not the latest one.", TEXT_COLOR)],
         [("Storing this action to the Undo History will remove ", TEXT_COLOR),
-         (later, KEYFRAME_COLOR),
+         (later, ACCENT),
          (" Undo History entries.", TEXT_COLOR)],
         [("Press 'Keep Sculpting' to continue or 'Cancel' to abort.", TEXT_COLOR)],
     ]
@@ -463,10 +648,9 @@ def _draw_warning(shader, region, s):
     gap = LINE_GAP * s
     line_h = cap + gap
     bh_ = BUTTON_H * s
-    buttons = [("CONTINUE", "Keep Sculpting", CONTINUE_COLOR, CONTINUE_HOVER_COLOR),
-               ("CONTINUE_SESSION", "Yes, Don't Ask Again", CONTINUE_COLOR,
-                CONTINUE_HOVER_COLOR),
-               ("CANCEL", "Cancel", CANCEL_COLOR, CANCEL_HOVER_COLOR)]
+    buttons = [("CONTINUE", "Keep Sculpting", PRIMARY_COLOR, PRIMARY_HOVER_COLOR),
+               ("CONTINUE_SESSION", "Yes, Don't Ask Again", QUIET_COLOR, QUIET_HOVER_COLOR),
+               ("CANCEL", "Cancel", QUIET_COLOR, QUIET_HOVER_COLOR)]
     widths = [max(BUTTON_W * s, blf.dimensions(0, label)[0] + pad)
               for _id, label, _c, _h in buttons]
     buttons_w = sum(widths) + gap * (len(buttons) - 1)
@@ -478,10 +662,8 @@ def _draw_warning(shader, region, s):
     grow = 0.94 + 0.06 * t
     cx, cy = region.width / 2, region.height / 2
     x0, y0 = cx - w * grow / 2, cy - h * grow / 2
-    b = 1 * s
-    _draw(shader, 'TRIS', _rect(x0 - b, y0 - b, w * grow + 2 * b, h * grow + 2 * b),
-          _faded(WARNING_BORDER_COLOR, t))
-    _draw(shader, 'TRIS', _rect(x0, y0, w * grow, h * grow), _faded((*BAR_COLOR[:3], 0.96), t))
+    _panel(shader, (x0, y0, w * grow, h * grow), CORNER * s, _faded((*BAR_COLOR[:3], 0.97), t),
+           _faded((1.0, 1.0, 1.0, 0.12), t))
     if t < 1.0:
         return
     y = y0 + h - pad - cap / 2
@@ -494,8 +676,10 @@ def _draw_warning(shader, region, s):
     x = x0 + w - pad - buttons_w
     for (identifier, label, color, hover_color), bw_ in zip(buttons, widths):
         brect = (x, y0 + pad, bw_, bh_)
-        _draw(shader, 'TRIS', _rect(*brect), hover_color if _hover == identifier else color)
-        _text(label, brect[0] + bw_ / 2, brect[1] + bh_ / 2, 'CENTER', 'MIDDLE', TEXT_COLOR)
+        _panel(shader, brect, BUTTON_CORNER * s, hover_color if _hover == identifier else color,
+               None)
+        _text(label, brect[0] + bw_ / 2, brect[1] + bh_ / 2, 'CENTER', 'MIDDLE',
+              PRIMARY_TEXT_COLOR if identifier == "CONTINUE" else TEXT_COLOR)
         _warning["buttons"].append((identifier, brect))
         x += bw_ + gap
 
@@ -517,32 +701,53 @@ def draw_callback():
     # The question is about one history state: once that changes (undo, scrub...), it's moot.
     if _warning["key"] is not None and _warning["key"] != _history_key(ob, history):
         _set_warning(False)
-    _draw(shader, 'TRIS', _rect(*lay.bar), BAR_COLOR)
+    _panel(shader, lay.bar, CORNER * s, BAR_COLOR)
     a, b = lay.track
     _draw(shader, 'TRIS', _across(lay, (a + b) / 2, abs(b - a) / 2, 1 * s), TRACK_COLOR)
 
+    scrubbing = _scrubbing(context)
     if count:
-        # One tick per step, fewer when they'd be under 3 pixels apart (keyframes always show).
+        if scrubbing:
+            _play_tick(history.current)
+        else:
+            _tick["step"] = None
+        # The knob glides to its step (the same easing as the bar's own moves).
+        knob = _ease(context.area, "KNOB_" + _settings["dock"],
+                     lay.step_pos(history.current, count), advance=True)
+        # The way to here, in the accent, like the simple view's ring sliders.
+        _draw(shader, 'TRIS', _across(lay, (a + knob) / 2, abs(knob - a) / 2, 1 * s), ACCENT)
+        # One notch per step, fewer when they'd be under 3 pixels apart, none (faded away) for a
+        # long history. Keyframes always show, as diamonds: told apart by their shape.
+        notch_alpha = _notch_alpha(count)
         stride = max(1, int(3 * s * (count - 1) / max(abs(b - a), 1)) + 1)
         ticks, keyframes = [], []
+        m = lay.mid()
         for i, step in enumerate(steps):
+            pos = lay.step_pos(i, count)
             if step.is_keyframe:
-                keyframes += _across(lay, lay.step_pos(i, count), 1 * s, (TICK + 3) * s)
-            elif i % stride == 0:
-                ticks += _across(lay, lay.step_pos(i, count), 0.5 * s, TICK * s)
+                keyframes += _diamond(m, pos, DIAMOND * s) if lay.vertical else _diamond(
+                    pos, m, DIAMOND * s)
+            elif i % stride == 0 and notch_alpha > 0.0:
+                ticks += _across(lay, pos, 0.5 * s, TICK * s)
         if ticks:
-            _draw(shader, 'TRIS', ticks, TICK_COLOR)
+            _draw(shader, 'TRIS', ticks, (*TICK_COLOR[:3], TICK_COLOR[3] * notch_alpha))
         if keyframes:
             _draw(shader, 'TRIS', keyframes, KEYFRAME_COLOR)
-        if isinstance(_hover, int) and _hover < count:
+        hovering = isinstance(_hover, int) and _hover < count
+        if hovering and _hover != history.current and not scrubbing:
+            # Where a click would go.
             _draw(shader, 'TRIS', _across(lay, lay.step_pos(_hover, count), 1 * s,
-                                          (THICKNESS / 2 - 2) * s), HOVER_COLOR)
-        _draw(shader, 'TRIS', _across(lay, lay.step_pos(history.current, count), 2.5 * s,
-                                      (THICKNESS / 2 - 2) * s), HANDLE_COLOR)
+                                          (THICKNESS / 2 - 6) * s), HOVER_COLOR)
+        # The knob grows while it is hovered or dragged.
+        r = (KNOB_ACTIVE if scrubbing or hovering else KNOB) * s
+        kx, ky = (m, knob) if lay.vertical else (knob, m)
+        _disc(shader, kx, ky, r + 1 * s, (0.0, 0.0, 0.0, 0.35))
+        _disc(shader, kx, ky, r, KNOB_COLOR)
 
     _text("Start", *lay.start_label, DIM_TEXT_COLOR)
     _text("End", *lay.end_label, DIM_TEXT_COLOR)
-    index = _hover if isinstance(_hover, int) and _hover < count else (
+    # The hovered step, except while dragging: then the step the mesh is at, under the knob.
+    index = _hover if isinstance(_hover, int) and _hover < count and not scrubbing else (
         history.current if count else 0)
     text, color = _status_text(context, history, index)
     _text(text, *lay.status, color)
@@ -601,7 +806,8 @@ class VIEW3D_OT_phantom_history_timeline_click(Operator):
             return {'FINISHED'}
         try:
             bpy.ops.sculpt.phantom_history_scrub(
-                'INVOKE_DEFAULT', start=lay.track[0], end=lay.track[1], vertical=lay.vertical)
+                'INVOKE_DEFAULT', start=lay.track[0], end=lay.last_pos(len(history.steps)),
+                vertical=lay.vertical)
         except RuntimeError as ex:
             self.report({'WARNING'}, str(ex).replace("Error: ", "").strip())
         return {'FINISHED'}

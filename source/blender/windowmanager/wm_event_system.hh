@@ -217,4 +217,10 @@ wm::OpCallContext wm_drop_operator_context_get(const wmDropBox *drop);
  */
 void wm_drags_draw(bContext *C, wmWindow *win);
 
+/**
+ * Phantom: whether an operator deletes something (it plays the delete sound when it finishes, so
+ * a confirmation for it plays none of its own).
+ */
+bool wm_operator_is_delete(const wmOperatorType *ot);
+
 }  // namespace blender

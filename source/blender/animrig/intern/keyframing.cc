@@ -89,6 +89,12 @@ void generate_single_keying_result_report(const SingleKeyingResult result, Repor
     case SingleKeyingResult::CANNOT_RESOLVE_PATH:
       BKE_reportf(reports, RPT_ERROR, "Invalid RNA path. Cannot insert key.");
       break;
+    case SingleKeyingResult::NLA_TRACK_LOCKED:
+      BKE_reportf(reports, RPT_ERROR, "The layer (NLA track) being keyed is locked.");
+      break;
+    case SingleKeyingResult::NLA_TRACK_MUTED:
+      BKE_reportf(reports, RPT_ERROR, "The layer (NLA track) being keyed is muted.");
+      break;
     case SingleKeyingResult::_KEYING_RESULT_MAX:
       break;
   }
@@ -220,6 +226,22 @@ void CombinedKeyingResult::generate_reports(ReportList *reports, const eReportTy
     errors.append(fmt::format(
         fmt::runtime(RPT_("Inserting keys on {:d} data-block(s) has been skipped because "
                           "of missing action slots.")),
+        error_count));
+  }
+
+  if (this->get_count(SingleKeyingResult::NLA_TRACK_LOCKED) > 0) {
+    const int error_count = this->get_count(SingleKeyingResult::NLA_TRACK_LOCKED);
+    errors.append(fmt::format(
+        fmt::runtime(RPT_("The layer (NLA track) being keyed is locked, so {:d} keyframe(s) have "
+                          "not been inserted.")),
+        error_count));
+  }
+
+  if (this->get_count(SingleKeyingResult::NLA_TRACK_MUTED) > 0) {
+    const int error_count = this->get_count(SingleKeyingResult::NLA_TRACK_MUTED);
+    errors.append(fmt::format(
+        fmt::runtime(RPT_("The layer (NLA track) being keyed is muted, so {:d} keyframe(s) have "
+                          "not been inserted.")),
         error_count));
   }
 
@@ -755,6 +777,19 @@ CombinedKeyingResult insert_keyframes(Main *bmain,
   if (const bAction *action = adt->action) {
     if (ID_IS_LINKED(action) || ID_IS_OVERRIDE_LIBRARY(action)) {
       combined_result.add(SingleKeyingResult::ID_NOT_EDITABLE, rna_paths.size());
+      return combined_result;
+    }
+  }
+
+  /* Phantom: animation layers. A locked layer is protected, and a key on a muted one can't be seen
+   * (it would also be solved against a stack that doesn't play that layer). */
+  if ((adt->flag & ADT_NLA_EDIT_ON) && adt->act_track) {
+    if (adt->act_track->flag & NLATRACK_PROTECTED) {
+      combined_result.add(SingleKeyingResult::NLA_TRACK_LOCKED, rna_paths.size());
+      return combined_result;
+    }
+    if (adt->act_track->flag & NLATRACK_MUTED) {
+      combined_result.add(SingleKeyingResult::NLA_TRACK_MUTED, rna_paths.size());
       return combined_result;
     }
   }

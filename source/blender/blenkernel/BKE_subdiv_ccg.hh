@@ -13,6 +13,7 @@
 #include "BLI_array.hh"
 #include "BLI_bit_group_vector.hh"
 #include "BLI_bit_span_ops.hh"
+#include "BLI_color_types.hh"
 #include "BLI_index_mask_fwd.hh"
 #include "BLI_offset_indices.hh"
 #include "BLI_ordered_edge.hh"
@@ -25,6 +26,7 @@
 
 namespace blender {
 
+struct GridPaintColor;
 struct Mesh;
 namespace bke::subdiv {
 struct Subdiv;
@@ -152,6 +154,11 @@ struct SubdivCCG : NonCopyable {
   Array<float3> normals;
   /** Optional mask values with the same indexing as #positions. */
   Array<float> masks;
+  /**
+   * Phantom: optional polypaint colors with the same indexing as #positions (8-bit sRGB, like
+   * byte color attributes). Stored in the base mesh's #CD_GRID_PAINT_COLOR layer.
+   */
+  Array<ColorGeometry4b> colors;
 
   /** Faces from which grids are emitted. Owned by base mesh. */
   OffsetIndices<int> faces;
@@ -196,6 +203,8 @@ struct SubdivCCG : NonCopyable {
     bool coords = false;
     /** Corresponds to MULTIRES_HIDDEN_MODIFIED. */
     bool hidden = false;
+    /** Phantom: #colors must be written to the base mesh. */
+    bool colors = false;
   } dirty;
 
   ~SubdivCCG();
@@ -230,6 +239,29 @@ Mesh *BKE_subdiv_to_ccg_mesh(bke::subdiv::Subdiv &subdiv,
 /** Create a key for accessing grid elements at a given level. */
 CCGKey BKE_subdiv_ccg_key(const SubdivCCG &subdiv_ccg, int level);
 CCGKey BKE_subdiv_ccg_key_top_level(const SubdivCCG &subdiv_ccg);
+
+/* -------------------------------------------------------------------- */
+/** \name Phantom: Multires Polypaint
+ *
+ * The colors are stored per grid in the base mesh's #CD_GRID_PAINT_COLOR layer, at the level they
+ * were painted at, and resampled to the level of the #SubdivCCG.
+ * \{ */
+
+/** Fill #SubdivCCG::colors from the mesh's grid colors, or clear them if it has none. */
+void BKE_subdiv_ccg_colors_from_mesh(SubdivCCG &subdiv_ccg, const Mesh &coarse_mesh);
+
+/**
+ * Write #SubdivCCG::colors into the mesh's grid colors, adding the layer if needed. Grids stored
+ * at a higher level than the CCG's (up to \a top_level, the Multires modifier's) get the change
+ * made at the CCG's level, interpolated, so their detail is kept. Clears
+ * #SubdivCCG::dirty.colors.
+ */
+void BKE_subdiv_ccg_colors_to_mesh(SubdivCCG &subdiv_ccg, Mesh &coarse_mesh, int top_level);
+
+/** Sample a stored grid at grid coordinates (0..1), bilinearly. White when the grid is empty. */
+ColorGeometry4b BKE_grid_paint_color_sample(const GridPaintColor &grid, float u, float v);
+
+/** \} */
 
 /** Recalculate all normals based on grid element coordinates. */
 void BKE_subdiv_ccg_recalc_normals(SubdivCCG &subdiv_ccg);

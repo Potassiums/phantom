@@ -1,0 +1,23 @@
+schema_version = "1.0.0"
+
+id = "anim_layers"
+version = "0.1.0"
+name = "Animation Layers"
+tagline = "Layer animation on top of your keys, with weight, mute, solo and lock"
+maintainer = "Phantom Authors"
+type = "add-on"
+
+tags = ["Animation"]
+
+# Needs Phantom's AnimData.use_tweak_mode_upper_stack and its locked / muted layer keying checks.
+blender_version_min = "5.4.0"
+
+# The layer model and math are based on Maya Workflow Kit for Blender by ohnsk
+# (https://github.com/5hyuns/maya-workflow-kit-for-blender, commit bd7ee04), GPL-3.0-or-later.
+license = [
+  "SPDX:GPL-3.0-or-later",
+]
+copyright = [
+  "2026 ohnsk",
+  "2026 Phantom Authors",
+]

@@ -38,21 +38,16 @@ import gpu
 from bpy.types import Operator, Panel
 from gpu_extras.batch import batch_for_shader
 
-# Unscaled pixels.
-BAR_HEIGHT = 28
-BAR_MARGIN = 14
-BUTTON_PAD_X = 12
-BUTTON_GAP = 2
-CORNER = 4
-TEXT_SIZE = 11
+# Unscaled pixels, on a 4 px grid. The bar has the simple sculpting view's look (its toolbars'
+# graphite, hairline, corners, button height and hover; see phantom_simple_view), here and in the
+# usual interface alike: the same bar in both.
+BAR_MARGIN = 12
+BUTTON_PAD_X = 16
+TEXT_SIZE = 12
 SLIDE = 12
 FADE_TIME = 0.16
-
-BAR_COLOR = (0.105, 0.105, 0.125, 0.92)
-OUTLINE_COLOR = (0.55, 0.55, 1.0, 0.35)   # Phantom periwinkle.
-HOVER_COLOR = (0.55, 0.55, 1.0, 0.28)
-TEXT_COLOR = (0.92, 0.92, 0.95)
-ACCENT_COLOR = (1.0, 0.62, 0.34)          # Phantom orange, for actions making new objects.
+# Actions making new objects get a small dot of the accent before their label.
+NEW_OBJECT_DOT = 3
 
 MASK = 'MASK'
 POLYGROUP = 'POLYGROUP'
@@ -385,33 +380,52 @@ def _bottom_inset(area, region):
             continue
         if other.height > 1 and other.y < region.y + region.height and other.y + other.height > region.y:
             inset = max(inset, other.y + other.height - region.y)
-    return inset
+    # The simple sculpting view's bottom toolbar.
+    import phantom_simple_view
+    return max(inset, phantom_simple_view.bottom_reserve(area, region))
 
 
 def _text_size():
     return TEXT_SIZE * _ui_scale()
 
 
+def bar_height():
+    """The bar's height (scaled), for what keeps clear of it."""
+    import phantom_simple_view as sv
+    return (sv.ITEM + 2 * sv.BAR_PAD) * _ui_scale()
+
+
 def bar_layout(area, region, bar=None):
-    """The bar's rectangle and its buttons as ``(identifier, label, x, y, w, h)``."""
+    """The bar's rectangle and its buttons as ``(identifier, label, x, y, w, h)``: the actions as
+    text buttons, then (after a divider, ``divider`` its x) square + and x buttons."""
+    import phantom_simple_view as sv
     bar = bar or _shown_bar or MASK
     s = _ui_scale()
     blf.size(0, _text_size())
-    items = [(action.identifier, action.label) for action in shown_actions(bar)]
-    items.append((CUSTOMIZE, "+"))
-    if bar == POLYGROUP:
-        items.append((DISMISS, "×"))
-    widths = [blf.dimensions(0, label)[0] + 2 * BUTTON_PAD_X * s for _id, label in items]
-    h = BAR_HEIGHT * s
-    w = sum(widths) + BUTTON_GAP * s * (len(items) + 1)
+    actions = [(action.identifier, action.label) for action in shown_actions(bar)]
+    tools = [(CUSTOMIZE, "")] + ([(DISMISS, "")] if bar == POLYGROUP else [])
+    pad, gap, item = sv.BAR_PAD * s, sv.ITEM_GAP * s, sv.ITEM * s
+    widths = [blf.dimensions(0, label)[0] + 2 * BUTTON_PAD_X * s +
+              (2 * NEW_OBJECT_DOT + 6) * s * bool(_action(bar, identifier).accent)
+              for identifier, label in actions]
+    w = 2 * pad + sum(widths) + gap * max(0, len(actions) - 1)
+    w += (2 * gap if actions else 0) + len(tools) * item + gap * (len(tools) - 1)
+    h = bar_height()
     x = round((region.width - w) / 2)
     y = round(_bottom_inset(area, region) + BAR_MARGIN * s - (1.0 - _alpha) * SLIDE * s)
     buttons = []
-    bx = x + BUTTON_GAP * s
-    for (identifier, label), bw in zip(items, widths):
-        buttons.append((identifier, label, bx, y + BUTTON_GAP * s, bw, h - 2 * BUTTON_GAP * s))
-        bx += bw + BUTTON_GAP * s
-    return (x, y, w, h), buttons
+    bx = x + pad
+    for (identifier, label), bw in zip(actions, widths):
+        buttons.append((identifier, label, bx, y + pad, bw, item))
+        bx += bw + gap
+    divider = None
+    if actions:
+        divider = bx
+        bx += gap
+    for identifier, label in tools:
+        buttons.append((identifier, label, bx, y + pad, item, item))
+        bx += item + gap
+    return (x, y, w, h), buttons, divider
 
 
 def _hit(rect, mx, my):
@@ -420,7 +434,7 @@ def _hit(rect, mx, my):
 
 
 def _button_at(area, region, mx, my):
-    bar, buttons = bar_layout(area, region)
+    bar, buttons, _divider = bar_layout(area, region)
     if not _hit(bar, mx, my):
         return None, False
     for identifier, _label, x, y, w, h in buttons:
@@ -435,23 +449,6 @@ def _action(bar, identifier):
 
 # -----------------------------------------------------------------------------
 # Drawing
-
-def _rounded_rect(x, y, w, h, r, segments=6):
-    """Triangles and outline of a rounded rectangle (a fan around its center)."""
-    r = min(r, w / 2, h / 2)
-    corners = ((x + w - r, y + h - r, 0.0), (x + r, y + h - r, 0.5 * math.pi),
-               (x + r, y + r, math.pi), (x + w - r, y + r, 1.5 * math.pi))
-    outline = []
-    for cx, cy, start in corners:
-        for i in range(segments + 1):
-            a = start + 0.5 * math.pi * i / segments
-            outline.append((cx + r * math.cos(a), cy + r * math.sin(a)))
-    center = (x + w / 2, y + h / 2)
-    tris = []
-    for i in range(len(outline)):
-        tris += (center, outline[i], outline[(i + 1) % len(outline)])
-    return tris, outline
-
 
 def _draw_shape(shader, kind, coords, color):
     if kind == 'LINE_LOOP':
@@ -481,16 +478,21 @@ def draw_callback():
     if region is None or _alpha <= 0.001 or state is None or _shown_bar is None:
         return
 
+    import phantom_simple_view as sv
     s = _ui_scale()
-    rect, buttons = bar_layout(context.area, region)
-    shader = gpu.shader.from_builtin('UNIFORM_COLOR')
+    rect, buttons, divider = bar_layout(context.area, region)
     gpu.state.blend_set('ALPHA')
+    a = _alpha
 
-    tris, outline = _rounded_rect(*rect, CORNER * s)
-    _draw_shape(shader, 'TRIS', tris, (*BAR_COLOR[:3], BAR_COLOR[3] * _alpha))
-    gpu.state.line_width_set(max(1.0, s))
-    _draw_shape(shader, 'LINE_LOOP', outline, (*OUTLINE_COLOR[:3], OUTLINE_COLOR[3] * _alpha))
-    gpu.state.line_width_set(1.0)
+    def faded(color, k=1.0):
+        return (*color[:3], color[3] * a * k)
+
+    outline = sv._rounded_rect(*rect, sv.BAR_CORNER * s, faded(sv.BAR_COLOR))
+    sv._outline(outline, faded(sv.OUTLINE_COLOR))
+    if divider is not None:
+        _x, y, _w, h = rect
+        dx = divider + sv.ITEM_GAP * s / 2
+        sv._line(dx, y + h * 0.3, dx, y + h * 0.7, faded(sv.DIVIDER_COLOR))
 
     blf.size(0, _text_size())
     # Center labels on the height of capitals, not on descenders.
@@ -499,12 +501,21 @@ def draw_callback():
         action = _action(_shown_bar, identifier)
         on = action is None or _available(action, state, context)
         if on and identifier == _hover:
-            tris, _outline = _rounded_rect(x, y, w, h, (CORNER - BUTTON_GAP) * s)
-            _draw_shape(shader, 'TRIS', tris, (*HOVER_COLOR[:3], HOVER_COLOR[3] * _alpha))
-        color = ACCENT_COLOR if action and action.accent else TEXT_COLOR
+            sv._rounded_rect(x, y, w, h, 8 * s, faded(sv.HOVER_COLOR))
+        k = 1.0 if on else 0.4
+        if identifier in {CUSTOMIZE, DISMISS}:
+            sv._draw_icon('ADD' if identifier == CUSTOMIZE else 'X', x + w / 2, y + h / 2,
+                          sv.ICON_SIZE * s, 0.85 * a * k)
+            continue
         text_w = blf.dimensions(0, label)[0]
-        blf.position(0, round(x + (w - text_w) / 2), round(y + (h - cap_h) / 2), 0)
-        blf.color(0, *color, _alpha * (1.0 if on else 0.35))
+        tx = x + (w - text_w) / 2
+        if action is not None and action.accent:
+            # Makes a new object: a small dot of the accent before the label.
+            dot = NEW_OBJECT_DOT * s
+            tx += dot + 3 * s
+            sv._disc(tx - 6 * s - dot, y + h / 2, dot, faded(sv.ACCENT, k))
+        blf.position(0, round(tx), round(y + (h - cap_h) / 2), 0)
+        blf.color(0, *sv.TEXT_COLOR[:3], sv.TEXT_COLOR[3] * a * k)
         blf.draw(0, label)
 
     gpu.state.blend_set('NONE')

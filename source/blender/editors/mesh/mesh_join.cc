@@ -733,6 +733,24 @@ wmOperatorStatus join_objects_exec(bContext *C, wmOperator *op)
         }
       }
     }
+    /* Phantom: Multires polypaint. */
+    if (std::any_of(objects_to_join.begin(),
+                    objects_to_join.end(),
+                    [](const Object *object) {
+                      const Mesh &src_mesh = *id_cast<const Mesh *>(object->data);
+                      return CustomData_has_layer(&src_mesh.corner_data, CD_GRID_PAINT_COLOR);
+                    }))
+    {
+      GridPaintColor *dst = static_cast<GridPaintColor *>(CustomData_add_layer(
+          &dst_mesh->corner_data, CD_GRID_PAINT_COLOR, CD_CONSTRUCT, dst_mesh->corners_num));
+      for (const int i : objects_to_join.index_range()) {
+        const Mesh &src_mesh = *id_cast<const Mesh *>(objects_to_join[i]->data);
+        if (const void *src = CustomData_get_layer(&src_mesh.corner_data, CD_GRID_PAINT_COLOR)) {
+          CustomData_copy_elements(
+              CD_GRID_PAINT_COLOR, src, &dst[corner_ranges[i].first()], src_mesh.corners_num);
+        }
+      }
+    }
   }
 
   BKE_mesh_nomain_to_mesh(dst_mesh, active_mesh, active_object, false);

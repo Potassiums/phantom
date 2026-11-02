@@ -1758,12 +1758,21 @@ static void object_update_from_subsurf_ccg(Object *object)
     return;
   }
   /* Check whether there is anything to be reshaped. */
-  if (!subdiv_ccg->dirty.coords && !subdiv_ccg->dirty.hidden) {
+  if (!subdiv_ccg->dirty.coords && !subdiv_ccg->dirty.hidden && !subdiv_ccg->dirty.colors) {
     return;
   }
   const int tot_level = mesh_eval->runtime->subdiv_ccg_tot_level;
   Object *object_orig = DEG_get_original(object);
   Mesh *mesh_orig = id_cast<Mesh *>(object_orig->data);
+  Mesh *mesh_cow = id_cast<Mesh *>(object->runtime->data_orig);
+  /* Phantom: polypaint, without the reshape when only the colors changed. */
+  if (subdiv_ccg->dirty.colors) {
+    BKE_subdiv_ccg_colors_to_mesh(*subdiv_ccg, *mesh_orig, tot_level);
+    copy_ccg_data(mesh_cow, mesh_orig, CD_GRID_PAINT_COLOR);
+  }
+  if (!subdiv_ccg->dirty.coords && !subdiv_ccg->dirty.hidden) {
+    return;
+  }
   multiresModifier_reshapeFromCCG(tot_level, mesh_orig, subdiv_ccg);
   /* NOTE: we need to reshape into an original mesh from main database,
    * allowing:
@@ -1798,7 +1807,6 @@ static void object_update_from_subsurf_ccg(Object *object)
    *
    * mesh_cow is a copy-on-written version of `object_orig->data`.
    */
-  Mesh *mesh_cow = id_cast<Mesh *>(object->runtime->data_orig);
   copy_ccg_data(mesh_cow, mesh_orig, CD_MDISPS);
   copy_ccg_data(mesh_cow, mesh_orig, CD_GRID_PAINT_MASK);
   /* Everything is now up-to-date. */

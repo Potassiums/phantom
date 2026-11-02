@@ -1284,6 +1284,17 @@ static bool wm_operator_register_check(wmWindowManager *wm, wmOperatorType *ot)
  * needed when the operator doesn't use #OPTYPE_UNDO, #OPTYPE_UNDO_GROUPED but adds an undo step.
  * \param has_register: True when an operator was registered.
  */
+/* Phantom: deleting characters while typing is left out: it has the typing sound. */
+bool wm_operator_is_delete(const wmOperatorType *ot)
+{
+  const char *name = strstr(ot->idname, "_OT_");
+  if (name == nullptr || strstr(name, "delete") == nullptr) {
+    return false;
+  }
+  return !STR_ELEM(
+      ot->idname, "CONSOLE_OT_delete", "TEXT_OT_delete", "FONT_OT_delete", "SEQUENCER_OT_text_delete");
+}
+
 static void wm_operator_finished(bContext *C,
                                  wmOperator *op,
                                  const bool repeat,
@@ -1303,6 +1314,11 @@ static void wm_operator_finished(bContext *C,
 
   if (store) {
     WM_operator_last_properties_store(op);
+  }
+
+  /* Phantom: a delete started by the user (not one run by another operator). */
+  if (!repeat && wm->op_undo_depth == 0 && wm_operator_is_delete(op->type)) {
+    WM_ui_sound_play(WMUISound::Delete);
   }
 
   /* We don't want to do undo pushes for operators that are being
@@ -2684,8 +2700,10 @@ static void wm_operator_modal_ui_sound(const wmOperatorType *ot, const wmOperato
   const char *idname = ot->idname;
   if (strstr(idname, "stroke") || strstr(idname, "select") || STRPREFIX(idname, "PAINT_OT_") ||
       STRPREFIX(idname, "SCULPT_OT_") || STRPREFIX(idname, "SCULPT_CURVES_OT_") ||
-      STRPREFIX(idname, "GREASE_PENCIL_OT_") || STREQ(idname, "OBJECT_OT_voxel_size_edit"))
+      STRPREFIX(idname, "GREASE_PENCIL_OT_") || STREQ(idname, "OBJECT_OT_voxel_size_edit") ||
+      wm_operator_is_delete(ot))
   {
+    /* (A delete plays the delete sound when it finishes, see #wm_operator_finished.) */
     /* Voxel size edit plays its own soft confirm/cancel (it "finishes" on cancel too). */
     return;
   }

@@ -659,6 +659,81 @@ static void mask_by_color_full_mesh(const Depsgraph &depsgraph,
       });
 }
 
+/** Phantom: Multires polypaint, \a vert indexes all grid vertices. */
+static void mask_by_color_grids(Main &bmain,
+                                const Scene &scene,
+                                Depsgraph &depsgraph,
+                                Object &object,
+                                const int vert,
+                                const float threshold,
+                                const bool invert,
+                                const bool preserve_mask,
+                                const bool contiguous)
+{
+  MultiresModifierData &mmd = *BKE_sculpt_multires_active(&scene, &object);
+  BKE_sculpt_mask_layers_ensure(&depsgraph, &bmain, &object, &mmd);
+  color::ensure_grid_colors(object);
+
+  /* Adding the mask layer can rebuild the PBVH, so take its data only now. */
+  SculptSession &ss = *object.runtime->sculpt_session;
+  bke::pbvh::Tree &pbvh = *bke::object::pbvh_get(object);
+  SubdivCCG &subdiv_ccg = *ss.subdiv_ccg;
+  const CCGKey key = BKE_subdiv_ccg_key_top_level(subdiv_ccg);
+  const float4 active_color = color::color_grids_get(subdiv_ccg, vert);
+
+  Array<float> new_mask;
+  if (contiguous) {
+    new_mask = Array<float>(subdiv_ccg.positions.size(), invert ? 1.0f : 0.0f);
+    flood_fill::FillDataGrids flood(subdiv_ccg.positions.size());
+    flood.add_initial(SubdivCCGCoord::from_index(key, vert));
+    flood.execute(
+        object,
+        subdiv_ccg,
+        [&](const SubdivCCGCoord /*from_v*/, const SubdivCCGCoord to_v, const bool /*is_dup*/) {
+          const int to_index = to_v.to_index(key);
+          const float4 current_color = color::color_grids_get(subdiv_ccg, to_index);
+          new_mask[to_index] = color_delta_get(
+              current_color.xyz(), active_color.xyz(), threshold, invert);
+
+          float len = math::distance(current_color.xyz(), active_color.xyz());
+          len = len / std::numbers::sqrt3_v<float>;
+          return len <= threshold;
+        });
+  }
+
+  IndexMaskMemory memory;
+  const IndexMask node_mask = bke::pbvh::all_leaf_nodes(pbvh, memory);
+  undo::push_nodes(depsgraph, object, node_mask, undo::Type::Mask);
+
+  MutableSpan<bke::pbvh::GridsNode> nodes = pbvh.nodes<bke::pbvh::GridsNode>();
+  MutableSpan<float> masks = subdiv_ccg.masks;
+  const BitGroupVector<> &grid_hidden = subdiv_ccg.grid_hidden;
+  node_mask.foreach_index(
+      [&](const int i) {
+        for (const int grid : nodes[i].grids()) {
+          const IndexRange range = bke::ccg::grid_range(key, grid);
+          for (const int j : IndexRange(key.grid_area)) {
+            if (!grid_hidden.is_empty() && grid_hidden[grid][j]) {
+              continue;
+            }
+            const int index = range[j];
+            const float mask = contiguous ?
+                                   new_mask[index] :
+                                   color_delta_get(active_color.xyz(),
+                                                   color::color_grids_get(subdiv_ccg, index).xyz(),
+                                                   threshold,
+                                                   invert);
+            masks[index] = final_mask_get(masks[index], mask, invert, preserve_mask);
+          }
+        }
+        bke::pbvh::node_update_mask_grids(key, masks, nodes[i]);
+      },
+      exec_mode::grain_size(1));
+  pbvh.tag_masks_changed(node_mask);
+
+  multires_mark_as_modified(&depsgraph, &object, MULTIRES_COORDS_MODIFIED);
+}
+
 static wmOperatorStatus mask_by_color(bContext *C, wmOperator *op, const float2 region_location)
 {
   const Scene &scene = *CTX_data_scene(C);
@@ -703,7 +778,18 @@ static wmOperatorStatus mask_by_color(bContext *C, wmOperator *op, const float2 
   const bool preserve_mask = RNA_boolean_get(op->ptr, "preserve_previous_mask");
 
   const int active_vert = std::get<int>(ss.active_vert());
-  if (RNA_boolean_get(op->ptr, "contiguous")) {
+  if (bke::object::pbvh_get(ob)->type() == bke::pbvh::Type::Grids) {
+    mask_by_color_grids(*CTX_data_main(C),
+                        scene,
+                        *depsgraph,
+                        ob,
+                        active_vert,
+                        threshold,
+                        invert,
+                        preserve_mask,
+                        RNA_boolean_get(op->ptr, "contiguous"));
+  }
+  else if (RNA_boolean_get(op->ptr, "contiguous")) {
     mask_by_color_contiguous_mesh(*depsgraph, ob, active_vert, threshold, invert, preserve_mask);
   }
   else {

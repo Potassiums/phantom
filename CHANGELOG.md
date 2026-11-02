@@ -4,6 +4,84 @@ Phantom is a fork of Blender tuned for sculpting. This file lists what Phantom c
 own changes come from the Blender version each release is built on.
 
 
+## 0.5.0 alpha (2026-11-02)
+
+Built on Blender 5.4 alpha, on top of 0.4.4. A big update: a simple sculpting view laid out like
+ZBrush for iPad, polypaint on Multires, much faster sculpting of dense meshes, ZBrush files that
+open right, and animation layers. Polypaint on Multires, animation layers and the sculpt history
+are **experimental**.
+
+### Simple sculpting view
+
+- **Shift+Tab in Sculpt Mode** (or **Simple** in the 3D View header) swaps the usual interface for
+  a canvas-first one laid out like ZBrush for iPad: the 3D View takes the window, with a top bar
+  (Home = the File menu, Swap back, Save, Import, Export, Undo History, Settings), a left toolbar,
+  a right toolbar and a bottom one. Phantom opens Sculpt Mode in the view used last.
+- **Left toolbar:** Tools (every Sculpt Mode tool by kind, and the brush library), stroke, alpha
+  and texture, the matcap and the colors, then rings for RGB Intensity, Focal Shift, Draw Size
+  and Z Intensity: drag a ring for its slider, click it for the same slider with its options
+  (Add/Sub, Pressure, View/Scene), right-click it for the Quick Menu. Undo and Redo under them.
+- **Color card:** a hue ring around a square or a triangle, hue/saturation/value sliders,
+  primary/secondary and swap, an eyedropper, swatches (the sculpt palette) and **Fill Object**.
+- **Materials card:** the matcaps in a grid by kind, with a search field; right-click one to
+  star it.
+- **Right toolbar:** Palettes, **Scene** (the meshes in it: + adds a primitive and places it with a
+  gizmo, then Accept or Cancel; a trash can deletes a mesh after asking), Render, Perspective,
+  Floor, Symmetry, Frame, PolyFrame, Transparency and Solo.
+- **Bottom toolbar:** the quick brushes (+ slides in a strip of every brush with thumbnails),
+  Move/Transpose, Remesh, Dyntopo, Quad Remesh and Divide.
+- Menus and popups open beside the toolbars, not over them, in the toolbars' own style. The
+  mask and polygroup action bars, the history bar, the start picker and the silhouette thumbnail
+  (now a rounded box) follow the same look.
+
+### Sculpting
+
+- **Polypaint on Multires (experimental):** Paint, Smear and Blur, the Color Filter (and Fill
+  Object), Sample Color and Mask by Color now work on meshes with a Multires modifier, at the
+  resolution of the level being sculpted, with undo. The colors are saved with the Multires data
+  (older versions of Phantom drop them), stay at the level they were painted at, and painting a
+  lower level keeps the detail painted higher up. Object Mode shows them, and applying the
+  modifier bakes them into the color attribute. Expand doesn't paint colors on Multires yet.
+- **Faster sculpting of dense meshes:** meshes share vertices between faces when drawn and are
+  shaded flat like ZBrush, back-facing parts are skipped, one draw call per mesh, lighter uploads
+  (Vulkan), and the polygroup/mask tints no longer redraw everything. Fast Navigate can show a
+  coarse copy of plain meshes too (**Meshes Too**, off by default).
+- **Multires:** **Delete Lower** (like ZBrush's Del Lower: the sculpted level becomes the base
+  mesh), and **Divide** to very high counts is about 5 times faster (100M faces: 54 s to 11 s,
+  peak memory 24 to 10 GB). Object Mode shows at most about 33M faces of a Multires, so 100M
+  meshes no longer break there.
+- **Ctrl+Z in Sculpt Mode keeps to the mesh being sculpted:** it steps back through that mesh's
+  own history and never jumps to another object or out of Sculpt Mode.
+- **Sculpt history (experimental):** recording is about 3 times faster at 20M; jumps switch
+  Multires levels; the history bar is restyled (one orange track, a knob that glides, notches up
+  to 25 steps) and stays clear of the toolbars and the thumbnail.
+- **Transpose** keeps its line when switching Move/Rotate/Scale, and takes the mode's color.
+- Fix: Mask Init on Multires lost its mask when leaving Sculpt Mode.
+
+### Files
+
+- **ZBrush files open right:** meshes no longer come in broken (wrong points paired with faces),
+  ZBrush's undo history is no longer imported as extra subtools, and **subdivision levels come in
+  as Multires levels** with their detail. About 4 times faster (an 840 MB file: 96 s to 24 s).
+- **Maya scenes:** File > Import / Export > Maya Scene (.ma natively; .mb through a local Maya),
+  bundled.
+
+### Animation
+
+- **Animation layers (experimental):** a bundled extension, ported from the Maya Workflow Kit
+  (credit ohnsk / 5hyuns): a Base layer and layers that add or override, with weights, lock and
+  mute, Merge Down, Bake to Base, layer colors and their curves in the Graph Editor. Keys go on
+  the active layer.
+
+### Also
+
+- **Theme:** the blue tint is gone; fills, selection and highlights are Phantom orange.
+  Existing settings are updated (only colors still at the old defaults change).
+- **Sounds:** deleting plays a short whoosh (the paper crumple stays for the start picker's file
+  delete), only for deletes you start.
+- **Silhouette** can show outside Sculpt Mode too (by Dioinecail).
+
+
 ## 0.4.4 alpha (2026-10-27)
 
 Built on Blender 5.4 alpha, on top of 0.4.3. An incremental update: the start picker, .blend

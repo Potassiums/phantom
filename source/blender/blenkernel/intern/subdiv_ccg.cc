@@ -427,6 +427,7 @@ Mesh *BKE_subdiv_to_ccg_mesh(Subdiv &subdiv,
   if (!subdiv_ccg) {
     return nullptr;
   }
+  BKE_subdiv_ccg_colors_from_mesh(*subdiv_ccg, coarse_mesh);
   Mesh *result = BKE_mesh_copy_for_eval(coarse_mesh);
   result->runtime->subdiv_ccg = std::move(subdiv_ccg);
   return result;

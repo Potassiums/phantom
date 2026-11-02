@@ -270,6 +270,10 @@ template void average_data_grids<float3>(const SubdivCCG &,
                                          Span<float3>,
                                          Span<int>,
                                          MutableSpan<float3>);
+template void average_data_grids<float4>(const SubdivCCG &,
+                                         Span<float4>,
+                                         Span<int>,
+                                         MutableSpan<float4>);
 template void average_data_bmesh<float>(Span<float> src,
                                         const Set<BMVert *, 0> &,
                                         MutableSpan<float>);

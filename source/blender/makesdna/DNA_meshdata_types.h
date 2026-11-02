@@ -249,6 +249,20 @@ struct GridPaintMask {
   char _pad[4];
 };
 
+/**
+ * Phantom: Multires polypaint, the colors of one grid (#CD_GRID_PAINT_COLOR).
+ * Like #GridPaintMask, but the grids keep the level they were painted at.
+ */
+struct GridPaintColor {
+  /** `grid_size * grid_size` sRGB colors, `grid_size = (1 << (level - 1)) + 1`. */
+  MLoopCol *data;
+
+  /** The multires level the colors were painted at. */
+  unsigned int level;
+
+  char _pad[4];
+};
+
 /** \} */
 
 /* -------------------------------------------------------------------- */

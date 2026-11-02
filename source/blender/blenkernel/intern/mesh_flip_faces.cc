@@ -66,6 +66,7 @@ void mesh_flip_faces(Mesh &mesh, const IndexMask &selection)
 
   flip_custom_data_type<float4>(faces, mesh.corner_data, selection, CD_MLOOPTANGENT);
   flip_custom_data_type<GridPaintMask>(faces, mesh.corner_data, selection, CD_GRID_PAINT_MASK);
+  flip_custom_data_type<GridPaintColor>(faces, mesh.corner_data, selection, CD_GRID_PAINT_COLOR);
   flip_custom_data_type<OrigSpaceLoop>(faces, mesh.corner_data, selection, CD_ORIGSPACE_MLOOP);
   flip_custom_data_type<MDisps>(faces, mesh.corner_data, selection, CD_MDISPS);
   if (MDisps *mdisp = static_cast<MDisps *>(

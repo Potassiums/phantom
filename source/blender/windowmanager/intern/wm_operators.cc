@@ -1502,7 +1502,10 @@ static void dialog_exec_cb(bContext *C, wmOpPopUp *data, ui::Block *block)
    * in case WM_operator_call_ex exits/reloads the current file (#49199). */
 
   popup_menu_retval_set(block, ui::RETURN_OK, true);
-  WM_ui_sound_play(WMUISound::Confirm);
+  /* Phantom: a delete plays its own sound when it finishes, alone. */
+  if (!wm_operator_is_delete(op->type)) {
+    WM_ui_sound_play(WMUISound::Confirm);
+  }
 
   /* Get context data *after* WM_operator_call_ex
    * which might have closed the current file and changed context. */
