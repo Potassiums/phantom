@@ -747,6 +747,16 @@ static void rna_userdef_script_autoexec_update(Main * /*bmain*/,
   USERDEF_TAG_DIRTY;
 }
 
+/* Phantom: the head is drawn by the interactive navigation gizmo, which turning it on shows. */
+static void rna_userdef_navigate_head_set(PointerRNA *ptr, bool value)
+{
+  UserDef *userdef = static_cast<UserDef *>(ptr->data);
+  userdef->navigate_head = value;
+  if (value) {
+    userdef->mini_axis_type = USER_MINI_AXIS_TYPE_GIZMO;
+  }
+}
+
 static void rna_userdef_use_online_access_set(PointerRNA *ptr, bool value)
 {
   /* A `set` function is needed to clear the override flags. */
@@ -5647,6 +5657,17 @@ static void rna_def_userdef_view(BlenderRNA *brna)
   RNA_def_property_ui_text(prop, "Navigate Gizmo Size", "The Navigate Gizmo size");
   RNA_def_property_update(prop, 0, "rna_userdef_gizmo_update");
 
+  /* Phantom. */
+  prop = RNA_def_property(srna, "show_navigate_head", PROP_BOOLEAN, PROP_NONE);
+  RNA_def_property_boolean_sdna(prop, nullptr, "navigate_head", 1);
+  RNA_def_property_boolean_funcs(prop, nullptr, "rna_userdef_navigate_head_set");
+  RNA_def_property_ui_text(prop,
+                           "Head",
+                           "Show a planar head turning with the view in the navigation gizmo, "
+                           "instead of the axes. Drag it to orbit, click a side of it to view "
+                           "from that side");
+  RNA_def_property_update(prop, 0, "rna_userdef_gizmo_update");
+
   /* Lookdev */
   prop = RNA_def_property(srna, "lookdev_sphere_size", PROP_INT, PROP_PIXEL);
   RNA_def_property_int_sdna(prop, nullptr, "lookdev_sphere_size");
@@ -8438,12 +8459,13 @@ void RNA_def_userdef(BlenderRNA *brna)
   RNA_def_property_ui_text(prop, "Dirty", "Preferences have changed");
   RNA_def_property_update(prop, 0, "rna_userdef_ui_update");
 
-  /* Phantom: remember brush settings between sessions. */
+  /* Phantom: the silhouette thumbnail in every mode, or only in Sculpt Mode. */
   prop = RNA_def_property(srna, "show_silhouette_always", PROP_BOOLEAN, PROP_NONE);
   RNA_def_property_boolean_negative_sdna(prop, nullptr, "show_silhouette_always_disabled", 1);
   RNA_def_property_ui_text(prop,
-                           "Silhouette Toggle Always Enabled",
-                           "Silhouette Toggle (Ghost icon) is going to be always present, allowing you to show Silhouette Preview if desired");
+                           "Silhouette in Every Mode",
+                           "Show the silhouette thumbnail (and its ghost toggle in the 3D View "
+                           "header) in every mode, not only in Sculpt Mode");
   RNA_def_property_update(prop, 0, "rna_userdef_update");
 
   rna_def_userdef_view(brna);

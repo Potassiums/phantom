@@ -233,6 +233,12 @@ void VIEW3D_OT_ruler_remove(wmOperatorType *ot);
 
 void VIEW3D_GT_navigate_rotate(wmGizmoType *gzt);
 
+/* view3d_gizmo_navigate_head_data.cc (Phantom: the navigation gizmo's head). */
+extern const int view3d_navigate_head_verts_num;
+extern const int view3d_navigate_head_tris_num;
+extern const short view3d_navigate_head_verts[][3];
+extern const unsigned short view3d_navigate_head_tris[][3];
+
 void VIEW3D_GGT_placement(wmGizmoGroupType *gzgt);
 
 /* workaround for trivial but noticeable camera bug caused by imprecision

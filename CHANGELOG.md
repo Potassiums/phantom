@@ -15,24 +15,36 @@ are **experimental**.
 
 - **Shift+Tab in Sculpt Mode** (or **Simple** in the 3D View header) swaps the usual interface for
   a canvas-first one laid out like ZBrush for iPad: the 3D View takes the window, with a top bar
-  (Home = the File menu, Swap back, Save, Import, Export, Undo History, Settings), a left toolbar,
-  a right toolbar and a bottom one. Phantom opens Sculpt Mode in the view used last.
+  (Home = the File menu, Swap back, Save, Import, Export, the file's name in the middle,
+  **Symmetry X/Y/Z** with its options, History with all its settings, Customize, Help,
+  Settings), a left toolbar, a right toolbar and a bottom one. Phantom opens Sculpt Mode in the
+  view used last, and Ctrl+Tab to another mode and back always returns to it.
 - **Left toolbar:** Tools (every Sculpt Mode tool by kind, and the brush library), stroke, alpha
   and texture, the matcap and the colors, then rings for RGB Intensity, Focal Shift, Draw Size
-  and Z Intensity: drag a ring for its slider, click it for the same slider with its options
-  (Add/Sub, Pressure, View/Scene), right-click it for the Quick Menu. Undo and Redo under them.
+  and Add/Sub: drag a ring for its slider, click it for a card with the value on top, a pen
+  pressure square, the slider and its options (Add and Sub; Scene size for Draw Size, with a
+  tooltip), right-click it for the Quick Menu. Undo and Redo under them.
 - **Color card:** a hue ring around a square or a triangle, hue/saturation/value sliders,
   primary/secondary and swap, an eyedropper, swatches (the sculpt palette) and **Fill Object**.
+  **Pin** it to keep it open while sculpting (it reopens with the view).
 - **Materials card:** the matcaps in a grid by kind, with a search field; right-click one to
   star it.
-- **Right toolbar:** Palettes, **Scene** (the meshes in it: + adds a primitive and places it with a
-  gizmo, then Accept or Cancel; a trash can deletes a mesh after asking), Render, Perspective,
-  Floor, Symmetry, Frame, PolyFrame, Transparency and Solo.
+- **Right toolbar:** Palettes, **Scene**, Render, Perspective, Floor (the limited grid by default
+  here, on and off), Frame, PolyFrame, Transparency and Solo.
+- **Scene window:** your meshes and folders as one list (folders open and close with an arrow,
+  their meshes a step in; each row has its eye), a header to add a primitive (placed with a
+  gizmo, then Accept or Cancel), duplicate, make a folder (it asks for a name) and more
+  (Rename..., Show All, Hide Others, Delete). Right-click a row to rename or delete it, or press
+  Delete over it. **Actions:** Add Modifier, Split to Parts, Split Hidden, Merge Down, Merge
+  Visible, Boolean (Union, Difference, Intersect with the mesh below), Center, On Floor.
 - **Bottom toolbar:** the quick brushes (+ slides in a strip of every brush with thumbnails),
   Move/Transpose, Remesh, Dyntopo, Quad Remesh and Divide.
 - Menus and popups open beside the toolbars, not over them, in the toolbars' own style. The
-  mask and polygroup action bars, the history bar, the start picker and the silhouette thumbnail
-  (now a rounded box) follow the same look.
+  mask and polygroup action bars, the Extract panel, the history bar, the start picker (now
+  **Open File...** and **Open Project**) and the silhouette thumbnail (now a rounded box) follow
+  the same look.
+- **Head navigation gizmo:** a planar head in the corner that turns with the view instead of the
+  axis ball (drag to orbit, click a side to snap), in Customize and Preferences.
 
 ### Sculpting
 
@@ -56,6 +68,9 @@ are **experimental**.
   Multires levels; the history bar is restyled (one orange track, a knob that glides, notches up
   to 25 steps) and stays clear of the toolbars and the thumbnail.
 - **Transpose** keeps its line when switching Move/Rotate/Scale, and takes the mode's color.
+- **Extract Smoothness** goes from 0 (the stepped edge of the masked faces) to 1 (a smooth
+  outline, kept on the sculpt's surface), like ZBrush's.
+- **Ctrl+W** makes a polygroup from the mask without switching the polygroup colors on.
 - Fix: Mask Init on Multires lost its mask when leaving Sculpt Mode.
 
 ### Files
@@ -77,9 +92,10 @@ are **experimental**.
 
 - **Theme:** the blue tint is gone; fills, selection and highlights are Phantom orange.
   Existing settings are updated (only colors still at the old defaults change).
-- **Sounds:** deleting plays a short whoosh (the paper crumple stays for the start picker's file
-  delete), only for deletes you start.
-- **Silhouette** can show outside Sculpt Mode too (by Dioinecail).
+- **Sounds:** every UI sound is remade soft and cozy (made by tools/phantom/branding/make_sounds.py);
+  deleting a mesh is a quick swoosh, only for deletes you start. The mask bar's sounds play again.
+- **Silhouette** can show outside Sculpt Mode too (by Dioinecail): **Silhouette in Every Mode**
+  in Preferences > Interface and in the simple view's Customize.
 
 
 ## 0.4.4 alpha (2026-10-27)

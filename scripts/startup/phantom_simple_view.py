@@ -44,6 +44,7 @@ import contextlib
 import json
 import math
 import os
+import random
 import time
 
 import blf
@@ -51,7 +52,7 @@ import bpy
 import gpu
 import numpy as np
 from bpy.props import BoolProperty, EnumProperty, StringProperty
-from bpy.types import Menu, Operator, Panel
+from bpy.types import Menu, Operator, Panel, UIList
 from gpu_extras.batch import batch_for_shader
 from mathutils import Color
 
@@ -189,6 +190,15 @@ HSV_TRACK = 12
 HSV_LABEL_W = 20
 HSV_VALUE_W = 40
 
+# Unscaled pixels before the file's name in the simple view's top bar, so it is in the middle of the
+# window (measured; the bar's right part is added to it).
+TOP_BAR_TITLE_PAD = 19
+
+# The New Folder and Rename dialogs' width (unscaled pixels).
+NAME_DIALOG_WIDTH = 280
+# A folder's meshes are this many separator widths in (6 unscaled pixels each: about 16 px).
+SCENE_INDENT = 2.75
+
 PAINT_TYPES = {'PAINT', 'SMEAR'}
 BRUSH_SHELF = "VIEW3D_AST_brush_sculpt"
 
@@ -196,7 +206,7 @@ BRUSH_SHELF = "VIEW3D_AST_brush_sculpt"
 LEFT_KEYS = ('TOOLS', 'STROKE', 'ALPHA', 'TEXTURE', 'MATCAP', 'COLOR', None,
              'RGB', 'FOCAL', 'SIZE', 'STRENGTH', 'UNDO', 'REDO')
 RIGHT_GROUPS = (('PALETTES', 'SUBTOOLS'),
-                ('RENDER', 'PERSP', 'FLOOR', 'SYMMETRY', 'FRAME', 'POLYFRAME', 'XRAY', 'SOLO'))
+                ('RENDER', 'PERSP', 'FLOOR', 'FRAME', 'POLYFRAME', 'XRAY', 'SOLO'))
 BOTTOM_TOOLS = ('GIZMO', None, 'REMESH', 'DYNTOPO', 'QUAD', 'DIVIDE')
 RING_KEYS = {'RGB', 'FOCAL', 'SIZE', 'STRENGTH'}
 # The rings in the Quick Menu's order, with their names.
@@ -210,7 +220,6 @@ ICONS = {
     'SUBTOOLS': 'OUTLINER_OB_MESH',
     'RENDER': 'RENDER_STILL',
     'FLOOR': 'GRID',
-    'SYMMETRY': 'MOD_MIRROR',
     'FRAME': 'FULLSCREEN_ENTER',
     'POLYFRAME': 'MOD_WIREFRAME',
     'XRAY': 'XRAY',
@@ -243,12 +252,11 @@ TIPS = {
     'UNDO': "Undo (Ctrl Z)",
     'REDO': "Redo (Ctrl Shift Z)",
     'PALETTES': "Palettes: every brush and sculpting setting, in the sidebar (N)",
-    'SUBTOOLS': "Scene: the meshes in the scene. Pick one to sculpt it, hide or show them, add a "
-                "primitive (+) or delete one (trash)",
+    'SUBTOOLS': "Scene: the meshes in the scene, in folders. Pick one to sculpt it; add, duplicate, "
+                "merge, split, boolean or align them",
     'RENDER': "Render: a picture of the viewport as it is now",
     'PERSP': "Perspective: switch between perspective and orthographic (Numpad 5)",
     'FLOOR': "Grid: show or hide the grid (limited or infinite: in Overlays)",
-    'SYMMETRY': "Symmetry: mirror strokes across X (X). Right-click for the other axes",
     'FRAME': "Frame: fit the model in the view (Home)",
     'POLYFRAME': "PolyFrame: show the polygroups and the wireframe (Ctrl F)",
     'XRAY': "Transparency: see through the model (Alt Z)",
@@ -269,7 +277,6 @@ OPTIONS = {
     'FOCAL': ('PANEL', "VIEW3D_PT_phantom_simple_quick_menu"),
     'SIZE': ('PANEL', "VIEW3D_PT_phantom_simple_quick_menu"),
     'STRENGTH': ('FLIP_DIRECTION', None),
-    'SYMMETRY': ('PANEL', "VIEW3D_PT_sculpt_symmetry_for_topbar"),
     'FLOOR': ('PANEL', "VIEW3D_PT_overlay"),
     'XRAY': ('PANEL', "VIEW3D_PT_shading"),
     'REMESH': ('PANEL', "VIEW3D_PT_sculpt_voxel_remesh"),
@@ -285,11 +292,17 @@ _settings = {
     "stats": True,
     # The color card's picker inside the hue ring: 'SQUARE' or 'TRIANGLE'.
     "color_shape": 'SQUARE',
+    # The color card stays open while sculpting (and opens with the simple view).
+    "color_pinned": False,
 }
 _draw_handle = None
 _addon_keymaps = []
 # Windows switching views right now: window pointer -> "ENTER" or "LEAVE".
 _busy = {}
+# When each of them started switching: a switch taking far longer than its animation failed part
+# way (an error in a timer), and must not lock the window out of the simple view.
+_busy_at = {}
+BUSY_TIMEOUT = 5.0
 # Windows that just left the simple view: window pointer -> time (no automatic entry right away).
 _left_at = {}
 # The toolbars' last slide: when it started, and 1 coming in or -1 going out.
@@ -417,9 +430,9 @@ def _redraw_simple():
                 area.tag_redraw()
 
 
-def _play(name):
+def _play(name, pitch=1.0):
     try:
-        bpy.types.WindowManager.phantom_ui_sound_play(name)
+        bpy.types.WindowManager.phantom_ui_sound_play(name, pitch=pitch)
     except (AttributeError, TypeError, RuntimeError):
         pass
 
@@ -444,7 +457,11 @@ def _set_regions(window, area, shown, animate=True, force=False):
     def apply():
         for key, prop in REGION_PROPS:
             if key in shown and hasattr(space, prop) and (force or getattr(space, prop) != shown[key]):
-                setattr(space, prop, shown[key])
+                try:
+                    setattr(space, prop, shown[key])
+                except AttributeError:
+                    # Read-only in this mode (the asset shelf, outside the modes that have one).
+                    pass
 
     if animate:
         with bpy.context.temp_override(window=window, screen=window.screen, area=area, region=region):
@@ -483,6 +500,7 @@ def enter(window, area):
     )
     screen[SNAPSHOT] = json.dumps(snapshot)
     _busy[pointer] = "ENTER"
+    _busy_at[pointer] = time.perf_counter()
     animate = _motion_ok()
     _play("toggle_on")
     _set_regions(window, area, {key: False for key, _prop in REGION_PROPS}, animate=animate)
@@ -540,6 +558,8 @@ def _maximize(window, area):
 
     def done():
         _busy.pop(pointer, None)
+        if _settings["color_pinned"] and not _color_card["open"]:
+            _open_pinned_color_card(pointer)
         return None
 
     bpy.app.timers.register(done, first_interval=_bars_duration())
@@ -553,6 +573,7 @@ def leave(window, turn_off=True):
     if turn_off:
         _set_setting("on", False)
     _busy[pointer] = "LEAVE"
+    _busy_at[pointer] = time.perf_counter()
     _left_at[pointer] = time.perf_counter()
     _show_cursor(bpy.context)
     _play("toggle_off")
@@ -640,10 +661,16 @@ def _watch():
     for window in wm.windows if wm else ():
         pointer = window.as_pointer()
         screen = window.screen
+        if pointer in _busy and now - _busy_at.get(pointer, now) > BUSY_TIMEOUT:
+            # A switch that never finished (an error part way): don't stay locked out.
+            print("Phantom: the simple view's switch didn't finish; carrying on")
+            _busy.pop(pointer, None)
+            _busy_at.pop(pointer, None)
         if pointer in _busy or screen is None:
             continue
         sculpting = _sculpting(window)
         if is_simple_screen(screen):
+            _sync_scene_rows()
             if not sculpting:
                 leave(window, turn_off=False)
             continue
@@ -1335,8 +1362,6 @@ def _item_active(context, key):
             return phantom_viewport.grid_shown(space, context.screen)
         except (ImportError, AttributeError):
             return space.overlay.show_floor
-    if key == 'SYMMETRY':
-        return ob is not None and ob.type == 'MESH' and ob.data.use_mirror_x
     if key == 'POLYFRAME':
         return space.overlay.show_sculpt_face_sets and space.overlay.show_wireframes
     if key == 'XRAY':
@@ -1368,7 +1393,7 @@ def _item_enabled(context, key):
     ob = context.active_object
     if key == 'TEXTURE':
         return False
-    if key in {'DIVIDE', 'REMESH', 'QUAD', 'DYNTOPO', 'SYMMETRY'}:
+    if key in {'DIVIDE', 'REMESH', 'QUAD', 'DYNTOPO'}:
         return ob is not None and ob.type == 'MESH'
     return True
 
@@ -1770,7 +1795,8 @@ def _color_geometry(context, lay, s):
     # Title, then the triangle/square switch and the eyedropper on the right.
     g["title"] = (x0, top - ROW * u / 2)
     b = ROW * u
-    g["buttons"] += [('SWITCH', (x0 + iw - 2 * b - 8 * u, top - b, b, b)),
+    g["buttons"] += [('PIN', (x0 + iw - 3 * b - 16 * u, top - b, b, b)),
+                     ('SWITCH', (x0 + iw - 2 * b - 8 * u, top - b, b, b)),
                      ('EYEDROPPER', (x0 + iw - b, top - b, b, b))]
     top -= (ROW + SECTION_GAP) * u
     # The two colors and the swap, the hex code on the right.
@@ -1935,9 +1961,13 @@ def _draw_color_card(context, lay, s):
         else:
             fill = PILL_COLOR if key == 'FILL' else (0, 0, 0, 0)
         outline = _rounded_rect(x, y, w, h, 8 * u, fill)
-        if key == 'EYEDROPPER' and _color_card["picking"]:
+        if (key == 'EYEDROPPER' and _color_card["picking"]) or \
+                (key == 'PIN' and _settings["color_pinned"]):
             _outline(outline, ACCENT, max(1.5, 1.5 * s))
-        if key == 'SWITCH':
+        if key == 'PIN':
+            _draw_icon('PINNED' if _settings["color_pinned"] else 'UNPINNED', cx, cy,
+                       ICON_SIZE * u * 0.9, 0.92)
+        elif key == 'SWITCH':
             other = 'TRIANGLE' if _settings["color_shape"] == 'SQUARE' else 'SQUARE'
             _shape_icon(cx, cy, 6.5 * u, other, TEXT_COLOR)
         elif key == 'EYEDROPPER':
@@ -2049,6 +2079,21 @@ def _color_target(g, mx, my):
         if _in_rect(rect, mx, my):
             return ('SLIDER', prop)
     return _wheel_hit(g, mx, my)
+
+
+def _open_pinned_color_card(pointer):
+    """The pinned color card, back when the simple view opens."""
+    window = _window_by_pointer(pointer)
+    area = _view3d_area(window.screen) if window is not None else None
+    if area is None:
+        return
+    region = _region(area, 'WINDOW')
+    try:
+        with bpy.context.temp_override(window=window, screen=window.screen, area=area,
+                                       region=region):
+            bpy.ops.view3d.phantom_simple_color_card('INVOKE_DEFAULT')
+    except RuntimeError:
+        pass
 
 
 def _close_color_card(context):
@@ -2694,6 +2739,7 @@ def _restore_brush_circle(*_args):
 @bpy.app.handlers.persistent
 def _on_load(*_args):
     _busy.clear()
+    _busy_at.clear()
     _bars.update(start=0.0, dir=1)
     _cursor.update(hidden=False, modal=False)
     _hover["key"] = None
@@ -2792,6 +2838,7 @@ def _perform(context, key):
     elif key == 'PALETTES':
         _toggle_sidebar(context)
     elif key == 'SUBTOOLS':
+        _sync_scene_rows(context)
         _call_panel(VIEW3D_PT_phantom_simple_subtools.__name__)
     elif key == 'RENDER':
         bpy.ops.render.opengl('INVOKE_DEFAULT', view_context=True)
@@ -2801,9 +2848,6 @@ def _perform(context, key):
         # The grid in use here: the limited one (the simple view's default) or the floor.
         import phantom_viewport
         phantom_viewport.toggle_grid(space, context.screen)
-    elif key == 'SYMMETRY':
-        if ob is not None and ob.type == 'MESH':
-            ob.data.use_mirror_x = not ob.data.use_mirror_x
     elif key == 'FRAME':
         bpy.ops.view3d.view_all('INVOKE_DEFAULT', center=False)
     elif key == 'POLYFRAME':
@@ -3172,7 +3216,9 @@ class VIEW3D_OT_phantom_simple_color_card(Operator):
         _redraw_simple()
 
     def _act(self, context, target):
-        if target == 'SWITCH':
+        if target == 'PIN':
+            _set_setting("color_pinned", not _settings["color_pinned"])
+        elif target == 'SWITCH':
             _set_setting("color_shape", 'TRIANGLE' if _settings["color_shape"] == 'SQUARE' else 'SQUARE')
         elif target == 'EYEDROPPER':
             _color_card["picking"] = not _color_card["picking"]
@@ -3237,10 +3283,14 @@ class VIEW3D_OT_phantom_simple_color_card(Operator):
                     _redraw_simple()
                     return {'RUNNING_MODAL'}
                 item, _on_bar = lay.hit(mx, my)
-                _close_color_card(context)
                 if item is not None and item.key == 'COLOR':
-                    # Clicking the Color button again closes the card.
+                    # Clicking the Color button again closes the card, pinned or not.
+                    _close_color_card(context)
                     return {'FINISHED'}
+                if _settings["color_pinned"]:
+                    # Pinned: sculpt, paint or use the toolbars with the card open.
+                    return {'PASS_THROUGH'}
+                _close_color_card(context)
                 return {'FINISHED', 'PASS_THROUGH'}
             if target in {'RING', 'SHAPE'} or (isinstance(target, tuple) and target[0] == 'SLIDER'):
                 _color_card["dragging"] = target
@@ -3250,6 +3300,9 @@ class VIEW3D_OT_phantom_simple_color_card(Operator):
                 context.area.tag_redraw()
             return {'RUNNING_MODAL'}
         if event.type == 'LEFTMOUSE' and event.value == 'RELEASE':
+            if not inside and not _color_card["dragging"] and _color_card["pressed"] is None:
+                # A click that went through (pinned): its release is someone else's.
+                return {'PASS_THROUGH'}
             if _color_card["dragging"]:
                 _color_card["dragging"] = None
             elif _color_card["pressed"] is not None:
@@ -3268,6 +3321,9 @@ class VIEW3D_OT_phantom_simple_color_card(Operator):
             _redraw_simple()
             return {'RUNNING_MODAL'}
         if event.type in {'ESC', 'RIGHTMOUSE'} and event.value == 'PRESS':
+            if _settings["color_pinned"] and not inside:
+                # Pinned: Esc and right-click are for whatever is under the cursor.
+                return {'PASS_THROUGH'}
             _close_color_card(context)
             return {'CANCELLED'}
         if event.type.startswith('WHEEL') and inside:
@@ -3311,8 +3367,10 @@ class VIEW3D_OT_phantom_simple_matcap_card(Operator):
                 _mat["focus"] = False
         elif event.type == 'BACK_SPACE':
             _mat["search"] = "" if event.ctrl else _mat["search"][:-1]
+            _play("type_delete", random.uniform(0.94, 1.06))
         elif event.unicode and event.unicode.isprintable() and not event.ctrl and not event.alt:
             _mat["search"] += event.unicode
+            _play("type", random.uniform(0.88, 1.12))
         else:
             # Other keys do nothing while typing (no shortcuts going off).
             return True
@@ -3977,40 +4035,616 @@ class VIEW3D_MT_phantom_simple_add_mesh(Menu):
                             icon=icon).kind = kind
 
 
-class VIEW3D_PT_phantom_simple_subtools(Panel):
-    """The meshes in the scene"""
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'HEADER'
-    bl_label = "Scene"
-    bl_ui_units_x = 12
+# A collection is a folder of the Scene window when made there (tagged with this), or any other
+# collection but Blender's default one ("Collection", which new files start with and Blender
+# puts new objects in): that one isn't a folder, its meshes are just in the scene.
+FOLDER_TAG = "phantom_folder"
+# A folder that is closed (its meshes not listed), on the collection.
+FOLDER_CLOSED = "phantom_folder_closed"
+DEFAULT_COLLECTION = "Collection"
+
+
+def _is_folder(collection, parent_is_scene):
+    if collection.get(FOLDER_TAG):
+        return True
+    return not (parent_is_scene and collection.name == DEFAULT_COLLECTION)
+
+
+def _scene_rows(context, all_rows=False):
+    """The Scene window's rows, in order: ('OBJECT' or 'FOLDER', name, depth). Closed folders'
+    meshes are left out unless `all_rows`."""
+    rows = []
+    in_layer = context.view_layer.objects
+
+    def walk(layer_collection, depth, is_scene):
+        for ob in layer_collection.collection.objects:
+            if ob.type == 'MESH' and ob.name in in_layer:
+                rows.append(('OBJECT', ob.name, depth))
+        for child in layer_collection.children:
+            if child.exclude:
+                continue
+            if _is_folder(child.collection, is_scene):
+                rows.append(('FOLDER', child.collection.name, depth))
+                if all_rows or not child.collection.get(FOLDER_CLOSED):
+                    walk(child, depth + 1, False)
+            else:
+                walk(child, depth, False)
+
+    walk(context.view_layer.layer_collection, 0, True)
+    return rows
+
+
+def _scene_meshes(context):
+    """The scene's meshes, each once, in the Scene window's order (ZBrush's "the one below")."""
+    seen, meshes = set(), []
+    objects = context.view_layer.objects
+    for kind, name, _depth in _scene_rows(context, all_rows=True):
+        if kind == 'OBJECT' and name not in seen:
+            seen.add(name)
+            meshes.append(objects[name])
+    return meshes
+
+
+def _layer_collection(context, name):
+    def find(layer_collection):
+        if layer_collection.collection.name == name:
+            return layer_collection
+        for child in layer_collection.children:
+            found = find(child)
+            if found is not None:
+                return found
+        return None
+    return find(context.view_layer.layer_collection)
+
+
+def _sync_scene_rows(context=None):
+    """The Scene window's list reads its rows from the window manager: refreshed here (on the
+    simple view's regular check and after each change), never while drawing."""
+    context = context or bpy.context
+    wm = context.window_manager
+    if wm is None or not hasattr(wm, "phantom_simple_scene_rows") or context.view_layer is None:
+        return
+    rows = _scene_rows(context)
+    current = [(r.kind, r.name, r.depth) for r in wm.phantom_simple_scene_rows]
+    if current == rows:
+        return
+    wm.phantom_simple_scene_rows.clear()
+    for kind, name, depth in rows:
+        item = wm.phantom_simple_scene_rows.add()
+        item.kind, item.name, item.depth = kind, name, depth
+
+
+def _mesh_below(context, ob, visible=True):
+    meshes = _scene_meshes(context)
+    if ob not in meshes:
+        return None
+    below = meshes[meshes.index(ob) + 1:] + meshes[:meshes.index(ob)]
+    return next((o for o in below if not visible or not o.hide_get()), None)
+
+
+def _sculpt(context, ob):
+    """Sculpt `ob` (from Object Mode: it has to be the active object there)."""
+    if context.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+    for other in context.selected_objects:
+        other.select_set(False)
+    if ob.hide_get():
+        ob.hide_set(False)
+    ob.select_set(True)
+    context.view_layer.objects.active = ob
+    bpy.ops.object.mode_set(mode='SCULPT')
+
+
+SCENE_ACTIONS = (
+    ('DUPLICATE', "Duplicate", "Copy the mesh being sculpted, and sculpt the copy"),
+    ('SPLIT_PARTS', "Split to Parts", "Make each separate piece of the mesh its own object"),
+    ('MERGE_DOWN', "Merge Down", "Merge the mesh below (in the list) into this one"),
+    ('MERGE_VISIBLE', "Merge Visible", "Merge every shown mesh into this one"),
+    ('UNION', "Union", "Join the mesh below into this one, as one solid (Boolean)"),
+    ('DIFFERENCE', "Difference", "Cut the mesh below out of this one, then hide it (Boolean)"),
+    ('INTERSECT', "Intersect", "Keep where this mesh and the one below overlap (Boolean)"),
+    ('CENTER', "Center", "Move the mesh to the middle of the scene"),
+    ('FLOOR', "On Floor", "Stand the mesh on the floor (its lowest point at the grid)"),
+    ('SHOW_ALL', "Show All", "Show every mesh"),
+    ('HIDE_OTHERS', "Hide Others", "Hide every mesh but this one"),
+)
+
+
+class VIEW3D_OT_phantom_simple_scene_action(Operator):
+    """An action of the simple view's Scene window, on the mesh being sculpted"""
+    bl_idname = "view3d.phantom_simple_scene_action"
+    bl_label = "Scene Action"
+    bl_options = {'INTERNAL', 'UNDO'}
+
+    action: bpy.props.EnumProperty(items=[(a, n, d) for a, n, d in SCENE_ACTIONS],
+                                   options={'SKIP_SAVE'})
+
+    @classmethod
+    def description(cls, context, properties):
+        return next(d for a, _n, d in SCENE_ACTIONS if a == properties.action)
+
+    @classmethod
+    def poll(cls, context):
+        ob = context.active_object
+        return ob is not None and ob.type == 'MESH'
+
+    def execute(self, context):
+        ob = context.active_object
+        action = self.action
+        try:
+            result = getattr(self, "_" + action.lower())(context, ob)
+        except RuntimeError as ex:
+            self.report({'WARNING'}, str(ex).replace("Error: ", "").strip())
+            if context.mode != 'SCULPT' and context.view_layer.objects.active is not None:
+                bpy.ops.object.mode_set(mode='SCULPT')
+            return {'CANCELLED'}
+        _sync_scene_rows(context)
+        _redraw_simple()
+        return result or {'FINISHED'}
+
+    def _duplicate(self, context, ob):
+        copy = ob.copy()
+        copy.data = ob.data.copy()
+        for collection in ob.users_collection:
+            collection.objects.link(copy)
+        _sculpt(context, copy)
+
+    def _split_parts(self, context, ob):
+        before = set(context.view_layer.objects)
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.mesh.reveal()
+        bpy.ops.mesh.select_all(action='SELECT')
+        bpy.ops.mesh.separate(type='LOOSE')
+        bpy.ops.object.mode_set(mode='OBJECT')
+        _sculpt(context, ob)
+        made = len(set(context.view_layer.objects) - before)
+        self.report({'INFO'}, f"{made} new object{'s' if made != 1 else ''}" if made else
+                    "It is one piece already")
+
+    def _join(self, context, ob, others):
+        if not others:
+            self.report({'WARNING'}, "No other shown mesh to merge")
+            return {'CANCELLED'}
+        bpy.ops.object.mode_set(mode='OBJECT')
+        for other in context.selected_objects:
+            other.select_set(False)
+        for other in others:
+            other.select_set(True)
+        ob.select_set(True)
+        context.view_layer.objects.active = ob
+        bpy.ops.object.join()
+        _sculpt(context, ob)
+        return None
+
+    def _merge_down(self, context, ob):
+        below = _mesh_below(context, ob)
+        return self._join(context, ob, [below] if below is not None else [])
+
+    def _merge_visible(self, context, ob):
+        others = [o for o in _scene_meshes(context) if o != ob and not o.hide_get()]
+        return self._join(context, ob, others)
+
+    def _boolean(self, context, ob, operation):
+        below = _mesh_below(context, ob)
+        if below is None:
+            self.report({'WARNING'}, "No other shown mesh below this one")
+            return {'CANCELLED'}
+        bpy.ops.object.mode_set(mode='OBJECT')
+        modifier = ob.modifiers.new("Phantom Boolean", 'BOOLEAN')
+        modifier.operation = operation
+        modifier.solver = 'EXACT'
+        modifier.object = below
+        # On top of the stack, so only the boolean is applied (not Multires and the like).
+        bpy.ops.object.modifier_move_to_index(modifier=modifier.name, index=0)
+        bpy.ops.object.modifier_apply(modifier=modifier.name)
+        if operation == 'UNION':
+            bpy.data.objects.remove(below, do_unlink=True)
+        else:
+            below.hide_set(True)
+        _sculpt(context, ob)
+        return None
+
+    def _union(self, context, ob):
+        return self._boolean(context, ob, 'UNION')
+
+    def _difference(self, context, ob):
+        return self._boolean(context, ob, 'DIFFERENCE')
+
+    def _intersect(self, context, ob):
+        return self._boolean(context, ob, 'INTERSECT')
+
+    def _center(self, context, ob):
+        ob.location = (0.0, 0.0, 0.0)
+
+    def _floor(self, context, ob):
+        from mathutils import Vector
+        lowest = min((ob.matrix_world @ Vector(corner)).z for corner in ob.bound_box)
+        ob.location.z -= lowest
+
+    def _show_all(self, context, ob):
+        for other in _scene_meshes(context):
+            other.hide_set(False)
+
+    def _hide_others(self, context, ob):
+        for other in _scene_meshes(context):
+            if other != ob:
+                other.hide_set(True)
+
+
+class PhantomSimpleSceneRow(bpy.types.PropertyGroup):
+    """A row of the Scene window: a mesh or a folder."""
+    kind: EnumProperty(items=(('OBJECT', "Mesh", ""), ('FOLDER', "Folder", "")))
+    depth: bpy.props.IntProperty()
+
+
+class VIEW3D_UL_phantom_simple_scene_plain(UIList):
+    """The Scene window's tree, as one list: folders and meshes start on one left edge, a folder's
+    meshes a step in; each row's eye on the right, a folder's arrow before it. The mesh being
+    sculpted is highlighted; clicking a mesh sculpts it, clicking a folder opens or closes it."""
+
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        # Which row this is, for its right-click menu and the Delete key (see
+        # `_draw_scene_row_menu` and `view3d.phantom_simple_scene_plain_delete`).
+        layout.context_pointer_set("phantom_scene_row", item)
+        row = layout.row(align=True)
+        if item.depth:
+            # One step in per folder level (16 unscaled pixels).
+            row.separator(factor=SCENE_INDENT * item.depth)
+        if item.kind == 'FOLDER':
+            collection = bpy.data.collections.get(item.name)
+            closed = bool(collection and collection.get(FOLDER_CLOSED))
+            row.label(text=item.name, icon='FILE_FOLDER', translate=False)
+            arrow = row.operator(VIEW3D_OT_phantom_simple_folder.bl_idname, text="",
+                                 icon='RIGHTARROW' if closed else 'DOWNARROW_HLT', emboss=False)
+            arrow.name, arrow.action = item.name, 'TOGGLE'
+            layer = _layer_collection(context, item.name)
+            hidden = layer is not None and layer.hide_viewport
+            eye = row.operator(VIEW3D_OT_phantom_simple_folder.bl_idname, text="",
+                               icon='HIDE_ON' if hidden else 'HIDE_OFF', emboss=False)
+            eye.name, eye.action = item.name, 'VISIBILITY'
+            return
+        ob = context.view_layer.objects.get(item.name)
+        row.label(text=item.name, icon='OUTLINER_OB_MESH', translate=False)
+        visible = ob is not None and not ob.hide_get()
+        eye = row.operator(VIEW3D_OT_phantom_simple_subtool.bl_idname, text="",
+                           icon='HIDE_OFF' if visible else 'HIDE_ON', emboss=False)
+        eye.name, eye.action = item.name, 'VISIBILITY'
+
+    def draw_filter(self, context, layout):
+        pass
+
+
+def _scene_index_get(_self):
+    ob = bpy.context.active_object
+    rows = bpy.context.window_manager.phantom_simple_scene_rows
+    if ob is None:
+        return -1
+    return next((i for i, r in enumerate(rows) if r.kind == 'OBJECT' and r.name == ob.name), -1)
+
+
+def _scene_index_set(_self, value):
+    """Clicking a row: a mesh is sculpted, a folder opens or closes (once the click is handled)."""
+    rows = bpy.context.window_manager.phantom_simple_scene_rows
+    if not 0 <= value < len(rows):
+        return
+    kind, name = rows[value].kind, rows[value].name
+    window = bpy.context.window
+    pointer = window.as_pointer() if window is not None else None
+
+    def switch():
+        window = _window_by_pointer(pointer)
+        area = _view3d_area(window.screen) if window is not None else None
+        if area is None:
+            return None
+        with bpy.context.temp_override(window=window, screen=window.screen, area=area,
+                                       region=_region(area, 'WINDOW')):
+            if kind == 'FOLDER':
+                bpy.ops.view3d.phantom_simple_folder(name=name, action='TOGGLE')
+            else:
+                bpy.ops.view3d.phantom_simple_subtool(name=name, action='SELECT')
+        _redraw_simple()
+        return None
+
+    bpy.app.timers.register(switch, first_interval=0.0)
+
+
+class VIEW3D_OT_phantom_simple_folder(Operator):
+    """Open or close this folder, or show or hide it"""
+    bl_idname = "view3d.phantom_simple_folder"
+    bl_label = "Folder"
+    bl_options = {'INTERNAL'}
+
+    name: StringProperty(options={'SKIP_SAVE'})
+    action: StringProperty(default='TOGGLE', options={'SKIP_SAVE'})
+
+    @classmethod
+    def description(cls, context, properties):
+        return "Show or hide this folder" if properties.action == 'VISIBILITY' else \
+            "Open or close this folder"
+
+    def execute(self, context):
+        collection = bpy.data.collections.get(self.name)
+        if collection is None:
+            return {'CANCELLED'}
+        if self.action == 'VISIBILITY':
+            layer = _layer_collection(context, self.name)
+            if layer is not None:
+                layer.hide_viewport = not layer.hide_viewport
+        else:
+            collection[FOLDER_CLOSED] = not collection.get(FOLDER_CLOSED, False)
+        _sync_scene_rows(context)
+        _redraw_simple()
+        return {'FINISHED'}
+
+
+class _NameDialog:
+    """A small dialog in the simple view's style asking for a name: its field (dark, typed in
+    right away), then Cancel and Accept."""
+
+    def _ask(self, context, event, title):
+        # Next to where it was asked for (the Scene window's button), in the simple view's style.
+        wm = context.window_manager
+        anchor = hasattr(wm, "phantom_popup_anchor_set")
+        if anchor:
+            x, y = event.mouse_x, event.mouse_y
+            wm.phantom_popup_anchor_set(x + 8, y - 2, x + 10, y, 'RIGHT', simple_style=True)
+        try:
+            return wm.invoke_props_dialog(self, width=NAME_DIALOG_WIDTH, title=title,
+                                          confirm_text="Accept")
+        finally:
+            if anchor:
+                wm.phantom_popup_anchor_set(0, 0, 0, 0, 'NONE')
 
     def draw(self, context):
         layout = self.layout
-        # The title, and on its right a + to add a primitive.
-        header = layout.row()
-        header.label(text="Scene")
-        add = header.row()
-        add.alignment = 'RIGHT'
-        add.menu(VIEW3D_MT_phantom_simple_add_mesh.__name__, text="", icon='ADD')
-        col = layout.column(align=True)
+        layout.activate_init = True
+        layout.prop(self, "name", text="")
+
+
+class VIEW3D_OT_phantom_simple_new_folder(_NameDialog, Operator):
+    """Make a folder (a collection) and put the mesh being sculpted in it"""
+    bl_idname = "view3d.phantom_simple_new_folder"
+    bl_label = "New Folder"
+    bl_options = {'INTERNAL', 'UNDO'}
+
+    name: StringProperty(name="Name", default="Folder", options={'SKIP_SAVE'})
+
+    def invoke(self, context, event):
+        return self._ask(context, event, "New Folder")
+
+    def execute(self, context):
+        name = self.name.strip() or "Folder"
+        folder = bpy.data.collections.new(name)
+        folder[FOLDER_TAG] = True
+        context.scene.collection.children.link(folder)
+        ob = context.active_object
+        if ob is not None and ob.type == 'MESH':
+            # Moving it between collections takes it out of the view layer a moment: from
+            # Object Mode, then sculpting it again.
+            bpy.ops.object.mode_set(mode='OBJECT')
+            folder.objects.link(ob)
+            for collection in list(ob.users_collection):
+                if collection != folder:
+                    collection.objects.unlink(ob)
+            _sculpt(context, ob)
+        _sync_scene_rows(context)
+        _redraw_simple()
+        return {'FINISHED'}
+
+
+class VIEW3D_OT_phantom_simple_rename(_NameDialog, Operator):
+    """Rename this mesh or folder"""
+    bl_idname = "view3d.phantom_simple_rename"
+    bl_label = "Rename"
+    bl_options = {'INTERNAL', 'UNDO'}
+
+    name: StringProperty(name="Name", options={'SKIP_SAVE'})
+    # What to rename: a mesh's or a folder's name ('' : the mesh being sculpted).
+    target: StringProperty(options={'SKIP_SAVE', 'HIDDEN'})
+    folder: bpy.props.BoolProperty(options={'SKIP_SAVE', 'HIDDEN'})
+
+    def _id(self, context):
+        if self.folder:
+            return bpy.data.collections.get(self.target)
+        if self.target:
+            return bpy.data.objects.get(self.target)
+        return context.active_object
+
+    @classmethod
+    def poll(cls, context):
+        return True
+
+    def invoke(self, context, event):
+        block = self._id(context)
+        if block is None:
+            return {'CANCELLED'}
+        self.name = block.name
+        return self._ask(context, event, "Rename Folder" if self.folder else "Rename")
+
+    def execute(self, context):
+        block = self._id(context)
+        if block is not None and self.name.strip():
+            block.name = self.name.strip()
+        _sync_scene_rows(context)
+        _redraw_simple()
+        return {'FINISHED'}
+
+
+class VIEW3D_OT_phantom_simple_scene_plain_delete(Operator):
+    """Delete the mesh or folder under the cursor in the Scene window (a folder's meshes stay).
+    Its name follows the list type's: Delete over a row of that list runs it (see
+    `handle_uilist_event`)"""
+    bl_idname = "view3d.phantom_simple_scene_plain_delete"
+    bl_label = "Delete"
+    bl_options = {'INTERNAL', 'UNDO'}
+
+    name: StringProperty(options={'SKIP_SAVE'})
+    folder: bpy.props.BoolProperty(options={'SKIP_SAVE'})
+
+    def invoke(self, context, event):
+        row = getattr(context, "phantom_scene_row", None)
+        if not self.name:
+            if row is None:
+                return {'PASS_THROUGH'}
+            self.name, self.folder = row.name, row.kind == 'FOLDER'
+        if not self.folder:
+            # A mesh: the Scene window's delete, which asks first and keeps something to sculpt.
+            return bpy.ops.view3d.phantom_simple_subtool_delete('INVOKE_DEFAULT', name=self.name)
+        return context.window_manager.invoke_confirm(
+            self, event, title=f"Delete {self.name}", message="Its meshes stay in the scene",
+            confirm_text="Delete", icon='WARNING')
+
+    def execute(self, context):
+        folder = bpy.data.collections.get(self.name)
+        if folder is None:
+            return {'CANCELLED'}
+        # Its meshes (and folders) go to where it was, then it goes.
+        parents = [c for c in [context.scene.collection, *bpy.data.collections]
+                   if folder.name in c.children]
+        parent = parents[0] if parents else context.scene.collection
         active = context.active_object
-        meshes = [ob for ob in context.view_layer.objects if ob.type == 'MESH']
-        if not meshes:
-            col.label(text="No meshes")
-        for ob in meshes:
-            row = col.row(align=True)
-            visible = not ob.hide_get()
-            op = row.operator(VIEW3D_OT_phantom_simple_subtool.bl_idname, text="",
-                              icon='HIDE_OFF' if visible else 'HIDE_ON', emboss=False)
-            op.name, op.action = ob.name, 'VISIBILITY'
-            op = row.operator(VIEW3D_OT_phantom_simple_subtool.bl_idname, text=ob.name,
-                              depress=(ob == active), icon='OUTLINER_OB_MESH')
-            op.name, op.action = ob.name, 'SELECT'
-            # Delete it (not the last mesh: there would be nothing left to sculpt).
-            delete = row.row(align=True)
-            delete.enabled = len(meshes) > 1
-            delete.operator(VIEW3D_OT_phantom_simple_subtool_delete.bl_idname, text="",
-                            icon='TRASH', emboss=False).name = ob.name
+        sculpting = context.mode == 'SCULPT'
+        if sculpting:
+            bpy.ops.object.mode_set(mode='OBJECT')
+        for ob in list(folder.objects):
+            if ob.name not in parent.objects:
+                parent.objects.link(ob)
+        for child in list(folder.children):
+            if child.name not in parent.children:
+                parent.children.link(child)
+        bpy.data.collections.remove(folder)
+        if sculpting and active is not None:
+            _sculpt(context, active)
+        _sync_scene_rows(context)
+        _redraw_simple()
+        return {'FINISHED'}
+
+
+def _draw_scene_row_menu(self, context):
+    """A Scene window row's right-click menu: rename or delete it."""
+    row = getattr(context, "phantom_scene_row", None)
+    if row is None:
+        return
+    layout = self.layout
+    folder = row.kind == 'FOLDER'
+    op = layout.operator(VIEW3D_OT_phantom_simple_rename.bl_idname,
+                         text="Rename Folder\u2026" if folder else "Rename\u2026",
+                         icon='GREASEPENCIL')
+    op.target, op.folder = row.name, folder
+    op = layout.operator(VIEW3D_OT_phantom_simple_scene_plain_delete.bl_idname,
+                         text="Delete Folder" if folder else "Delete", icon='TRASH')
+    op.name, op.folder = row.name, folder
+
+
+class VIEW3D_OT_phantom_simple_scene_menu(Operator):
+    """Open this menu (in the simple view's style, beside the cursor)"""
+    bl_idname = "view3d.phantom_simple_scene_menu"
+    bl_label = "Menu"
+    bl_options = {'INTERNAL'}
+
+    menu: StringProperty(options={'SKIP_SAVE'})
+
+    @classmethod
+    def description(cls, context, properties):
+        return {"VIEW3D_MT_phantom_simple_add_mesh": "Add a mesh to the scene",
+                "VIEW3D_MT_phantom_simple_scene_more": "Rename, show all, hide others, delete"}.get(
+                    properties.menu, "")
+
+    def invoke(self, context, event):
+        wm = context.window_manager
+        anchor = hasattr(wm, "phantom_popup_anchor_set")
+        if anchor:
+            x, y = event.mouse_x, event.mouse_y
+            wm.phantom_popup_anchor_set(x + 8, y - 2, x + 10, y, 'RIGHT', simple_style=True)
+        try:
+            bpy.ops.wm.call_menu(name=self.menu)
+        finally:
+            if anchor:
+                wm.phantom_popup_anchor_set(0, 0, 0, 0, 'NONE')
+        return {'FINISHED'}
+
+
+class VIEW3D_MT_phantom_simple_scene_more(Menu):
+    bl_label = "Scene"
+
+    def draw(self, context):
+        layout = self.layout
+        ob = context.active_object
+        if ob is not None:
+            layout.operator(VIEW3D_OT_phantom_simple_rename.bl_idname,
+                            text=f"Rename \u201c{ob.name}\u201d\u2026", icon='GREASEPENCIL')
+            layout.separator()
+        op = VIEW3D_OT_phantom_simple_scene_action.bl_idname
+        layout.operator(op, text="Show All", icon='HIDE_OFF').action = 'SHOW_ALL'
+        layout.operator(op, text="Hide Others", icon='HIDE_ON').action = 'HIDE_OTHERS'
+        if ob is not None:
+            layout.separator()
+            layout.operator(VIEW3D_OT_phantom_simple_subtool_delete.bl_idname, text="Delete",
+                            icon='TRASH').name = ob.name
+
+
+class VIEW3D_MT_phantom_simple_boolean(Menu):
+    bl_label = "Boolean"
+
+    def draw(self, context):
+        layout = self.layout
+        op = VIEW3D_OT_phantom_simple_scene_action.bl_idname
+        layout.operator(op, text="Union", icon='SELECT_EXTEND').action = 'UNION'
+        layout.operator(op, text="Difference", icon='SELECT_SUBTRACT').action = 'DIFFERENCE'
+        layout.operator(op, text="Intersect", icon='SELECT_INTERSECT').action = 'INTERSECT'
+
+
+class VIEW3D_PT_phantom_simple_subtools(Panel):
+    """The meshes in the scene, in folders, and what can be done with them (as ZBrush for iPad's
+    Subtools)"""
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'HEADER'
+    bl_label = "Scene"
+    bl_ui_units_x = 14
+
+    def draw(self, context):
+        layout = self.layout
+        op = VIEW3D_OT_phantom_simple_scene_action.bl_idname
+        layout.label(text="Scene")
+        # Add, duplicate, a new folder, more: bare icons spread evenly, nothing around them.
+        header = layout.grid_flow(row_major=True, columns=4, even_columns=True, align=False)
+        header.scale_y = 1.3
+        menu = VIEW3D_OT_phantom_simple_scene_menu.bl_idname
+        header.operator(menu, text="", icon='ADD', emboss=False).menu = \
+            VIEW3D_MT_phantom_simple_add_mesh.__name__
+        header.operator(op, text="", icon='DUPLICATE', emboss=False).action = 'DUPLICATE'
+        header.operator(VIEW3D_OT_phantom_simple_new_folder.bl_idname, text="", icon='FILE_FOLDER',
+                        emboss=False)
+        header.operator(menu, text="", icon='THREE_DOTS', emboss=False).menu = \
+            VIEW3D_MT_phantom_simple_scene_more.__name__
+        layout.separator()
+
+        wm = context.window_manager
+        rows = len(wm.phantom_simple_scene_rows)
+        if rows:
+            layout.template_list(VIEW3D_UL_phantom_simple_scene_plain.__name__, "", wm,
+                                 "phantom_simple_scene_rows", wm, "phantom_simple_scene_index",
+                                 rows=rows, maxrows=rows, sort_lock=True)
+        else:
+            layout.label(text="No meshes")
+
+        layout.separator()
+        header, body = layout.panel("phantom_simple_scene_actions", default_closed=True)
+        header.label(text="Actions")
+        if body is not None:
+            col = body.column(align=True)
+            col.scale_y = 1.3
+            col.menu("OBJECT_MT_modifier_add", text="Add Modifier", icon='MODIFIER')
+            col.separator()
+            col.operator(op, text="Split to Parts", icon='MOD_EXPLODE').action = 'SPLIT_PARTS'
+            col.operator("sculpt.phantom_split_hidden", text="Split Hidden", icon='HIDE_ON')
+            col.separator()
+            col.operator(op, text="Merge Down", icon='TRIA_DOWN_BAR').action = 'MERGE_DOWN'
+            col.operator(op, text="Merge Visible", icon='SELECT_EXTEND').action = 'MERGE_VISIBLE'
+            col.menu(VIEW3D_MT_phantom_simple_boolean.__name__, text="Boolean", icon='MOD_BOOLEAN')
+            col.separator()
+            col.operator(op, text="Center", icon='PIVOT_CURSOR').action = 'CENTER'
+            col.operator(op, text="On Floor", icon='TRIA_DOWN').action = 'FLOOR'
 
 
 class TOPBAR_PT_phantom_simple_customize(Panel):
@@ -4031,6 +4665,10 @@ class TOPBAR_PT_phantom_simple_customize(Panel):
         col.prop(wm, "phantom_simple_stats", text="Statistics Under the Thumbnail")
         if hasattr(wm, "phantom_silhouette"):
             col.prop(wm, "phantom_silhouette", text="Silhouette Thumbnail")
+            sub = col.row()
+            sub.active = wm.phantom_silhouette
+            sub.prop(context.preferences, "show_silhouette_always", text="Silhouette in Every Mode")
+        col.prop(context.preferences.view, "show_navigate_head", text="Head Navigation Gizmo")
         layout.separator()
         sub = layout.column()
         sub.enabled = False
@@ -4096,26 +4734,22 @@ class TOPBAR_OT_phantom_simple_file_menu(Operator):
         return {'FINISHED'}
 
 
-def draw_top_bar(layout, context, right):
-    """The window's top bar in the simple view (called from TOPBAR_HT_upper_bar)."""
-    if right:
-        # The status bar is hidden: show reports up here.
-        layout.template_reports_banner()
-        layout.template_running_jobs()
-        row = layout.row(align=True)
-        row.scale_x = 1.25
-        wm = context.window_manager
-        if hasattr(wm, "phantom_history_bar_show"):
-            row.prop(wm, "phantom_history_bar_show", text="", icon='TIME', emboss=True, toggle=True)
-        else:
-            row.operator("wm.call_menu", text="", icon='TIME', emboss=False).name = "TOPBAR_MT_undo_history"
-        row.separator()
-        row.popover(TOPBAR_PT_phantom_simple_customize.__name__, text="", icon='WINDOW')
-        row.popover(TOPBAR_PT_phantom_simple_help.__name__, text="", icon='QUESTION')
-        row.operator("screen.userpref_show", text="", icon='PREFERENCES', emboss=False)
-        return
+def _top_bar_group(layout):
     row = layout.row(align=True)
     row.scale_x = 1.25
+    return row
+
+
+def draw_top_bar(layout, context, right):
+    """The window's top bar in the simple view (called from TOPBAR_HT_upper_bar). Everything is in
+    the bar's left part, which spans nearly the whole window: Home, Swap, Save, Import and Export,
+    the file's name in the middle, then History, Customize, Help and Settings. The right part only
+    shows reports and running jobs (the status bar is hidden), so it is usually empty."""
+    if right:
+        layout.template_reports_banner()
+        layout.template_running_jobs()
+        return
+    row = _top_bar_group(layout)
     row.operator(TOPBAR_OT_phantom_simple_file_menu.bl_idname, text="", icon='HOME', emboss=False)
     row.operator(VIEW3D_OT_phantom_simple_view_toggle.bl_idname, text="", icon='ARROW_LEFTRIGHT',
                  emboss=False)
@@ -4123,13 +4757,43 @@ def draw_top_bar(layout, context, right):
     row.operator("wm.save_mainfile", text="", icon='FILE_TICK', emboss=False)
     row.operator("wm.call_menu", text="", icon='IMPORT', emboss=False).name = "TOPBAR_MT_file_import"
     row.operator("wm.call_menu", text="", icon='EXPORT', emboss=False).name = "TOPBAR_MT_file_export"
+
+    # Between two spacers the header centers what is there on the bar's left part, a little left of
+    # the window's middle (its right part, measured): a pad before the name makes up for both.
+    # A button, not a label (a label's text sits at the left of its box). Clicking it saves under
+    # another name.
     layout.separator_spacer()
+    right_part = max((r.width for r in context.area.regions
+                      if r.type == 'HEADER' and r.alignment == 'RIGHT'), default=0)
+    layout.separator(factor=(TOP_BAR_TITLE_PAD + right_part / context.preferences.system.ui_scale)
+                     / 6.0)
     path = bpy.data.filepath
     name = os.path.splitext(os.path.basename(path))[0] if path else "Untitled"
     if bpy.data.is_dirty:
         name += "*"
-    layout.label(text=name, translate=False)
+    layout.operator("wm.save_as_mainfile", text=name, translate=False, emboss=False)
     layout.separator_spacer()
+
+    row = _top_bar_group(layout)
+    ob = context.active_object
+    if ob is not None and ob.type == 'MESH':
+        # Symmetry: X, Y and Z, and its dropdown (lock, tiling, radial, symmetrize...).
+        sym = row.row(align=True)
+        for axis in "XYZ":
+            sym.prop(ob.data, "use_mirror_" + axis.lower(), text=axis, toggle=True)
+        sym.popover(panel="VIEW3D_PT_sculpt_symmetry_for_topbar", text="")
+        row.separator()
+    wm = context.window_manager
+    if hasattr(wm, "phantom_history_bar_show"):
+        # The timeline on or off, and its dropdown with every history setting.
+        row.prop(wm, "phantom_history_bar_show", text="", icon='TIME', emboss=True, toggle=True)
+        row.popover(panel="VIEW3D_PT_phantom_history", text="")
+    else:
+        row.operator("wm.call_menu", text="", icon='TIME', emboss=False).name = "TOPBAR_MT_undo_history"
+    row.separator()
+    row.popover(TOPBAR_PT_phantom_simple_customize.__name__, text="", icon='WINDOW')
+    row.popover(TOPBAR_PT_phantom_simple_help.__name__, text="", icon='QUESTION')
+    row.operator("screen.userpref_show", text="", icon='PREFERENCES', emboss=False)
 
 
 def _draw_view_menu(self, context):
@@ -4194,6 +4858,16 @@ classes = (
     VIEW3D_OT_phantom_simple_slot,
     VIEW3D_MT_phantom_simple_slot,
     VIEW3D_PT_phantom_simple_quick_menu,
+    VIEW3D_OT_phantom_simple_scene_action,
+    PhantomSimpleSceneRow,
+    VIEW3D_UL_phantom_simple_scene_plain,
+    VIEW3D_OT_phantom_simple_folder,
+    VIEW3D_OT_phantom_simple_new_folder,
+    VIEW3D_OT_phantom_simple_rename,
+    VIEW3D_OT_phantom_simple_scene_plain_delete,
+    VIEW3D_OT_phantom_simple_scene_menu,
+    VIEW3D_MT_phantom_simple_scene_more,
+    VIEW3D_MT_phantom_simple_boolean,
     VIEW3D_PT_phantom_simple_subtools,
     TOPBAR_PT_phantom_simple_customize,
     TOPBAR_PT_phantom_simple_help,
@@ -4207,12 +4881,18 @@ def register():
         get, set_ = _make_accessors(key)
         setattr(bpy.types.WindowManager, prop_name,
                 BoolProperty(name=name, description=description, get=get, set=set_))
+    bpy.types.WindowManager.phantom_simple_scene_index = bpy.props.IntProperty(
+        name="Mesh", description="The mesh being sculpted (the Scene window's list)",
+        get=_scene_index_get, set=_scene_index_set)
     bpy.types.WindowManager.phantom_simple_tool_category = EnumProperty(
         name="Tools", description="Which tools the tool menu shows", items=_tool_category_items,
         get=_tool_category_get, set=_tool_category_set)
     for cls in classes:
         bpy.utils.register_class(cls)
+    bpy.types.WindowManager.phantom_simple_scene_rows = bpy.props.CollectionProperty(
+        type=PhantomSimpleSceneRow)
     bpy.types.VIEW3D_MT_view.append(_draw_view_menu)
+    bpy.types.UI_MT_list_item_context_menu.append(_draw_scene_row_menu)
     bpy.app.handlers.load_post.append(_on_load)
     bpy.app.handlers.save_pre.append(_restore_brush_circle)
     bpy.app.handlers.load_pre.append(_restore_brush_circle)
@@ -4249,9 +4929,13 @@ def unregister():
         if fn in handlers:
             handlers.remove(fn)
     bpy.types.VIEW3D_MT_view.remove(_draw_view_menu)
+    bpy.types.UI_MT_list_item_context_menu.remove(_draw_scene_row_menu)
+    # Before its row type goes.
+    del bpy.types.WindowManager.phantom_simple_scene_rows
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
     for prop_name in _PROPS:
         delattr(bpy.types.WindowManager, prop_name)
     del bpy.types.WindowManager.phantom_simple_tool_category
+    del bpy.types.WindowManager.phantom_simple_scene_index
     _forget_thumbnails()

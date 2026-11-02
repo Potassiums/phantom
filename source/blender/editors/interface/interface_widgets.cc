@@ -5351,7 +5351,10 @@ static void widget_list_itembut(Button *but,
 
   if (state->but_flag & UI_HOVER) {
     color_blend_v3_v3(wcol->inner, wcol->text, 0.2);
-    wcol->inner[3] = is_selected ? 255 : 20;
+    /* Phantom: a selected row keeps its own opacity, a little more under the cursor. Made fully
+     * opaque, a see-through selection color (the simple view's raised white) turned the row
+     * solid white under its white text. Opaque selection colors look as before. */
+    wcol->inner[3] = is_selected ? uchar(std::min(255, wcol->inner[3] + 24)) : 20;
   }
 
   widgetbase_draw(&wtb, wcol);

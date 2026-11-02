@@ -349,8 +349,16 @@ class SCULPT_OT_phantom_mask_to_face_set(Operator):
         return context.mode == 'SCULPT'
 
     def execute(self, context):
+        # Making a face set turns the polygroup colors on in the viewport: just make it, leave
+        # the display as it was (PolyFrame, Ctrl F, shows them).
+        overlay = context.space_data.overlay if context.space_data and \
+            context.space_data.type == 'VIEW_3D' else None
+        shown = overlay.show_sculpt_face_sets if overlay is not None else None
         # Both steps make their own sculpt undo step.
-        if bpy.ops.sculpt.face_sets_create(mode='MASKED') != {'FINISHED'}:
+        result = bpy.ops.sculpt.face_sets_create(mode='MASKED')
+        if overlay is not None:
+            overlay.show_sculpt_face_sets = shown
+        if result != {'FINISHED'}:
             return {'CANCELLED'}
         bpy.ops.paint.mask_flood_fill(mode='VALUE', value=0.0)
         # The new polygroup has the highest number: the polygroup bar works on it.

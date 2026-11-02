@@ -1057,7 +1057,9 @@ struct UserDef {
    * that allows to show the silhouette preview outside of Sculpt mode
    */
   char show_silhouette_always_disabled = 1;
-  char _pad9[4] = {};
+  /** Phantom: the navigation gizmo draws a planar head instead of the axes. */
+  char navigate_head = 0;
+  char _pad9[3] = {};
   /**
    * Experimental flag for app-templates to make changes to behavior
    * which are outside the scope of typical preferences.

@@ -12,20 +12,23 @@ the masked mesh. A panel in the viewport shapes it live:
 - **Inflate**: pushes it out along its normals (or in, below zero).
 - **Thickness**: a solid shell, grown outward from the sculpt (or inward, below zero); 0 leaves a
   single-sided surface.
-- **Smoothness**: smooths the edge of the extracted shape (or sharpens it, below zero).
+- **Smoothness**: from 0 (the edge follows the faces, stepped like ZBrush's at 0) to 1: the
+  edge's outline is relaxed along itself (without shrinking it), the rings next to it follow, and
+  all of it is put back on the sculpt's surface, so the shape comes out with a smooth outline.
 
-Every slider starts in the middle, at "nothing applied" (scale 1, the others 0), and fills from
-there. Clicking a value types an exact one (Enter applies it, Esc keeps the old one, Tab goes on to
+Every slider starts at "nothing applied" (scale 1, the others 0: in the middle, Smoothness at its
+left end) and fills from there. Clicking a value types an exact one (Enter applies it, Esc keeps the old one, Tab goes on to
 the next); typed values can go past the slider's ends.
 
 **Accept** (or Enter) makes it a plain mesh, ready to sculpt, with polygroups: one for all of it,
 or with a thickness one each for its outside, its inside (the side on the sculpt) and its rim.
 Their colors are never the masked mesh's.
-**Cancel** (or Esc) deletes it. The sliders are modifiers until then (Smooth on the edge,
-Displace, Solidify), so each change shows at once.
+**Cancel** (or Esc) deletes it. Inflate and Thickness are modifiers until then (Displace,
+Solidify) and Smoothness moves the mesh's own edge, so each change shows at once.
 """
 
 import math
+import random
 import time
 from collections import namedtuple
 
@@ -37,41 +40,47 @@ from bpy.types import Operator
 from gpu_extras.batch import batch_for_shader
 from mathutils import Matrix, Vector
 
-# Unscaled pixels.
-PANEL_W = 300
-PAD = 12
-ROW_H = 22
-LABEL_W = 78
-VALUE_W = 44
+# Unscaled pixels, on a 4 px grid, in the look of the simple view's toolbars and the mask actions
+# bar (graphite, a hairline, 12 px corners; rows and buttons tall enough for a pen).
+PANEL_W = 320
+PAD = 16
+ROW_H = 32
+LABEL_W = 88
+VALUE_W = 52
 TRACK_H = 4
-KNOB_R = 6
-# A drag this close to the middle snaps to "nothing applied".
+KNOB_R = 7
+# A drag this close to "nothing applied" snaps to it.
 SNAP = 5
-BUTTON_H = 24
-TITLE_SIZE = 12
-TEXT_SIZE = 11
-CORNER = 4
-# Room left below for the mask actions bar.
-BAR_ROOM = 56
+BUTTON_H = 38
+TITLE_SIZE = 13
+TEXT_SIZE = 12
+CORNER = 12
+CONTROL_CORNER = 8
+# Room left below for the mask actions bar (its margin, height and a gap).
+BAR_ROOM = 76
 FADE_TIME = 0.14
 
-FIELD_COLOR = (0.0, 0.0, 0.0, 0.35)
-FIELD_OUTLINE_COLOR = (0.55, 0.55, 1.0, 0.8)
-# The value boxes show they can be clicked to type in.
-FIELD_IDLE_COLOR = (0.0, 0.0, 0.0, 0.18)
-FIELD_IDLE_OUTLINE_COLOR = (1.0, 1.0, 1.0, 0.22)
-FIELD_HOVER_OUTLINE_COLOR = (0.55, 0.55, 1.0, 0.65)
-PANEL_COLOR = (0.105, 0.105, 0.125, 0.94)
-OUTLINE_COLOR = (0.55, 0.55, 1.0, 0.35)   # Phantom periwinkle.
-TRACK_COLOR = (1.0, 1.0, 1.0, 0.14)
-FILL_COLOR = (0.55, 0.55, 1.0, 0.85)
-KNOB_COLOR = (0.92, 0.92, 0.95, 1.0)
-TEXT_COLOR = (0.92, 0.92, 0.95, 1.0)
+PANEL_COLOR = (0.105, 0.105, 0.115, 0.93)
+OUTLINE_COLOR = (1.0, 1.0, 1.0, 0.06)
+TRACK_COLOR = (1.0, 1.0, 1.0, 0.16)
+# The one accent (Phantom orange): a slider's fill, the field being typed in.
+FILL_COLOR = (1.0, 0.62, 0.34, 1.0)
+KNOB_COLOR = (1.0, 1.0, 1.0, 1.0)
+TEXT_COLOR = (0.92, 0.92, 0.95, 0.92)
 DIM_TEXT_COLOR = (0.92, 0.92, 0.95, 0.6)
-ACCEPT_COLOR = (1.0, 0.62, 0.34, 0.45)    # Phantom orange.
-ACCEPT_HOVER_COLOR = (1.0, 0.62, 0.34, 0.65)
-CANCEL_COLOR = (1.0, 1.0, 1.0, 0.08)
-CANCEL_HOVER_COLOR = (1.0, 1.0, 1.0, 0.16)
+# The value boxes: quiet surfaces that show they can be clicked to type in.
+FIELD_IDLE_COLOR = (1.0, 1.0, 1.0, 0.05)
+FIELD_IDLE_OUTLINE_COLOR = (1.0, 1.0, 1.0, 0.0)
+FIELD_HOVER_OUTLINE_COLOR = (1.0, 1.0, 1.0, 0.25)
+FIELD_COLOR = (0.0, 0.0, 0.0, 0.35)
+FIELD_OUTLINE_COLOR = FILL_COLOR
+SELECTION_COLOR = (1.0, 0.62, 0.34, 0.35)
+# Accept as the start picker's main button: a deep orange with near-white text; Cancel quiet.
+ACCEPT_COLOR = (0.61, 0.34, 0.16, 1.0)
+ACCEPT_HOVER_COLOR = (0.68, 0.39, 0.19, 1.0)
+ACCEPT_TEXT_COLOR = (0.97, 0.95, 0.93, 1.0)
+CANCEL_COLOR = (1.0, 1.0, 1.0, 0.05)
+CANCEL_HOVER_COLOR = (1.0, 1.0, 1.0, 0.09)
 
 # `neutral` is "nothing applied": where each slider starts, in the middle of its range, and what it
 # fills from. Typed values may go from `typed_min` to `typed_max`.
@@ -80,19 +89,22 @@ SLIDERS = (
     Slider("scale", "Scale", 0.25, 1.75, 1.0, "{:.2f}", 0.01, 10.0),
     Slider("inflate", "Inflate", -1.0, 1.0, 0.0, "{:+.2f}", -10.0, 10.0),
     Slider("thickness", "Thickness", -1.0, 1.0, 0.0, "{:+.2f}", -10.0, 10.0),
-    Slider("smoothness", "Smoothness", -1.0, 1.0, 0.0, "{:+.2f}", -1.0, 1.0),
+    Slider("smoothness", "Smoothness", 0.0, 1.0, 0.0, "{:.2f}", 0.0, 1.0),
 )
 SLIDER = {slider.key: slider for slider in SLIDERS}
 # Inflate and thickness at 1.0, as a share of the masked mesh's size.
 INFLATE_AT_ONE = 0.05
 THICKNESS_AT_ONE = 0.1
-# Smoothing iterations at smoothness 1.0, and how many rings in from the edge it reaches.
-SMOOTH_ITERATIONS = 30
+# Outline smoothing passes at smoothness 1.0, each a small relaxing step and a step back out (so the
+# outline doesn't shrink); in between two passes the result is blended, so the slider goes
+# smoothly from stepped to round. Then how much the rings in from the edge follow it.
+SMOOTH_ITERATIONS = 24
+TAUBIN_LAMBDA = 0.15
+TAUBIN_MU = -0.155
 EDGE_RINGS = (1.0, 0.6, 0.3)
 MASK_THRESHOLD = 0.5
 
 EDGE_GROUP = "Extract Edge"
-MOD_SMOOTH = "Extract Smoothness"
 MOD_INFLATE = "Extract Inflate"
 MOD_THICKNESS = "Extract Thickness"
 # Polygroups of an accepted extract.
@@ -207,6 +219,95 @@ def _extracted_mesh(source, keep):
     return mesh, weights
 
 
+class _OutlineSmoother:
+    """Smooths the outline of an extracted mesh: its boundary is relaxed along itself (Taubin
+    smoothing: a step in and a step back out each pass, so the outline keeps its size), the rings
+    in from it follow by their weight, and everything moved is put back onto the sculpt."""
+
+    def __init__(self, mesh, weights, source_mesh, center):
+        import numpy as np
+        from mathutils.bvhtree import BVHTree
+        count = len(mesh.vertices)
+        self.base = np.empty(count * 3, dtype=np.float64)
+        mesh.vertices.foreach_get("co", self.base)
+        self.base = self.base.reshape(-1, 3)
+        edges = np.empty(len(mesh.edges) * 2, dtype=np.int32)
+        mesh.edges.foreach_get("vertices", edges)
+        edges = edges.reshape(-1, 2)
+        # Boundary edges: used by one face only.
+        corner_edges = np.empty(len(mesh.loops), dtype=np.int32)
+        mesh.loops.foreach_get("edge_index", corner_edges)
+        uses = np.bincount(corner_edges, minlength=len(edges))
+        self.boundary_edges = edges[uses == 1]
+        self.edges = edges
+        weight = np.zeros(count)
+        for index, w in weights.items():
+            weight[index] = w
+        self.boundary = np.zeros(count, dtype=bool)
+        self.boundary[self.boundary_edges.ravel()] = True
+        # The rings follow, the boundary itself is moved along the boundary only.
+        self.ring_weight = np.where(self.boundary, 0.0, weight)
+        self.moved = np.flatnonzero(weight > 0.0)
+        # The sculpt, in the extracted mesh's space (moved by -center).
+        src = np.empty(len(source_mesh.vertices) * 3, dtype=np.float64)
+        source_mesh.vertices.foreach_get("co", src)
+        src = src.reshape(-1, 3) - np.array(center)
+        self.tree = BVHTree.FromPolygons([tuple(c) for c in src],
+                                         [tuple(p.vertices) for p in source_mesh.polygons])
+        self.cache = {}
+
+    @staticmethod
+    def _laplacian(positions, edges, count):
+        import numpy as np
+        sums = np.zeros((count, 3))
+        degree = np.zeros(count)
+        np.add.at(sums, edges[:, 0], positions[edges[:, 1]])
+        np.add.at(sums, edges[:, 1], positions[edges[:, 0]])
+        np.add.at(degree, edges[:, 0], 1)
+        np.add.at(degree, edges[:, 1], 1)
+        has = degree > 0
+        delta = np.zeros((count, 3))
+        delta[has] = sums[has] / degree[has, None] - positions[has]
+        return delta
+
+    def _relaxed(self, passes):
+        """The positions after `passes` passes (kept: the slider goes back and forth)."""
+        if passes in self.cache:
+            return self.cache[passes]
+        p = (self._relaxed(passes - 1) if passes > 0 else self.base).copy()
+        if passes > 0:
+            count = len(p)
+            for factor in (TAUBIN_LAMBDA, TAUBIN_MU):
+                along = self._laplacian(p, self.boundary_edges, count)
+                p[self.boundary] += factor * along[self.boundary]
+            # The rings next to the edge follow it (all their neighbors), fading inward.
+            p += (0.25 * self.ring_weight)[:, None] * self._laplacian(p, self.edges, count)
+        self.cache[passes] = p
+        return p
+
+    def _positions(self, amount):
+        from mathutils import Vector
+        steps = min(max(amount, 0.0), 1.0) * SMOOTH_ITERATIONS
+        whole = int(steps)
+        p = self._relaxed(whole)
+        if steps > whole:
+            p = p + (self._relaxed(whole + 1) - p) * (steps - whole)
+        else:
+            p = p.copy()
+        if steps > 0.0:
+            # Back onto the sculpt's surface.
+            for index in self.moved:
+                hit = self.tree.find_nearest(Vector(p[index]))
+                if hit[0] is not None:
+                    p[index] = hit[0]
+        return p
+
+    def apply(self, mesh, amount):
+        positions = self._positions(amount)
+        mesh.vertices.foreach_set("co", positions.ravel())
+        mesh.update()
+
+
 # -----------------------------------------------------------------------------
 # The panel
 
@@ -242,10 +343,10 @@ class _Layout:
                 "field": (x + w - pad - VALUE_W * s, cy - row / 2 + 2 * s, VALUE_W * s, row - 4 * s),
                 "hit": (x + pad, cy - row / 2, w - 2 * pad - VALUE_W * s, row),
             }
-        bw = (w - 3 * pad) / 2
+        bw = (w - 2 * pad - 8 * s) / 2
         self.buttons = {
             "ACCEPT": (x + pad, y + pad, bw, BUTTON_H * s),
-            "CANCEL": (x + 2 * pad + bw, y + pad, bw, BUTTON_H * s),
+            "CANCEL": (x + pad + bw + 8 * s, y + pad, bw, BUTTON_H * s),
         }
 
 
@@ -333,7 +434,7 @@ def _draw(op):
             fan += ((kx, cy), knob[i], knob[(i + 1) % 16])
         _shape(shader, 'TRIS', fan, KNOB_COLOR, alpha)
         fx, fy, fw, fh = parts["field"]
-        tris, outline = _rounded_rect(fx, fy, fw, fh, 3 * s)
+        tris, outline = _rounded_rect(fx, fy, fw, fh, CONTROL_CORNER * s)
         if op.editing == key:
             _shape(shader, 'TRIS', tris, FIELD_COLOR, alpha)
             _shape(shader, 'LINE_LOOP', outline, FIELD_OUTLINE_COLOR, alpha)
@@ -343,8 +444,8 @@ def _draw(op):
                 blf.size(0, TEXT_SIZE * s)
                 tw = blf.dimensions(0, text)[0]
                 vx, vy = parts["value"]
-                _shape(shader, 'TRIS', _rect(vx - tw - 1 * s, fy + 3 * s, tw + 2 * s, fh - 6 * s),
-                       (0.55, 0.55, 1.0, 0.45), alpha)
+                _shape(shader, 'TRIS', _rect(vx - tw - 1 * s, fy + 6 * s, tw + 2 * s, fh - 12 * s),
+                       SELECTION_COLOR, alpha)
             _text(text, *parts["value"], 'RIGHT', TEXT_SIZE * s, TEXT_COLOR, alpha)
         else:
             _shape(shader, 'TRIS', tris, FIELD_IDLE_COLOR, alpha)
@@ -353,13 +454,13 @@ def _draw(op):
             _text(slider.fmt.format(value), *parts["value"], 'RIGHT', TEXT_SIZE * s,
                   TEXT_COLOR if op.hover == ("FIELD", key) else DIM_TEXT_COLOR if
                   abs(value - slider.neutral) < 1e-9 else TEXT_COLOR, alpha)
-    for identifier, label, color, hover_color in (
-            ("ACCEPT", "Accept", ACCEPT_COLOR, ACCEPT_HOVER_COLOR),
-            ("CANCEL", "Cancel", CANCEL_COLOR, CANCEL_HOVER_COLOR)):
+    for identifier, label, color, hover_color, text_color in (
+            ("ACCEPT", "Accept", ACCEPT_COLOR, ACCEPT_HOVER_COLOR, ACCEPT_TEXT_COLOR),
+            ("CANCEL", "Cancel", CANCEL_COLOR, CANCEL_HOVER_COLOR, TEXT_COLOR)):
         x, y, w, h = lay.buttons[identifier]
-        _shape(shader, 'TRIS', _rounded_rect(x, y, w, h, 4 * s)[0],
+        _shape(shader, 'TRIS', _rounded_rect(x, y, w, h, CONTROL_CORNER * s)[0],
                hover_color if op.hover == identifier else color, alpha)
-        _text(label, x + w / 2, y + h / 2, 'CENTER', TEXT_SIZE * s, TEXT_COLOR, alpha)
+        _text(label, x + w / 2, y + h / 2, 'CENTER', TEXT_SIZE * s, text_color, alpha)
     gpu.state.blend_set('NONE')
 
 
@@ -401,9 +502,7 @@ class SCULPT_OT_phantom_extract(Operator):
         group = ob.vertex_groups.new(name=EDGE_GROUP)
         for index, weight in weights.items():
             group.add([index], weight, 'REPLACE')
-        smooth = ob.modifiers.new(MOD_SMOOTH, 'SMOOTH')
-        smooth.vertex_group = EDGE_GROUP
-        smooth.factor = 0.5
+        self.smoother = _OutlineSmoother(mesh, weights, source.data, center)
         inflate = ob.modifiers.new(MOD_INFLATE, 'DISPLACE')
         inflate.direction = 'NORMAL'
         inflate.mid_level = 0.0
@@ -455,12 +554,7 @@ class SCULPT_OT_phantom_extract(Operator):
             return
         v = self.values
         ob.matrix_world = self.base_matrix @ Matrix.Scale(v["scale"], 4)
-        # Smoothing below zero sharpens the edge instead.
-        iterations = round(abs(v["smoothness"]) * SMOOTH_ITERATIONS)
-        smooth = ob.modifiers[MOD_SMOOTH]
-        smooth.iterations = max(iterations, 1)
-        smooth.factor = 0.5 if v["smoothness"] >= 0.0 else -0.5
-        smooth.show_viewport = iterations > 0
+        self.smoother.apply(ob.data, max(v["smoothness"], 0.0))
         ob.modifiers[MOD_INFLATE].strength = v["inflate"] * INFLATE_AT_ONE * self.size
         # Thickness below zero grows the shell inward; 0 is a single-sided surface.
         thickness = ob.modifiers[MOD_THICKNESS]
@@ -519,19 +613,23 @@ class SCULPT_OT_phantom_extract(Operator):
         elif event.type == 'BACK_SPACE':
             self.edit_text = "" if self.edit_fresh else self.edit_text[:-1]
             self.edit_fresh = False
+            _play("type_delete", random.uniform(0.94, 1.06))
         elif event.type == 'DEL':
             self.edit_text = ""
             self.edit_fresh = False
+            _play("type_delete", random.uniform(0.94, 1.06))
         elif event.type == 'V' and (event.ctrl or event.oskey):
             self.edit_text = ("" if self.edit_fresh else self.edit_text) + \
                 context.window_manager.clipboard.strip()[:16]
             self.edit_fresh = False
+            _play("type", random.uniform(0.88, 1.12))
         elif event.unicode and event.unicode in "0123456789.,-+" and not (event.ctrl or event.oskey):
             if self.edit_fresh:
                 self.edit_text = ""
             self.edit_fresh = False
             if len(self.edit_text) < 16:
                 self.edit_text += event.unicode
+                _play("type", random.uniform(0.88, 1.12))
         self.area.tag_redraw()
         return {'RUNNING_MODAL'}
 
@@ -691,10 +789,10 @@ class SCULPT_OT_phantom_extract(Operator):
         return {'PASS_THROUGH'}
 
 
-def _play(name):
+def _play(name, pitch=1.0):
     try:
         from phantom_mask_bar import _play_sound
-        _play_sound(name)
+        _play_sound(name, pitch)
     except (ImportError, AttributeError):
         pass
 

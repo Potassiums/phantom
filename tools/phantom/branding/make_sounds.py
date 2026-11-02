@@ -1,397 +1,431 @@
-"""Synthesize Phantom's interface sound effects (48 kHz, 16-bit mono WAV).
+"""Synthesize Phantom's interface sound effects: a soft, cozy set (48 kHz, 16-bit mono WAV).
 
-Pure standard library so it runs anywhere. Tweak the recipes below and re-run.
+Every sound is a small recipe built from a few warm voices: felt-mallet taps (damped sine modes
+with a rounded attack), muted bubble pops (a sine whose pitch glides as it fades), breaths of
+filtered air, and a small wooden room. Everything is low-passed and starts without a hard edge,
+and each sound is set to a loudness relative to the plain click (`LEVELS`), so the set stays
+balanced when one recipe changes. The output is deterministic.
 
-Usage: python make_sounds.py [output_dir]
+Needs numpy. Usage: python make_sounds.py [output_dir] [--report]
+(`--report` prints each sound's loudness and peak without writing anything).
 """
-import math
-import random
-import struct
 import sys
 import wave
 from pathlib import Path
+
+import numpy as np
 
 RATE = 48000
 REPO = Path(__file__).resolve().parents[3]  # tools/phantom/branding -> repository root
 DEFAULT_OUT = REPO / "release" / "datafiles" / "sounds"
 
-
-def silence(seconds):
-    return [0.0] * int(RATE * seconds)
-
-
-def mix_into(dst, src, offset_s=0.0):
-    off = int(offset_s * RATE)
-    need = off + len(src)
-    if len(dst) < need:
-        dst.extend([0.0] * (need - len(dst)))
-    for i, v in enumerate(src):
-        dst[off + i] += v
+# Loudness of the plain click: A-weighted RMS of its loudest 50 ms, in dBFS. Every other sound is
+# set relative to it in `LEVELS`; Phantom's own volume preference scales the whole set on top.
+REFERENCE_DB = -26.0
 
 
-def envelope(i, attack_s, tau_s):
-    """Linear attack, then exponential decay with time constant tau."""
-    t = i / RATE
-    if t < attack_s:
-        return t / attack_s
-    return math.exp(-(t - attack_s) / tau_s)
+# ---------------------------------------------------------------------------------------------
+# Building blocks.
+
+def _time(dur):
+    return np.arange(int(RATE * dur)) / RATE
 
 
-def tone(freq, dur, *, amp=1.0, attack=0.002, tau=0.03, glide_to=None, partials=((1, 1.0),)):
-    """Sine-based tone with optional exponential pitch glide and extra partials."""
-    n = int(RATE * dur)
-    out = []
-    phase = [0.0] * len(partials)
-    for i in range(n):
-        f = freq if glide_to is None else freq * (glide_to / freq) ** (i / n)
-        s = 0.0
-        for k, (mult, gain) in enumerate(partials):
-            phase[k] += 2 * math.pi * f * mult / RATE
-            s += gain * math.sin(phase[k])
-        out.append(amp * s * envelope(i, attack, tau))
+def _osc(freq, t):
+    """Sine following `freq` (a number or a per-sample array), phase-continuous."""
+    freq = np.broadcast_to(np.asarray(freq, dtype=float), t.shape)
+    return np.sin(2 * np.pi * np.cumsum(freq) / RATE)
+
+
+def envelope(t, attack, tau):
+    """Rounded (raised-cosine) attack, then an exponential decay with time constant `tau`.
+    The rounded start is what keeps every sound free of a hard click."""
+    rise = 0.5 - 0.5 * np.cos(np.pi * np.clip(t / max(attack, 1e-6), 0.0, 1.0))
+    return rise * np.exp(-np.maximum(t - attack, 0.0) / tau)
+
+
+def mix(*parts):
+    """Sum (sound, offset_seconds) pairs into one buffer."""
+    n = max(int(off * RATE) + len(s) for s, off in parts)
+    out = np.zeros(n)
+    for s, off in parts:
+        i = int(off * RATE)
+        out[i:i + len(s)] += s
     return out
 
 
-def noise_burst(dur, *, amp=1.0, tau=0.002, highpass=0.85, seed=7):
-    rng = random.Random(seed)
-    n = int(RATE * dur)
-    out, prev_in, prev_out = [], 0.0, 0.0
-    for i in range(n):
-        x = rng.uniform(-1, 1)
-        # One-pole high-pass keeps only the crisp top end.
-        y = highpass * (prev_out + x - prev_in)
-        prev_in, prev_out = x, y
-        out.append(amp * y * envelope(i, 0.0003, tau))
-    return out
+def _biquad(x, b0, b1, b2, a1, a2):
+    y = np.empty(len(x))
+    x1 = x2 = y1 = y2 = 0.0
+    for i, v in enumerate(x.tolist()):
+        o = b0 * v + b1 * x1 + b2 * x2 - a1 * y1 - a2 * y2
+        x2, x1, y2, y1 = x1, v, y1, o
+        y[i] = o
+    return y
 
 
-def finish(samples, peak):
-    """Normalize to `peak`, add 4 ms fade-out, soft-clip for safety."""
-    m = max(1e-9, max(abs(s) for s in samples))
-    samples = [s / m * peak for s in samples]
-    fade = int(0.004 * RATE)
-    for i in range(min(fade, len(samples))):
-        samples[-1 - i] *= i / fade
-    return [math.tanh(s * 1.2) / math.tanh(1.2) for s in samples]
+def lowpass(x, cutoff, q=0.6):
+    """12 dB/octave low-pass (gentle Q, no resonant peak): rounds off the top end."""
+    w = 2 * np.pi * cutoff / RATE
+    alpha = np.sin(w) / (2 * q)
+    c = np.cos(w)
+    a0 = 1 + alpha
+    return _biquad(x, (1 - c) / 2 / a0, (1 - c) / a0, (1 - c) / 2 / a0, -2 * c / a0, (1 - alpha) / a0)
 
 
-def write(path, samples):
-    with wave.open(str(path), "wb") as w:
-        w.setnchannels(1)
-        w.setsampwidth(2)
-        w.setframerate(RATE)
-        w.writeframes(b"".join(struct.pack("<h", int(max(-1, min(1, s)) * 32767)) for s in samples))
+def highpass(x, cutoff, q=0.6):
+    w = 2 * np.pi * cutoff / RATE
+    alpha = np.sin(w) / (2 * q)
+    c = np.cos(w)
+    a0 = 1 + alpha
+    return _biquad(x, (1 + c) / 2 / a0, -(1 + c) / a0, (1 + c) / 2 / a0, -2 * c / a0, (1 - alpha) / a0)
 
 
-def lowpass(samples, cutoff_hz):
-    """One-pole low-pass: rounds off the top end for a warmer, softer sound."""
-    a = 1.0 - math.exp(-2 * math.pi * cutoff_hz / RATE)
-    out, y = [], 0.0
-    for x in samples:
-        y += a * (x - y)
-        out.append(y)
-    return out
+def room(x, *, wet=0.18, size=1.0, damp=2400, tail=0.22):
+    """A small, soft wooden room: six feedback combs at unrelated lengths (so it never rings
+    metallic), darkened and kept out of the low end."""
+    n = len(x) + int(tail * RATE)
+    dry = np.zeros(n)
+    dry[:len(x)] = x
+    out = np.zeros(n)
+    for ms, fb in ((11.3, 0.50), (13.7, 0.48), (17.9, 0.46), (19.1, 0.44), (23.3, 0.42), (29.7, 0.40)):
+        d = int(ms * size * RATE / 1000)
+        buf = dry.copy()
+        for start in range(d, n, d):  # buf[i] = x[i] + fb * buf[i - d], one delay length at a time.
+            end = min(start + d, n)
+            buf[start:end] += fb * buf[start - d:end - d]
+        out += buf - dry
+    out = highpass(lowpass(out / 6, damp), 220)
+    return dry + wet * out
 
 
-def room(samples, *, mix=0.22, tail_s=0.18):
-    """Tiny cozy room: a few feedback comb delays, like a small wooden house."""
-    out = samples + [0.0] * int(tail_s * RATE)
-    wet = [0.0] * len(out)
-    for delay_ms, fb in ((23.0, 0.45), (31.0, 0.4), (41.0, 0.35)):
-        d = int(delay_ms / 1000 * RATE)
-        buf = [0.0] * len(out)
-        for i in range(len(out)):
-            buf[i] = (out[i] if i < len(samples) else 0.0) + (fb * buf[i - d] if i >= d else 0.0)
-            wet[i] += buf[i] / 3
-    wet = lowpass(wet, 3000)
-    return [d + mix * w for d, w in zip(out, wet)]
+def _noise(dur, seed):
+    return np.random.default_rng(seed).standard_normal(int(RATE * dur))
 
 
-# Cozy instrument voices (inspired by the soft, rounded sound design of life-sim games).
-MARIMBA = ((1, 1.0), (3.93, 0.18))
-KALIMBA = ((1, 1.0), (2.0, 0.12), (5.4, 0.05))
+# ---------------------------------------------------------------------------------------------
+# Voices.
+
+# Mode tables: (frequency ratio, gain, decay scale). Upper modes die away faster than the body.
+FELT = ((1.0, 1.0, 1.0), (1.59, 0.22, 0.5), (2.14, 0.07, 0.3))           # Felt on a small box.
+WOOD = ((1.0, 1.0, 1.0), (2.76, 0.16, 0.35), (5.40, 0.04, 0.15))         # Little wooden bar.
+MARIMBA = ((1.0, 1.0, 1.0), (3.93, 0.10, 0.25), (9.2, 0.015, 0.08))
+KALIMBA = ((1.0, 1.0, 1.0), (2.0, 0.08, 0.6), (5.4, 0.035, 0.2))
 
 
-def marimba(freq, dur=0.22, *, amp=1.0, tau=0.07):
-    body = tone(freq, dur, amp=amp, attack=0.003, tau=tau, partials=MARIMBA)
-    # The upper partial of a marimba bar dies away much faster than the body.
-    knock = tone(freq * 3.93, min(dur, 0.04), amp=amp * 0.12, attack=0.001, tau=0.008)
-    mix_into(body, knock)
-    return body
+def tap(freq, dur=0.1, *, modes=FELT, attack=0.002, tau=0.02, drop=0.0, amp=1.0):
+    """A soft mallet tap. `drop` bends the pitch down a little right at the start, the 'thock'
+    of something soft being struck."""
+    t = _time(dur)
+    bend = 1.0 + drop * np.exp(-t / 0.006)
+    out = np.zeros_like(t)
+    for ratio, gain, scale in modes:
+        out += gain * _osc(freq * ratio * bend, t) * envelope(t, attack, tau * scale)
+    return amp * out
 
 
-def kalimba(freq, dur=0.3, *, amp=1.0, tau=0.09):
-    s = tone(freq, dur, amp=amp, attack=0.002, tau=tau, partials=KALIMBA)
-    mix_into(s, tone(freq * 7.1, 0.02, amp=amp * 0.06, attack=0.0005, tau=0.004))  # Tine "tink".
-    return s
+def bubble(f_from, f_to, dur, *, attack=0.004, tau=0.03, amp=1.0):
+    """A muted bubble pop: a round sine gliding (quickly at first) from `f_from` to `f_to`."""
+    t = _time(dur)
+    f = f_from * (f_to / f_from) ** (1.0 - np.exp(-t / (dur / 3)))
+    return amp * (_osc(f, t) + 0.05 * _osc(2 * f, t)) * envelope(t, attack, tau)
 
 
-def bubble(f_from, f_to, dur, *, amp=1.0, tau=0.035):
-    return tone(f_from, dur, amp=amp, attack=0.004, tau=tau, glide_to=f_to, partials=((1, 1.0), (2, 0.08)))
+def air(dur, *, cutoff=1400, attack=0.02, tau=0.03, seed=1, amp=1.0):
+    """A breath of soft, dark air."""
+    n = highpass(lowpass(_noise(dur, seed), cutoff), 180)
+    return amp * n / (n.std() + 1e-12) * 0.3 * envelope(_time(dur), attack, tau)
 
 
-def wood_block(freq, *, amp=1.0):
-    s = tone(freq, 0.05, amp=amp, attack=0.0008, tau=0.012, partials=((1, 1.0), (2.7, 0.3)))
-    mix_into(s, lowpass(noise_burst(0.01, amp=amp * 0.25, tau=0.002, highpass=0.5, seed=11), 2500))
-    return s
+def grain(dur, *, cutoff=2400, tau=0.002, seed=1, amp=1.0):
+    """A tiny puff of muffled noise: the felt or paper texture under a tap."""
+    n = lowpass(highpass(_noise(dur, seed), 500), cutoff)
+    return amp * n / (n.std() + 1e-12) * 0.3 * envelope(_time(dur), 0.0006, tau)
 
 
-def cozy(samples, *, peak, cutoff=4200, reverb=0.22):
-    return finish(room(lowpass(samples, cutoff), mix=reverb), peak)
+# Notes (a warm, mostly pentatonic register).
+B3, C4, D4, E4, G4, A4 = 246.94, 261.63, 293.66, 329.63, 392.0, 440.0
+B4, C5, D5, E5, G5, A5 = 493.88, 523.25, 587.33, 659.26, 783.99, 880.0
 
 
-# Note frequencies (pentatonic-friendly picks).
-C5, D5, E5, G5, A5 = 523.25, 587.33, 659.26, 783.99, 880.0
-C6, D6, E6, G6 = 1046.5, 1174.66, 1318.51, 1567.98
+# ---------------------------------------------------------------------------------------------
+# Recipes. Each returns (samples, cutoff, room wet); `make` finishes and levels them.
+
+def click():
+    """Soft felt tap on a small wooden box."""
+    s = mix((tap(560, 0.07, attack=0.0015, tau=0.016, drop=0.12), 0),
+            (grain(0.012, cutoff=2200, amp=0.12, seed=3), 0))
+    return s, 2600, 0.08
+
+
+def toggle(rising):
+    """A muted pop with a little switch body: gliding up when turned on, down when turned off."""
+    a, b = (430, 640) if rising else (600, 400)
+    s = mix((tap(a, 0.05, attack=0.0015, tau=0.01, amp=0.45), 0),
+            (bubble(a, b, 0.08, attack=0.004, tau=0.022), 0.012))
+    return s, 2400, 0.1
+
+
+def menu_open():
+    """Soft airy 'fwip' up, as the menu unfolds."""
+    s = mix((air(0.07, cutoff=1500, attack=0.015, tau=0.02, seed=4, amp=0.7), 0),
+            (bubble(320, 560, 0.09, attack=0.008, tau=0.026), 0.006))
+    return s, 2200, 0.1
+
+
+def confirm():
+    """One soft, rounded 'bloop': a felt pluck on a little wooden box that bends up a touch as it
+    sounds. Cute and settled, no chime."""
+    t = _time(0.22)
+    f = G4 * (1.0 - 0.09 * np.exp(-t / 0.03))  # Starts a little flat and rises into the note.
+    body = _osc(f, t) * envelope(t, 0.005, 0.05)
+    round_ = 0.1 * _osc(2 * f, t) * envelope(t, 0.003, 0.014)  # The octave, gone almost at once.
+    s = mix((body + round_, 0), (grain(0.01, cutoff=1400, amp=0.05, seed=9), 0))
+    return s, 1600, 0.1
+
+
+def error():
+    """A gentle 'uh-oh': two low wooden notes stepping down, the second softly wobbling."""
+    second = tap(B3, 0.3, modes=WOOD, attack=0.003, tau=0.08) + tap(B3 * 1.012, 0.3, modes=WOOD,
+                                                                     attack=0.003, tau=0.08)
+    s = mix((tap(D4, 0.16, modes=WOOD, attack=0.003, tau=0.05), 0), (0.55 * second, 0.11))
+    return s, 1800, 0.16
 
 
 def grab_start():
-    """Soft upward 'boop' as a vertex/object is picked up."""
-    return cozy(bubble(380, 620, 0.09, tau=0.03), peak=0.16, cutoff=2600)
+    """Soft upward 'boop' as something is picked up."""
+    return bubble(300, 480, 0.1, attack=0.005, tau=0.028), 2000, 0.12
 
 
 def transform_confirm():
-    """Two soft rising bubbles: 'pop-pop', it settles into place (same family as grab)."""
-    s = bubble(420, 560, 0.06, tau=0.022)
-    mix_into(s, bubble(560, 760, 0.08, amp=0.8, tau=0.028), 0.055)
-    return cozy(s, peak=0.15, cutoff=2400)
+    """Two soft rising pops, 'pop-pop': it settles into place (same family as grab)."""
+    s = mix((bubble(360, 480, 0.07, tau=0.02), 0), (bubble(480, 640, 0.09, tau=0.026, amp=0.8), 0.055))
+    return s, 2200, 0.14
 
 
 def transform_cancel():
-    """One gentle bubble sinking back to where it was."""
-    return cozy(bubble(560, 360, 0.11, tau=0.04), peak=0.14, cutoff=2200)
+    """One gentle pop sinking back to where it was (also the dialogs' cancel)."""
+    return bubble(520, 340, 0.12, attack=0.005, tau=0.036), 2000, 0.14
 
 
 def undo():
     """Two soft steps back down."""
-    s = bubble(700, 520, 0.06, tau=0.022)
-    mix_into(s, bubble(560, 400, 0.08, amp=0.85, tau=0.028), 0.06)
-    return cozy(s, peak=0.13, cutoff=2400, reverb=0.18)
+    s = mix((bubble(560, 450, 0.07, tau=0.02), 0), (bubble(450, 350, 0.09, tau=0.026, amp=0.85), 0.06))
+    return s, 2100, 0.14
 
 
 def redo():
     """Two soft steps back up."""
-    s = bubble(400, 560, 0.06, tau=0.022)
-    mix_into(s, bubble(520, 700, 0.08, amp=0.85, tau=0.028), 0.06)
-    return cozy(s, peak=0.13, cutoff=2400, reverb=0.18)
-
-
-def mode_switch():
-    """Soft airy 'fwoop' into a kalimba note: swapping tools, like opening a pocket."""
-    air = lowpass(noise_burst(0.09, amp=0.3, tau=0.04, highpass=0.5, seed=41), 1800)
-    air = [v * min(1.0, i / (0.03 * RATE)) for i, v in enumerate(air)]  # Breathe in.
-    s = air
-    mix_into(s, bubble(330, 520, 0.1, amp=0.7, tau=0.035))
-    mix_into(s, kalimba(E5, 0.28, amp=0.55, tau=0.08), 0.07)
-    return cozy(s, peak=0.15, cutoff=2600, reverb=0.2)
+    s = mix((bubble(350, 450, 0.07, tau=0.02), 0), (bubble(450, 560, 0.09, tau=0.026, amp=0.85), 0.06))
+    return s, 2100, 0.14
 
 
 def type_tap():
-    """Little rounded key 'pip' - pitch is varied at playback time."""
-    s = tone(1050, 0.03, attack=0.001, tau=0.007, partials=((1, 1.0), (2, 0.1)))
-    mix_into(s, lowpass(noise_burst(0.006, amp=0.2, tau=0.0015, highpass=0.4, seed=5), 3000))
-    return cozy(s, peak=0.13, cutoff=3800, reverb=0.08)
+    """Muted keycap 'thock' (pitch is varied at playback time)."""
+    s = mix((tap(340, 0.05, attack=0.001, tau=0.01, drop=0.18), 0),
+            (grain(0.008, cutoff=1800, amp=0.1, seed=5), 0))
+    return s, 2000, 0.04
 
 
 def type_delete():
-    s = tone(620, 0.04, attack=0.001, tau=0.009, glide_to=520, partials=((1, 1.0), (2, 0.1)))
-    return cozy(s, peak=0.12, cutoff=3000, reverb=0.08)
+    """The same key, a little lower and duller."""
+    s = mix((tap(270, 0.055, attack=0.0012, tau=0.011, drop=0.22), 0),
+            (grain(0.008, cutoff=1400, amp=0.08, seed=6), 0))
+    return s, 1700, 0.04
 
 
 def type_enter():
-    s = marimba(G5, 0.12, tau=0.03)
-    mix_into(s, marimba(D6, 0.16, tau=0.04), 0.035)
-    return cozy(s, peak=0.15, reverb=0.15)
+    """A soft keycap tap into two little marimba notes."""
+    s = mix((tap(300, 0.05, attack=0.001, tau=0.01, drop=0.18, amp=0.5), 0),
+            (tap(G4, 0.18, modes=MARIMBA, attack=0.002, tau=0.04, amp=0.8), 0.015),
+            (tap(D5, 0.22, modes=MARIMBA, attack=0.002, tau=0.055, amp=0.7), 0.055))
+    return s, 2600, 0.14
 
 
 def outliner_select():
     """Soft wooden 'tok'."""
-    return cozy(wood_block(740), peak=0.15, cutoff=3200, reverb=0.12)
+    return tap(620, 0.09, modes=WOOD, attack=0.0015, tau=0.02), 2600, 0.1
 
 
 def loop_cut():
-    """A soft 'zip' along the loop, ending in a little chime."""
-    zip_ = noise_burst(0.07, amp=0.35, tau=0.03, highpass=0.7, seed=21)
-    zip_ = [v * (i / len(zip_)) for i, v in enumerate(zip_)]  # Swell into the chime.
-    s = lowpass(zip_, 2200)
-    mix_into(s, bubble(500, 900, 0.07, amp=0.5, tau=0.03))
-    mix_into(s, kalimba(A5, 0.3, tau=0.09), 0.06)
-    mix_into(s, kalimba(E6, 0.3, amp=0.5, tau=0.08), 0.1)
-    return cozy(s, peak=0.19)
+    """A soft swish along the loop, landing on two kalimba notes."""
+    swish = air(0.09, cutoff=1500, attack=0.06, tau=0.02, seed=21, amp=0.8)
+    s = mix((swish, 0),
+            (bubble(380, 640, 0.08, attack=0.01, tau=0.03, amp=0.4), 0.02),
+            (tap(A4, 0.32, modes=KALIMBA, attack=0.002, tau=0.09), 0.065),
+            (tap(E5, 0.32, modes=KALIMBA, attack=0.002, tau=0.08, amp=0.5), 0.105))
+    return s, 2600, 0.18
 
 
 def slide_tick():
     """Tiny wooden tick; pitch follows the slide position at playback time."""
-    return cozy(wood_block(1200, amp=0.8), peak=0.09, cutoff=3500, reverb=0.05)
+    return tap(720, 0.04, modes=WOOD, attack=0.001, tau=0.007), 2400, 0.0
 
 
 def measure_tick():
-    """Muted little 'tk' of a measuring wheel - same pitch every step, so it reads as a steady count."""
-    s = wood_block(880, amp=0.7)
-    mix_into(s, tone(440, 0.04, amp=0.25, attack=0.001, tau=0.01))  # Soft body under the tick.
-    return cozy(s, peak=0.07, cutoff=2400, reverb=0.06)
+    """The softest 'tk' (measuring, and scrubbing the history timeline): it can play many times a
+    second, so it is short, dry, low and quiet, the same pitch every step so it reads as a count."""
+    return tap(500, 0.035, attack=0.0012, tau=0.0055, drop=0.08), 1800, 0.0
 
 
 def loop_add():
-    """Soft rising "plip" for each loop added while loop cutting."""
-    return cozy(bubble(480, 660, 0.07, tau=0.022), peak=0.11, cutoff=2600, reverb=0.08)
+    """Soft rising 'plip' for each loop added while loop cutting."""
+    return bubble(420, 580, 0.07, attack=0.003, tau=0.018), 2000, 0.05
 
 
 def loop_remove():
-    """The same "plip" sinking back, for each loop taken away."""
-    return cozy(bubble(660, 470, 0.07, tau=0.022), peak=0.10, cutoff=2400, reverb=0.08)
+    """The same 'plip' sinking back, for each loop taken away."""
+    return bubble(560, 420, 0.07, attack=0.003, tau=0.018), 1900, 0.05
 
 
 def knife_cut():
-    """Soft paper-scissors 'snip'."""
-    a = lowpass(noise_burst(0.025, amp=1.0, tau=0.006, highpass=0.8, seed=31), 5000)
-    b = lowpass(noise_burst(0.03, amp=0.8, tau=0.008, highpass=0.8, seed=37), 4200)
-    s = a
-    mix_into(s, b, 0.045)
-    mix_into(s, tone(260, 0.05, amp=0.25, attack=0.002, tau=0.015), 0.045)  # Soft 'thunk' of the blade.
-    return cozy(s, peak=0.15, cutoff=4500, reverb=0.1)
+    """Soft paper-scissors 'snip-snip' with a felt thunk of the blade."""
+    s = mix((grain(0.03, cutoff=2600, tau=0.006, seed=31), 0),
+            (grain(0.035, cutoff=2300, tau=0.008, seed=37, amp=0.8), 0.05),
+            (tap(200, 0.06, attack=0.002, tau=0.014, amp=0.35), 0.05))
+    return s, 2800, 0.08
+
+
+def mode_switch():
+    """Soft airy 'fwoop' into a kalimba note: swapping modes, like opening a pocket."""
+    s = mix((air(0.1, cutoff=1300, attack=0.035, tau=0.03, seed=41, amp=0.7), 0),
+            (bubble(300, 470, 0.1, attack=0.01, tau=0.035, amp=0.6), 0.01),
+            (tap(E5, 0.3, modes=KALIMBA, attack=0.002, tau=0.085, amp=0.8), 0.07))
+    return s, 2400, 0.18
 
 
 def paper_crumple():
-    """Soft paper crumple for deleting: little creases crackling in two squeezes of the hand (the
-    second smaller) and settling, over a faint rustle."""
-    rng = random.Random(1028)
+    """Soft paper crumple for deleting a file (the start picker): little muffled creases in two
+    squeezes of the hand (the second smaller) settling over a faint rustle."""
+    rng = np.random.default_rng(1028)
     dur = 0.46
-    n = int(RATE * dur)
+    t = _time(dur)
 
-    def bump(t, center, width):
-        return math.exp(-0.5 * ((t - center) / width) ** 2)
+    def bump(center, width):
+        return np.exp(-0.5 * ((t - center) / width) ** 2)
 
-    density = [bump(i / RATE, 0.075, 0.035) + 0.75 * bump(i / RATE, 0.215, 0.04) +
-               0.25 * bump(i / RATE, 0.33, 0.045) for i in range(n)]
-    top = max(density)
-    density = [d / top for d in density]
-    s = [0.0] * n
-    for i in range(n):
-        # Up to 1400 creases a second at the busiest, each a few milliseconds of noise; sharper
-        # ones brighter (more high-pass), softer ones duller.
-        if rng.random() < 1400 * density[i] / RATE:
-            amp = min(rng.lognormvariate(0.0, 0.35), 1.8) * (0.4 + 0.6 * density[i])
-            grain = noise_burst(rng.uniform(0.0008, 0.006), amp=amp, tau=rng.uniform(0.0006, 0.0016),
-                                highpass=rng.choice((0.92, 0.6)), seed=rng.randrange(1 << 30))
-            mix_into(s, grain, i / RATE)
-    rustle = noise_burst(dur, amp=1.0, tau=60.0, highpass=0.6, seed=1029)
-    for i in range(n):
-        s[i] += rustle[i] * (0.012 + 0.06 * density[i])
-    # Round off the loudest snaps so it stays soft, and fade it out.
-    loudest = sorted(abs(v) for v in s)[int(n * 0.995)]
-    s = [math.tanh(v / loudest * 0.8) for v in s]
-    tail = int(0.06 * RATE)
-    for i in range(tail):
-        s[-1 - i] *= (i / tail) ** 2
-    return cozy(s, peak=0.2, cutoff=5000, reverb=0.06)
+    density = bump(0.075, 0.035) + 0.7 * bump(0.215, 0.04) + 0.22 * bump(0.33, 0.045)
+    density /= density.max()
+    s = np.zeros(len(t))
+    for i in np.nonzero(rng.random(len(t)) < 900 * density / RATE)[0]:
+        g = grain(rng.uniform(0.002, 0.007), cutoff=rng.choice((1600, 2600)), tau=rng.uniform(0.0008, 0.002),
+                  seed=int(rng.integers(1 << 30)), amp=min(rng.lognormal(0.0, 0.3), 1.6) * (0.4 + 0.6 * density[i]))
+        s[i:i + len(g)] += g[:len(s) - i]
+    rustle = lowpass(highpass(_noise(dur, 1029), 400), 1800)
+    s += rustle / rustle.std() * 0.02 * (0.2 + density)
+    s *= np.minimum(1.0, (len(t) - np.arange(len(t))) / (0.06 * RATE)) ** 2  # Fade out.
+    return s, 3000, 0.06
 
 
-def fade_away():
-    """Soft fade for deleting something from the scene, after the airy synth tones of Halo's menus:
-    a glassy chord (a root and its fifth, each a little detuned for a gentle shimmer) sinking an
-    octave as it fades, over a whisper of air. Round attack, no hiss, a calm tail (the paper
-    crumple is the start picker's, for files)."""
-    dur = 0.62
-    # Round, glassy voices: mostly sine, a touch of the octave and the third harmonic.
-    glass = ((1, 1.0), (2, 0.12), (3, 0.04))
-    s = []
-    for freq, amp, delay in ((587.33, 1.0, 0.0), (880.0, 0.42, 0.012)):   # D5 and its fifth.
-        for detune in (1.0, 1.0035):
-            mix_into(s, tone(freq * detune, dur, amp=amp * 0.5, attack=0.035, tau=0.16,
-                             glide_to=freq * detune / 2.0, partials=glass), delay)
-    # A whisper of air, darkening as it goes, under the chord.
-    rng = random.Random(4096)
-    n = int(RATE * dur)
-    lp1 = lp2 = 0.0
-    air = []
-    for i in range(n):
-        t = i / RATE
-        fc = 1400.0 * (260.0 / 1400.0) ** (t / dur)
-        a = 1.0 - math.exp(-2 * math.pi * fc / RATE)
-        lp1 += a * (rng.uniform(-1, 1) - lp1)
-        lp2 += a * (lp1 - lp2)
-        swell = (t / 0.06) ** 2 if t < 0.06 else math.exp(-(t - 0.06) / 0.14)
-        air.append(lp2 * swell * 0.9)
-    mix_into(s, air)
-    tail = int(0.12 * RATE)
-    for i in range(tail):
-        s[-1 - i] *= (i / tail) ** 2
-    return cozy(s, peak=0.12, cutoff=2600, reverb=0.3)
+def swoosh():
+    """A quick, subtle swoosh for deleting something from the scene: soft air through a gentle
+    band-pass that sweeps down as it passes, fading in fast and out slowly."""
+    dur = 0.22
+    t = _time(dur)
+    x = _noise(dur, 4096)
+    fc = 1800.0 * (380.0 / 1800.0) ** (t / dur)
+    # State-variable filter with a moving center; low damping keeps it airy, never whistling.
+    tune = 2 * np.sin(np.pi * fc / RATE)
+    damping = 1.1
+    low = band = 0.0
+    out = np.empty(len(x))
+    for i, (v, k) in enumerate(zip(x.tolist(), tune.tolist())):
+        low += k * band
+        band += k * (v - low - damping * band)
+        out[i] = band + 0.3 * low
+    swell = np.where(t < 0.035, 0.5 - 0.5 * np.cos(np.pi * t / 0.035), np.exp(-(t - 0.035) / 0.06))
+    s = out / out.std() * swell
+    s *= np.minimum(1.0, (len(t) - np.arange(len(t))) / (0.05 * RATE)) ** 2
+    return s, 2000, 0.06
 
 
-BELL = ((1, 1.0), (2, 0.25), (3, 0.06))
-REED = ((1, 1.0), (3, 0.22), (5, 0.08))
-BUZZ = ((1, 1.0), (3, 1 / 3), (5, 1 / 5), (7, 1 / 7))
-
-
-def click():
-    s = tone(2400, 0.035, glide_to=1700, tau=0.006, attack=0.0005)
-    mix_into(s, noise_burst(0.006, amp=0.5))
-    return finish(s, 0.32)
-
-
-def toggle(rising):
-    lo, hi = 880.0, 1320.0
-    a, b = (lo, hi) if rising else (hi, lo)
-    s = tone(a, 0.045, tau=0.015, partials=REED)
-    mix_into(s, tone(b, 0.06, tau=0.02, partials=REED), 0.035)
-    return finish(s, 0.26 if rising else 0.22)
-
-
-def menu_open():
-    s = tone(520, 0.075, glide_to=1150, tau=0.025, attack=0.004)
-    mix_into(s, noise_burst(0.02, amp=0.15, tau=0.008, highpass=0.6, seed=3))
-    return finish(s, 0.14)
-
-
-def confirm():
-    s = tone(1318.5, 0.16, tau=0.05, partials=BELL)        # E6
-    mix_into(s, tone(1975.5, 0.2, tau=0.07, partials=BELL), 0.065)  # B6
-    return finish(s, 0.3)
-
-
-def error():
-    s = tone(196.0, 0.09, tau=0.06, attack=0.003, partials=BUZZ)
-    mix_into(s, tone(185.0, 0.12, tau=0.07, attack=0.003, partials=BUZZ), 0.12)
-    return finish(s, 0.3)
-
-
+# Loudness of each sound relative to the plain click, in dB. Frequent sounds sit lower; the
+# measure/scrub tick (many per second) and slide tick sit lowest.
 SOUNDS = {
-    "click.wav": click,
-    "toggle_on.wav": lambda: toggle(True),
-    "toggle_off.wav": lambda: toggle(False),
-    "menu_open.wav": menu_open,
-    "confirm.wav": confirm,
-    "error.wav": error,
-    "grab_start.wav": grab_start,
-    "transform_confirm.wav": transform_confirm,
-    "transform_cancel.wav": transform_cancel,
-    "type.wav": type_tap,
-    "type_delete.wav": type_delete,
-    "type_enter.wav": type_enter,
-    "outliner_select.wav": outliner_select,
-    "loop_cut.wav": loop_cut,
-    "slide_tick.wav": slide_tick,
-    "knife_cut.wav": knife_cut,
-    "undo.wav": undo,
-    "redo.wav": redo,
-    "mode_switch.wav": mode_switch,
-    "measure_tick.wav": measure_tick,
-    "loop_add.wav": loop_add,
-    "loop_remove.wav": loop_remove,
-    "delete.wav": paper_crumple,
-    "delete_object.wav": fade_away,
+    "click.wav": (click, 0.0),
+    "toggle_on.wav": (lambda: toggle(True), 0.0),
+    "toggle_off.wav": (lambda: toggle(False), -1.0),
+    "menu_open.wav": (menu_open, -3.0),
+    "confirm.wav": (confirm, 0.0),
+    "error.wav": (error, 1.5),
+    "grab_start.wav": (grab_start, -3.0),
+    "transform_confirm.wav": (transform_confirm, -1.5),
+    "transform_cancel.wav": (transform_cancel, -2.5),
+    "type.wav": (type_tap, -6.0),
+    "type_delete.wav": (type_delete, -7.0),
+    "type_enter.wav": (type_enter, -3.0),
+    "outliner_select.wav": (outliner_select, -3.0),
+    "loop_cut.wav": (loop_cut, 0.0),
+    "slide_tick.wav": (slide_tick, -10.0),
+    "knife_cut.wav": (knife_cut, -4.0),
+    "undo.wav": (undo, -3.0),
+    "redo.wav": (redo, -3.0),
+    "mode_switch.wav": (mode_switch, -1.0),
+    "measure_tick.wav": (measure_tick, -13.0),
+    "loop_add.wav": (loop_add, -6.0),
+    "loop_remove.wav": (loop_remove, -7.0),
+    "delete.wav": (paper_crumple, -3.0),
+    "delete_object.wav": (swoosh, -6.0),
 }
 
 
+# ---------------------------------------------------------------------------------------------
+# Leveling and output.
+
+def _a_weighting(f):
+    f2 = f * f
+    ra = (12194.0 ** 2 * f2 * f2) / ((f2 + 20.6 ** 2) * np.sqrt((f2 + 107.7 ** 2) * (f2 + 737.9 ** 2)) *
+                                     (f2 + 12194.0 ** 2))
+    return ra / 0.7943  # 0 dB at 1 kHz.
+
+
+def loudness(x):
+    """A-weighted RMS of the loudest 50 ms, in dBFS."""
+    n = len(x) + RATE // 10
+    y = np.fft.irfft(np.fft.rfft(x, n) * _a_weighting(np.fft.rfftfreq(n, 1 / RATE)), n)
+    win = int(0.05 * RATE)
+    power = np.convolve(y * y, np.ones(win) / win, mode="valid")
+    return 10 * np.log10(power.max() + 1e-20)
+
+
+def make(recipe, level_db):
+    """Low-pass, room, level, trim the silent tail and fade it out."""
+    s, cutoff, wet = recipe()
+    s = lowpass(s, cutoff)
+    if wet > 0:
+        s = room(s, wet=wet)
+    s = highpass(s, 70)
+    s *= 10 ** ((REFERENCE_DB + level_db - loudness(s)) / 20)
+    audible = np.nonzero(np.abs(s) > np.abs(s).max() * 10 ** (-60 / 20))[0]
+    s = s[:audible[-1] + 1]
+    fade = min(len(s), int(0.008 * RATE))
+    s[len(s) - fade:] *= np.linspace(1, 0, fade) ** 2
+    return s
+
+
+def write(path, samples):
+    pcm = np.round(np.clip(samples, -1, 1) * 32767).astype("<i2")
+    with wave.open(str(path), "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(RATE)
+        w.writeframes(pcm.tobytes())
+
+
 def main():
-    out = Path(sys.argv[1]) if len(sys.argv) > 1 else DEFAULT_OUT
-    out.mkdir(parents=True, exist_ok=True)
-    for name, fn in SOUNDS.items():
-        samples = fn()
-        write(out / name, samples)
-        print(f"{name:16s} {len(samples) / RATE * 1000:5.0f} ms  peak {max(abs(x) for x in samples):.2f}")
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    report = "--report" in sys.argv
+    out = Path(args[0]) if args else DEFAULT_OUT
+    if not report:
+        out.mkdir(parents=True, exist_ok=True)
+    for name, (recipe, level_db) in SOUNDS.items():
+        s = make(recipe, level_db)
+        peak = np.abs(s).max()
+        if peak > 0.6:
+            raise SystemExit(f"{name}: peak {peak:.2f} leaves too little headroom, lower its level")
+        if not report:
+            write(out / name, s)
+        print(f"{name:22s} {len(s) / RATE * 1000:5.0f} ms  loudness {loudness(s):6.1f} dB  peak {peak:.3f}")
 
 
 if __name__ == "__main__":

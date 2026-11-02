@@ -76,7 +76,8 @@ _fade_last_time = 0.0
 # Persistent settings
 
 def _always_enabled():
-    """Whether Phantom should remember brushes (the preference added for this feature)."""
+    """Whether the thumbnail shows in every mode (Preferences > Interface > Sculpting), not only
+    in Sculpt Mode."""
     prefs = getattr(bpy.context, "preferences", None)
     return bool(getattr(prefs, "show_silhouette_always", False))
 
@@ -600,13 +601,15 @@ def register():
 
     kc = bpy.context.window_manager.keyconfigs.addon
     if kc:
-        km = kc.keymaps.new(name="Sculpt", space_type='EMPTY')
-        kmi = km.keymap_items.new(VIEW3D_OT_phantom_silhouette_drag.bl_idname,
-                                  'LEFTMOUSE', 'PRESS', any=True)
-        _addon_keymaps.append((km, kmi))
-        kmi = km.keymap_items.new(VIEW3D_OT_phantom_silhouette_hover.bl_idname,
-                                  'MOUSEMOVE', 'ANY', any=True)
-        _addon_keymaps.append((km, kmi))
+        # Sculpt Mode, and the 3D View's other modes for when it shows in every mode.
+        for name, space_type in (("Sculpt", 'EMPTY'), ("3D View", 'VIEW_3D')):
+            km = kc.keymaps.new(name=name, space_type=space_type)
+            kmi = km.keymap_items.new(VIEW3D_OT_phantom_silhouette_drag.bl_idname,
+                                      'LEFTMOUSE', 'PRESS', any=True)
+            _addon_keymaps.append((km, kmi))
+            kmi = km.keymap_items.new(VIEW3D_OT_phantom_silhouette_hover.bl_idname,
+                                      'MOUSEMOVE', 'ANY', any=True)
+            _addon_keymaps.append((km, kmi))
 
 
 def unregister():

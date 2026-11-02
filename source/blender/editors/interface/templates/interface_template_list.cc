@@ -865,7 +865,10 @@ static void template_uilist_layout_draw(const bContext *C,
       break;
   }
 
-  if (glob) {
+  /* Phantom: lists whose type name ends in `_plain` (the simple view's) are only their rows, with
+   * no filter toggle and no resize grip under them. */
+  const bool plain = ui_list->type && StringRef(ui_list->type->idname).endswith("_plain");
+  if (glob && !plain) {
     const bool add_grip_but = (flags & TEMPLATE_LIST_NO_GRIP) == 0;
 
     /* About #ButtonType::Grip drag-resize:

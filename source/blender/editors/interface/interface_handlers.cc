@@ -10932,6 +10932,31 @@ static int handle_uilist_event(bContext *C, const wmEvent *event, ARegion *regio
     }
   }
 
+  /* Phantom: Delete over a row of a `_plain` list (the simple view's) runs the list's delete
+   * operator, named after the list type (`_UL_` made `_OT_`, `_delete` added), with that row's
+   * context: popups don't run keymaps for the rows under the cursor. */
+  if (val == KM_PRESS && type == EVT_DELKEY && event->modifier == 0 && ui_list->type &&
+      StringRef(ui_list->type->idname).endswith("_plain"))
+  {
+    if (Button *row = listrow_find_mouse_over(region, event->xy)) {
+      std::string idname = ui_list->type->idname;
+      const size_t ul = idname.find("_UL_");
+      if (ul != std::string::npos) {
+        idname.replace(ul, 4, "_OT_");
+        idname += "_delete";
+        if (wmOperatorType *ot = WM_operatortype_find(idname.c_str(), true)) {
+          const bContextStore *previous = CTX_store_get(C);
+          if (row->context) {
+            CTX_store_set(C, row->context);
+          }
+          WM_operator_name_call_ptr(C, ot, wm::OpCallContext::InvokeDefault, nullptr, event);
+          CTX_store_set(C, previous);
+          return WM_UI_HANDLER_BREAK;
+        }
+      }
+    }
+  }
+
   if (val == KM_PRESS) {
     if ((ELEM(type, EVT_UPARROWKEY, EVT_DOWNARROWKEY, EVT_LEFTARROWKEY, EVT_RIGHTARROWKEY) &&
          (event->modifier == 0)) ||

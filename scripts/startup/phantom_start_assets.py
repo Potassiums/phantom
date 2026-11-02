@@ -42,6 +42,7 @@ import sys
 
 import math
 import os
+import random
 import time
 
 import blf
@@ -563,11 +564,11 @@ def canvas_is_empty(scene):
     return not any(ob.type == 'MESH' for ob in scene.objects)
 
 
-def _play(name):
+def _play(name, pitch=1.0):
     # Phantom's interface sounds, through the garment module's player when it's there.
     try:
         import phantom_garment
-        phantom_garment.play_sound(name)
+        phantom_garment.play_sound(name, pitch)
     except ImportError:
         pass
 
@@ -1311,6 +1312,10 @@ class PHANTOM_OT_start_picker(Operator):
             elif event.unicode and event.unicode.isprintable() and not (event.ctrl or event.alt or event.oskey):
                 text += event.unicode
             if text != dialog["text"]:
+                if len(text) < len(dialog["text"]):
+                    _play("type_delete", random.uniform(0.94, 1.06))
+                else:
+                    _play("type", random.uniform(0.88, 1.12))
                 dialog.update(text=text, error="")
                 self.area.tag_redraw()
         return {'RUNNING_MODAL'}
@@ -1386,10 +1391,14 @@ class PHANTOM_OT_start_picker(Operator):
             return self._accept(context, _picker["file" if _picker["view"] != 'STARTERS' else "selected"])
         # Typing goes into the search field.
         if event.value == 'PRESS' and event.type == 'BACK_SPACE':
+            if _picker["query"]:
+                _play("type_delete", random.uniform(0.94, 1.06))
             self._set_query("" if event.ctrl else _picker["query"][:-1])
             return {'RUNNING_MODAL'}
         if (event.value == 'PRESS' and event.unicode and event.unicode.isprintable()
                 and not (event.ctrl or event.alt or event.oskey)):
+            if (_picker["query"] + event.unicode).lstrip():
+                _play("type", random.uniform(0.88, 1.12))
             self._set_query((_picker["query"] + event.unicode).lstrip())
             return {'RUNNING_MODAL'}
         if not over_area:

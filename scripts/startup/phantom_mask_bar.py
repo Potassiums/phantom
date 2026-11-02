@@ -352,19 +352,23 @@ def _available(action, state, context):
     return current_polygroup(context) is not None
 
 
-def _play_sound(name):
+def _play_sound(name, pitch=1.0):
     """Play one of Phantom's interface sounds (``datafiles/sounds/<name>.wav``), if enabled."""
     view = bpy.context.preferences.view
     if bpy.app.background or not getattr(view, "use_ui_sounds", False) or view.ui_sound_volume <= 0:
         return
-    path = bpy.utils.system_resource('DATAFILES', path=os.path.join("sounds", name + ".wav"))
-    if not path or not os.path.exists(path):
+    # ``system_resource`` only finds folders, so join the file onto the sounds folder.
+    path = os.path.join(bpy.utils.system_resource('DATAFILES', path="sounds"), name + ".wav")
+    if not os.path.exists(path):
         return
     try:
         import aud
         if _audio["device"] is None:
             _audio["device"] = aud.Device()
-        _audio["device"].play(aud.Sound(path).volume(view.ui_sound_volume / 100.0))
+        sound = aud.Sound(path).volume(view.ui_sound_volume / 100.0)
+        if pitch != 1.0:
+            sound = sound.pitch(pitch)
+        _audio["device"].play(sound)
     except Exception as ex:
         print("Phantom: could not play sound:", ex)
 

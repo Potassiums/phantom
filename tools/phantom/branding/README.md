@@ -11,7 +11,7 @@ Run them from anywhere: they find the repository from their own location.
 | `make_splash.py` | `release/datafiles/splash.png` | Pillow, Windows' Bahnschrift font |
 | `make_theme.py` | `release/datafiles/userdef/userdef_default_theme.c` | git, an `upstream` remote |
 | `export_theme_preset.py` | `scripts/presets/interface_theme/Phantom.xml` | a built Phantom |
-| `make_sounds.py [dir]` | `release/datafiles/sounds/*.wav` | Python only |
+| `make_sounds.py [dir]` | `release/datafiles/sounds/*.wav` | numpy |
 
 `phantom_source.webp` is the app icon artwork that `make_icons.py` and `make_splash.py` use.
 
@@ -29,4 +29,4 @@ Run them from anywhere: they find the repository from their own location.
 - **Sounds:** each sound is a small recipe function in `make_sounds.py` (`click`, `confirm`,
   `type_tap`, `loop_cut`, ...). Change one and re-run; the output is deterministic.
 
-Pillow can be installed with `python -m pip install Pillow`.
+Pillow and numpy can be installed with `python -m pip install Pillow numpy`.

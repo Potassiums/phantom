@@ -15,11 +15,17 @@
  */
 
 #include <algorithm>
+#include <unordered_map>
+#include <vector>
 
+#include "BLI_array.hh"
+#include "BLI_math_geom_c.hh"
 #include "BLI_math_matrix_c.hh"
+#include "BLI_math_vector.hh"
 #include "BLI_math_vector_c.hh"
 #include "BLI_math_vector_types.hh"
 #include "BLI_sort_utils.hh"
+#include "BLI_vector.hh"
 
 #include "BKE_context.hh"
 
@@ -58,6 +64,207 @@ namespace blender {
 
 /* distance within this from center is considered positive. */
 #define AXIS_DEPTH_BIAS 0.01f
+
+/* -------------------------------------------------------------------- */
+/** \name Phantom: Head
+ *
+ * With #UserDef.navigate_head the gizmo shows a planar head instead of the axes, like ZBrush's:
+ * it turns with the view (facing the Front view), so the way the scene faces reads at a glance.
+ * It is flat shaded in grays, from its faces' view-space normals (a matcap of sorts), and drawn
+ * back to front. Dragging it orbits; clicking one of its faces views the scene from the side
+ * that face looks at most (the side lights up under the cursor).
+ * \{ */
+
+/* The head's size in the gizmo's circle: its vertices are in a unit sphere, but only reach it
+ * in a few directions, so a little bigger reads better (at worst an ear leaves the circle). */
+#define HEAD_SCALE 1.12f
+
+static bool gizmo_head_enabled()
+{
+  return U.navigate_head != 0;
+}
+
+/** The head's vertices in view space, in units of the gizmo's radius. */
+static Array<float3> gizmo_head_view_coords(const wmGizmo *gz)
+{
+  float m3[3][3];
+  copy_m3_m4(m3, gz->matrix_offset);
+  mul_m3_fl(m3, HEAD_SCALE / 32767.0f);
+  Array<float3> coords(view3d_navigate_head_verts_num);
+  for (const int i : coords.index_range()) {
+    const short *v = view3d_navigate_head_verts[i];
+    const float co[3] = {float(v[0]), float(v[1]), float(v[2])};
+    mul_v3_m3v3(coords[i], m3, co);
+  }
+  return coords;
+}
+
+/** The part (#gizmo_axis_test_select) for a view-space normal: the side it faces most. */
+static int gizmo_head_part_from_normal(const wmGizmo *gz, const float3 &normal_view)
+{
+  /* The normal in world space (the rotation is orthogonal: transpose to invert). */
+  int best_axis = 0;
+  float best = 0.0f;
+  for (int axis = 0; axis < 3; axis++) {
+    const float value = dot_v3v3(gz->matrix_offset[axis], normal_view);
+    if (fabsf(value) > fabsf(best)) {
+      best = value;
+      best_axis = axis;
+    }
+  }
+  /* Parts go -X, +X, -Y, +Y, -Z, +Z, starting at one. */
+  return 1 + best_axis * 2 + (best > 0.0f ? 1 : 0);
+}
+
+static float3 gizmo_head_tri_normal(Span<float3> coords, const unsigned short tri[3])
+{
+  return math::normalize(
+      math::cross(coords[tri[1]] - coords[tri[0]], coords[tri[2]] - coords[tri[0]]));
+}
+
+/** The head's edges with their two triangles (the second -1 on an open edge). */
+struct HeadEdge {
+  int verts[2];
+  int tris[2];
+};
+
+static const std::vector<HeadEdge> &gizmo_head_edges()
+{
+  /* Not guarded allocations: they live until exit. */
+  static const std::vector<HeadEdge> edges = []() {
+    std::vector<HeadEdge> edges;
+    std::unordered_map<uint64_t, int> edge_index;
+    for (int t = 0; t < view3d_navigate_head_tris_num; t++) {
+      const unsigned short *tri = view3d_navigate_head_tris[t];
+      for (int j = 0; j < 3; j++) {
+        const int a = tri[j], b = tri[(j + 1) % 3];
+        const uint64_t key = (uint64_t(std::min(a, b)) << 32) | uint64_t(std::max(a, b));
+        const auto [it, added] = edge_index.try_emplace(key, int(edges.size()));
+        if (added) {
+          edges.push_back({{a, b}, {t, -1}});
+        }
+        else {
+          edges[it->second].tris[1] = t;
+        }
+      }
+    }
+    return edges;
+  }();
+  return edges;
+}
+
+static void gizmo_head_draw(const wmGizmo *gz)
+{
+  const Array<float3> coords = gizmo_head_view_coords(gz);
+  const int tris_num = view3d_navigate_head_tris_num;
+
+  /* Each face's gray, negative when turned away (the head is closed, those are hidden). */
+  Array<float> grays(tris_num);
+  /* The faces turned to the viewer, back to front. */
+  Vector<std::pair<float, int>> order;
+  order.reserve(tris_num);
+
+  /* A key light from the upper left, in front: the grays of a clay matcap. */
+  const float3 light = math::normalize(float3(-0.45f, 0.6f, 0.66f));
+  const float3 half = math::normalize(light + float3(0.0f, 0.0f, 1.0f));
+  for (int i = 0; i < tris_num; i++) {
+    const unsigned short *tri = view3d_navigate_head_tris[i];
+    const float3 normal = gizmo_head_tri_normal(coords, tri);
+    if (normal.z <= 0.0f) {
+      grays[i] = -1.0f;
+      continue;
+    }
+    const float diffuse = std::max(math::dot(normal, light), 0.0f);
+    const float wrap = (math::dot(normal, light) + 1.0f) * 0.5f;
+    const float spec = powf(std::max(math::dot(normal, half), 0.0f), 24.0f);
+    const float rim = (1.0f - normal.z) * (1.0f - normal.z);
+    float gray = 0.2f + 0.38f * diffuse + 0.14f * wrap + 0.1f * spec - 0.06f * rim;
+    if (gz->highlight_part > 0 && gizmo_head_part_from_normal(gz, normal) == gz->highlight_part)
+    {
+      gray += 0.12f;
+    }
+    grays[i] = std::clamp(gray, 0.0f, 1.0f);
+    order.append({coords[tri[0]].z + coords[tri[1]].z + coords[tri[2]].z, i});
+  }
+  std::sort(order.begin(), order.end());
+
+  GPUVertFormat *format = immVertexFormat();
+  const uint pos_id = GPU_vertformat_attr_add(format, "pos", gpu::VertAttrType::SFLOAT_32_32_32);
+  const uint color_id = GPU_vertformat_attr_add(
+      format, "color", gpu::VertAttrType::SFLOAT_32_32_32_32);
+
+  /* Smooth the outline: the silhouette's edges as smooth lines first, the faces then cover their
+   * inner half (and the silhouettes inside the head), leaving a soft fringe outside. */
+  Vector<std::pair<const HeadEdge *, float>> outline;
+  for (const HeadEdge &edge : gizmo_head_edges()) {
+    const float gray_a = grays[edge.tris[0]];
+    const float gray_b = edge.tris[1] == -1 ? -1.0f : grays[edge.tris[1]];
+    if ((gray_a < 0.0f) != (gray_b < 0.0f)) {
+      outline.append({&edge, std::max(gray_a, gray_b)});
+    }
+  }
+  if (!outline.is_empty()) {
+    float viewport_size[4];
+    GPU_viewport_size_get_f(viewport_size);
+    GPU_blend(GPU_BLEND_ALPHA);
+    immBindBuiltinProgram(GPU_SHADER_3D_POLYLINE_SMOOTH_COLOR);
+    immUniform2fv("viewportSize", &viewport_size[2]);
+    immUniform1f("lineWidth", 1.5f * U.pixelsize);
+    immBegin(GPU_PRIM_LINES, uint(outline.size()) * 2);
+    for (const auto &[edge, gray] : outline) {
+      const float color[4] = {gray, gray, gray, 1.0f};
+      for (int j = 0; j < 2; j++) {
+        immAttr4fv(color_id, color);
+        immVertex3fv(pos_id, coords[edge->verts[j]]);
+      }
+    }
+    immEnd();
+    immUnbindProgram();
+  }
+
+  GPU_blend(GPU_BLEND_NONE);
+  immBindBuiltinProgram(GPU_SHADER_3D_FLAT_COLOR);
+  immBegin(GPU_PRIM_TRIS, uint(order.size()) * 3);
+  for (const auto &[depth, index] : order) {
+    const unsigned short *tri = view3d_navigate_head_tris[index];
+    const float color[4] = {grays[index], grays[index], grays[index], 1.0f};
+    for (int j = 0; j < 3; j++) {
+      immAttr4fv(color_id, color);
+      immVertex3fv(pos_id, coords[tri[j]]);
+    }
+  }
+  immEnd();
+  immUnbindProgram();
+}
+
+/** The part under `point` (in units of the gizmo's radius, from its center), -1 off the head. */
+static int gizmo_head_test_select(const wmGizmo *gz, const float point[2])
+{
+  const Array<float3> coords = gizmo_head_view_coords(gz);
+  int part = -1;
+  float best_depth = -FLT_MAX;
+  for (int i = 0; i < view3d_navigate_head_tris_num; i++) {
+    const unsigned short *tri = view3d_navigate_head_tris[i];
+    const float3 &a = coords[tri[0]], &b = coords[tri[1]], &c = coords[tri[2]];
+    const float3 normal = gizmo_head_tri_normal(coords, tri);
+    if (normal.z <= 0.0f) {
+      continue;
+    }
+    float w[3];
+    if (!barycentric_coords_v2(a, b, c, point, w) || w[0] < 0.0f || w[1] < 0.0f || w[2] < 0.0f)
+    {
+      continue;
+    }
+    const float depth = w[0] * a.z + w[1] * b.z + w[2] * c.z;
+    if (depth > best_depth) {
+      best_depth = depth;
+      part = gizmo_head_part_from_normal(gz, normal);
+    }
+  }
+  return part;
+}
+
+/** \} */
 
 /**
  * Phantom: name the side of the scene being looked at (Front, Back, Left, Right, Top, Bottom),
@@ -212,13 +419,27 @@ static void gizmo_axis_draw(const bContext *C, wmGizmo *gz)
     rect.xmax = rad;
     rect.ymin = -rad;
     rect.ymax = rad;
-    ui::draw_roundbox_4fv(&rect, true, rad, gz->color_hi);
+    float color_hi[4];
+    copy_v4_v4(color_hi, gz->color_hi);
+    if (gizmo_head_enabled()) {
+      /* Phantom: fainter behind the head, which keeps its contrast. */
+      color_hi[3] *= 0.4f;
+    }
+    ui::draw_roundbox_4fv(&rect, true, rad, color_hi);
     GPU_matrix_pop();
   }
 
-  GPU_matrix_mul(gz->matrix_offset);
+  /* Phantom: the head instead of the axes. */
+  int axes_num = ARRAY_SIZE(axis_order);
+  if (gizmo_head_enabled()) {
+    gizmo_head_draw(gz);
+    axes_num = 0;
+  }
+  else {
+    GPU_matrix_mul(gz->matrix_offset);
+  }
 
-  for (int axis_index = 0; axis_index < ARRAY_SIZE(axis_order); axis_index++) {
+  for (int axis_index = 0; axis_index < axes_num; axis_index++) {
     const int index = axis_order[axis_index].index;
     const int axis = axis_order[axis_index].axis;
     const bool is_pos = axis_order[axis_index].is_pos;
@@ -359,6 +580,12 @@ static int gizmo_axis_test_select(bContext * /*C*/, wmGizmo *gz, const int mval[
   const float len_sq = len_squared_v2(point_local);
   if (len_sq > 1.0) {
     return -1;
+  }
+
+  if (gizmo_head_enabled()) {
+    /* Off the head (in the circle) only drags. */
+    const int part = gizmo_head_test_select(gz, point_local);
+    return part != -1 ? part : 0;
   }
 
   int part_best = -1;

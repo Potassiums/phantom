@@ -597,6 +597,23 @@ bool popup_context_menu_for_button(bContext *C, Button *but, const wmEvent *even
   set_layout_context_from_button(C, layout, but);
   layout.operator_context_set(wm::OpCallContext::InvokeDefault);
 
+  /* Phantom: a row of a `_plain` list (the simple view's) has only the list's own items
+   * (`UI_MT_list_item_context_menu`), none of the property, driver and manual ones. */
+  if (but->type == ButtonType::ListRow) {
+    const ARegion *region = CTX_wm_region_popup(C) ? CTX_wm_region_popup(C) : CTX_wm_region(C);
+    const Button *listbox = listbox_find_mouse_over(region, event);
+    const uiList *ui_list = listbox ? static_cast<const uiList *>(listbox->custom_data) : nullptr;
+    if (ui_list && ui_list->type && StringRef(ui_list->type->idname).endswith("_plain")) {
+      if (MenuType *mt = WM_menutype_find("UI_MT_list_item_context_menu", true)) {
+        menutype_draw(C, mt, &layout.column(false));
+      }
+      if (but->context) {
+        CTX_store_set(C, previous_ctx);
+      }
+      return popup_menu_end_or_cancel(C, pup);
+    }
+  }
+
   const bool is_disabled = but->flag & BUT_DISABLED;
 
   if (is_disabled) {
