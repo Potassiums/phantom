@@ -133,9 +133,6 @@ read_data_dict = {
 def init_version(fbx_version):
     global _BLOCK_SENTINEL_LENGTH, _BLOCK_SENTINEL_DATA, read_fbx_elem_uint
 
-    assert _BLOCK_SENTINEL_LENGTH == ...
-    assert _BLOCK_SENTINEL_DATA == ...
-
     if fbx_version < 7500:
         _BLOCK_SENTINEL_LENGTH = 13
         read_fbx_elem_uint = read_uint

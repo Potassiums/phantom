@@ -1901,6 +1901,10 @@ FBXExportSettingsMedia = namedtuple("FBXExportSettingsMedia", (
 # Helper container gathering all exporter settings.
 FBXExportSettings = namedtuple("FBXExportSettings", (
     "report", "to_axes", "global_matrix", "global_scale", "apply_unit_scale", "unit_scale",
+    # BC 'FBX_SCALE_BAKE' mode only: factor baked into exported data (vertices, node translations, bind
+    # matrices, animations...), so the file is declared in real centimeters (UnitScaleFactor = 1.0) while
+    # all node LclScaling values stay untouched. Always 1.0 in the other scale modes.
+    "bake_unit_factor",
     "bake_space_transform", "global_matrix_inv", "global_matrix_inv_transposed",
     "context_objects", "object_types", "use_mesh_modifiers", "use_mesh_modifiers_render",
     "mesh_smooth_type", "use_subsurf", "use_mesh_edges", "use_tspace", "use_triangles",

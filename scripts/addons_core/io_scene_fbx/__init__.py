@@ -366,6 +366,9 @@ class ExportFBX(bpy.types.Operator, ExportHelper):
                 "Apply custom scaling to FBX scale, and units scaling to each object transformation"),
                ('FBX_SCALE_ALL', "FBX All",
                 "Apply custom scaling and units scaling to FBX scale"),
+               ('FBX_SCALE_BAKE', "Bake Units (cm data)",
+                "Bake custom and units scaling into the actual data (vertices, translations, animations), "
+                "FBX scale declared as 1.0 so all node transforms stay at 1.0 - best for Unreal Engine"),
                ),
         name="Apply Scalings",
         description="How to apply custom and units scalings in generated FBX file "

@@ -585,6 +585,8 @@ def fbx_data_light_elements(root, lamp, scene_data):
     Write the Lamp data block.
     """
     gscale = scene_data.settings.global_scale
+    # BC: In FBX_SCALE_BAKE mode the unit factor is baked into all distance data.
+    dist_scale = gscale * scene_data.settings.bake_unit_factor
 
     light_key = scene_data.data_lights[lamp]
     do_light = True
@@ -617,7 +619,7 @@ def fbx_data_light_elements(root, lamp, scene_data):
     elem_props_template_set(tmpl, props, "p_color", b"Color", color)
     elem_props_template_set(tmpl, props, "p_number", b"Intensity", intensity)
     elem_props_template_set(tmpl, props, "p_enum", b"DecayType", FBX_LIGHT_DECAY_TYPES['INVERSE_SQUARE'])
-    elem_props_template_set(tmpl, props, "p_double", b"DecayStart", 25.0 * gscale)  # 25 is old Blender default
+    elem_props_template_set(tmpl, props, "p_double", b"DecayStart", 25.0 * dist_scale)  # 25 is old Blender default
     elem_props_template_set(tmpl, props, "p_bool", b"CastShadows", do_shadow)
     elem_props_template_set(tmpl, props, "p_color", b"ShadowColor", shadow_color)
     if lamp.type in {'SPOT'}:
@@ -644,6 +646,11 @@ def fbx_data_camera_elements(root, cam_obj, scene_data):
     # Real data now, good old camera!
     # Object transform info.
     loc, rot, scale, matrix, matrix_rot = cam_obj.fbx_object_tx(scene_data)
+    # BC: In FBX_SCALE_BAKE mode the unit factor is baked into all distance data.
+    dist_scale = gscale * scene_data.settings.bake_unit_factor
+    if dist_scale != 1.0:
+        loc = loc * dist_scale
+        to = to * dist_scale
     up = matrix_rot @ Vector((0.0, 1.0, 0.0))
     to = matrix_rot @ Vector((0.0, 0.0, -1.0))
     # Render settings.
@@ -696,15 +703,15 @@ def fbx_data_camera_elements(root, cam_obj, scene_data):
     elem_props_template_set(tmpl, props, "p_double", b"SafeAreaAspectRatio", aspect)
     # Depth of field and Focus distance.
     elem_props_template_set(tmpl, props, "p_bool", b"UseDepthOfField", cam_data.dof.use_dof)
-    elem_props_template_set(tmpl, props, "p_double", b"FocusDistance", cam_data.dof.focus_distance * gscale)
+    elem_props_template_set(tmpl, props, "p_double", b"FocusDistance", cam_data.dof.focus_distance * dist_scale)
     # Default to perspective camera.
     elem_props_template_set(tmpl, props, "p_enum", b"CameraProjectionType", 1 if cam_data.type == 'ORTHO' else 0)
     elem_props_template_set(tmpl, props, "p_double", b"OrthoZoom", cam_data.ortho_scale)
 
-    elem_props_template_set(tmpl, props, "p_double", b"NearPlane", cam_data.clip_start * gscale)
-    elem_props_template_set(tmpl, props, "p_double", b"FarPlane", cam_data.clip_end * gscale)
+    elem_props_template_set(tmpl, props, "p_double", b"NearPlane", cam_data.clip_start * dist_scale)
+    elem_props_template_set(tmpl, props, "p_double", b"FarPlane", cam_data.clip_end * dist_scale)
     elem_props_template_set(tmpl, props, "p_enum", b"BackPlaneDistanceMode", 1)  # RelativeToCamera.
-    elem_props_template_set(tmpl, props, "p_double", b"BackPlaneDistance", cam_data.clip_end * gscale)
+    elem_props_template_set(tmpl, props, "p_double", b"BackPlaneDistance", cam_data.clip_end * dist_scale)
 
     elem_props_template_finalize(tmpl, props)
 
@@ -742,6 +749,10 @@ def fbx_data_bindpose_element(root, me_obj, me, scene_data, arm_obj=None, mat_wo
 
     # First node is mesh/object.
     mat_world_obj = me_obj.fbx_object_matrix(scene_data, global_space=True)
+    # BC: In FBX_SCALE_BAKE mode the unit factor is baked into the translation component of
+    # bind-space matrices (see fbx_data_armature_elements for the rationale).
+    if (bake_bind := scene_data.settings.bake_unit_factor) != 1.0:
+        mat_world_obj.translation = mat_world_obj.translation * bake_bind
     fbx_posenode = elem_empty(fbx_pose, b"PoseNode")
     elem_data_single_int64(fbx_posenode, b"Node", me_obj.fbx_uuid)
     elem_data_single_float64_array(fbx_posenode, b"Matrix", matrix4_to_array(mat_world_obj))
@@ -754,6 +765,10 @@ def fbx_data_bindpose_element(root, me_obj, me, scene_data, arm_obj=None, mat_wo
     mat_world_bones = {}
     for bo_obj in bones:
         bomat = bo_obj.fbx_object_matrix(scene_data, rest=True, global_space=True)
+        # BC: In FBX_SCALE_BAKE mode the unit factor is baked into the translation component of
+        # bind-space matrices (see fbx_data_armature_elements for the rationale).
+        if (bake_bind := scene_data.settings.bake_unit_factor) != 1.0:
+            bomat.translation = bomat.translation * bake_bind
         mat_world_bones[bo_obj] = bomat
         fbx_posenode = elem_empty(fbx_pose, b"PoseNode")
         elem_data_single_int64(fbx_posenode, b"Node", bo_obj.fbx_uuid)
@@ -869,6 +884,11 @@ def fbx_data_mesh_elements(root, me_obj, scene_data, done_meshes):
     # Vertices are in object space, but we are post-multiplying all transforms with the inverse of the
     # global matrix, so we need to apply the global matrix to the vertices to get the correct result.
     geom_mat_co = scene_data.settings.global_matrix if do_bake_space_transform else None
+    # BC: In FBX_SCALE_BAKE mode, the unit factor is baked into the vertex data itself (file is declared
+    # in actual cms, so nodes can keep their own scale values).
+    bake_co = scene_data.settings.bake_unit_factor
+    if bake_co != 1.0:
+        geom_mat_co = Matrix.Scale(bake_co, 4) @ (geom_mat_co if geom_mat_co is not None else Matrix())
     # We need to apply the inverse transpose of the global matrix when transforming normals.
     geom_mat_no = Matrix(scene_data.settings.global_matrix_inv_transposed) if do_bake_space_transform else None
     if geom_mat_no is not None:
@@ -1819,6 +1839,14 @@ def fbx_data_armature_elements(root, arm_obj, scene_data):
     Note armature itself has no data, it is a mere "Null" Model...
     """
     mat_world_arm = arm_obj.fbx_object_matrix(scene_data, global_space=True)
+    # BC: In FBX_SCALE_BAKE mode the unit factor is baked into the translation component of the
+    # bind-space matrices (BindPose, TransformLink, TransformAssociateModel).
+    # IMPORTANT: only the translation is scaled - if the whole matrix was scaled, the factor would
+    # end up as the 'scale' of the root bone on import (UE takes the root link's global scale as
+    # the ref-pose scale of that bone). No scaling of linear parts = rigid matrices, clean scales.
+    # The cluster's relative Transform matrix is fully compatible with this convention.
+    if (bake_bind := scene_data.settings.bake_unit_factor) != 1.0:
+        mat_world_arm.translation = mat_world_arm.translation * bake_bind
     bones = tuple(bo_obj for bo_obj in arm_obj.bones if bo_obj in scene_data.objects)
 
     bone_radius_scale = 33.0
@@ -1834,7 +1862,12 @@ def fbx_data_armature_elements(root, arm_obj, scene_data):
 
         tmpl = elem_props_template_init(scene_data.templates, b"Bone")
         props = elem_properties(fbx_bo)
-        elem_props_template_set(tmpl, props, "p_double", b"Size", bo.head_radius * bone_radius_scale)
+        # BC: size is a display hint in data units, bake the unit factor like the rest of the data.
+        if (bake_size := scene_data.settings.bake_unit_factor) != 1.0:
+            size = bo.head_radius * bone_radius_scale * bake_size
+        else:
+            size = bo.head_radius * bone_radius_scale
+        elem_props_template_set(tmpl, props, "p_double", b"Size", size)
         elem_props_template_finalize(tmpl, props)
 
         # Custom properties.
@@ -1932,6 +1965,10 @@ def fbx_data_leaf_bone_elements(root, scene_data):
 
         # Object transform info.
         loc, rot, scale = matrix.decompose()
+        # BC: bake unit factor into leaf-bone translation and size like the other data.
+        if (bake_tx := scene_data.settings.bake_unit_factor) != 1.0:
+            loc = loc * bake_tx
+            size *= bake_tx
         rot = rot.to_euler('XYZ')
         rot = tuple(convert_rad_to_deg_iter(rot))
 
@@ -1990,6 +2027,10 @@ def fbx_data_object_elements(root, ob_obj, scene_data):
 
     # Object transform info.
     loc, rot, scale, matrix, matrix_rot = ob_obj.fbx_object_tx(scene_data)
+    # BC: In FBX_SCALE_BAKE mode node scales stay untouched, the unit factor is baked into
+    # translations (of objects and bones alike) instead.
+    if (bake_tx := scene_data.settings.bake_unit_factor) != 1.0:
+        loc = loc * bake_tx
     rot = tuple(convert_rad_to_deg_iter(rot))
 
     tmpl = elem_props_template_init(scene_data.templates, b"Model")
@@ -2284,6 +2325,10 @@ def fbx_animations_do(scene_data, ref_id, f_start, f_end, start_zero, objects=No
             continue
         ACNW = AnimationCurveNodeWrapper
         loc, rot, scale, _m, _mr = ob_obj.fbx_object_tx(scene_data)
+        # BC: In FBX_SCALE_BAKE mode the unit factor is baked into the animated translation values
+        # (node 'defaults' here, and the keyframe values below), scales are left untouched.
+        if (bake_anim := scene_data.settings.bake_unit_factor) != 1.0:
+            loc = loc * bake_anim
         rot_deg = tuple(convert_rad_to_deg_iter(rot))
         force_key = (simplify_fac == 0.0) or (ob_obj.is_bone and force_keying)
         animdata_ob[ob_obj] = (ACNW(ob_obj.key, 'LCL_TRANSLATION', force_key, force_sek, loc),
@@ -2357,6 +2402,8 @@ def fbx_animations_do(scene_data, ref_id, f_start, f_end, start_zero, objects=No
             for ob_obj, p_rot in zip(animdata_ob, animdata_ob_p_rots):
                 # We compute baked loc/rot/scale for all objects (rot being euler-compat with previous value!).
                 loc, rot, scale, _m, _mr = ob_obj.fbx_object_tx(scene_data, rot_euler_compat=p_rot)
+                if (bake_anim := scene_data.settings.bake_unit_factor) != 1.0:
+                    loc = loc * bake_anim
                 next_p_rots.append(rot)
                 yield from loc
                 yield from rot
@@ -2422,7 +2469,7 @@ def fbx_animations_do(scene_data, ref_id, f_start, f_end, start_zero, objects=No
     zipped = zip(animdata_cameras.values(), per_camera_values)
     for (anim_camera_lens, anim_camera_focus_distance, _camera), (lens_values, focus_distance_values) in zipped:
         # In-place convert from Blender focus distance to FBX.
-        focus_distance_values *= (1000 * gscale)
+        focus_distance_values *= (1000 * gscale * scene_data.settings.bake_unit_factor)
         anim_camera_lens.set_keyframes(real_currframes, lens_values)
         anim_camera_focus_distance.set_keyframes(real_currframes, focus_distance_values)
         all_anims.append(anim_camera_lens)
@@ -2806,6 +2853,10 @@ def fbx_data_from_scene(scene, depsgraph, settings):
     # ShapeKeys.
     data_deformers_shape = {}
     geom_mat_co = settings.global_matrix if settings.bake_space_transform else None
+    # BC: In FBX_SCALE_BAKE mode, the unit factor is baked into the shape-key coordinate data itself.
+    bake_co = settings.bake_unit_factor
+    if bake_co != 1.0:
+        geom_mat_co = Matrix.Scale(bake_co, 4) @ (geom_mat_co if geom_mat_co is not None else Matrix())
     co_bl_dtype = np.single
     co_fbx_dtype = np.float64
     idx_fbx_dtype = np.int32
@@ -3540,6 +3591,9 @@ def save_single(operator, scene, depsgraph, filepath="",
 
     # Default Blender unit is equivalent to meter, while FBX one is centimeter...
     unit_scale = units_blender_to_fbx_factor(scene) if apply_unit_scale else 100.0
+    # BC 'FBX_SCALE_BAKE': factor baked into all exported data, so that the file can declare
+    # UnitScaleFactor = 1.0 (actual cm) while keeping node scales untouched. Default 1.0 = no baking.
+    bake_unit_factor = 1.0
     if apply_scale_options == 'FBX_SCALE_NONE':
         global_matrix = Matrix.Scale(unit_scale * global_scale, 4) @ global_matrix
         unit_scale = 1.0
@@ -3548,6 +3602,14 @@ def save_single(operator, scene, depsgraph, filepath="",
     elif apply_scale_options == 'FBX_SCALE_CUSTOM':
         global_matrix = Matrix.Scale(unit_scale, 4) @ global_matrix
         unit_scale = global_scale
+    elif apply_scale_options == 'FBX_SCALE_BAKE':
+        # Like 'FBX_SCALE_ALL' regarding global_matrix (values stay raw, no scale in node transforms),
+        # but instead of declaring the whole factor in UnitScaleFactor, bake it into the data itself:
+        # vertices, node/bone translations, bind matrices, animations... get multiplied by the factor,
+        # and the file declares UnitScaleFactor = 1.0, i.e. all its values are actual centimeters.
+        # Node LclScaling values (object scales, typically 1,1,1) are kept as-is.
+        bake_unit_factor = global_scale * unit_scale
+        unit_scale = 1.0
     else:  # if apply_scale_options == 'FBX_SCALE_ALL':
         unit_scale = global_scale * unit_scale
 
@@ -3585,6 +3647,7 @@ def save_single(operator, scene, depsgraph, filepath="",
 
     settings = FBXExportSettings(
         operator.report, (axis_up, axis_forward), global_matrix, global_scale, apply_unit_scale, unit_scale,
+        bake_unit_factor,
         bake_space_transform, global_matrix_inv, global_matrix_inv_transposed,
         context_objects, object_types, use_mesh_modifiers, use_mesh_modifiers_render,
         mesh_smooth_type, use_subsurf, use_mesh_edges, use_tspace, use_triangles,
