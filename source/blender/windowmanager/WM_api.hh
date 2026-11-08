@@ -2250,7 +2250,21 @@ GPUViewport *WM_draw_region_get_viewport(ARegion *region);
  * `rect` of the window; the simple view's popups draw it behind them. Null clears it.
  */
 void WM_phantom_backdrop_set(gpu::Texture *texture, const rcti *rect);
+/** Phantom: seconds since the last input (mouse, keys, tablet...) in any window. */
+double WM_phantom_idle_seconds();
 gpu::Texture *WM_phantom_backdrop_get(rcti *r_rect);
+/**
+ * Phantom: the window's interface slides off and on as Focus Mode opens and closes, while the
+ * 3D Viewport (at `keep_xy`, window pixels) stays where it is.
+ * - 'O' (out): the editors, bars and regions around the viewport as they show now slide off
+ *   towards the nearest window edge (with a little wind-up first), over what the window shows
+ *   next.
+ * - 'C' (cover): hold a picture of the window as it is over it while the layout changes.
+ * - 'I' (in): once the new layout has drawn, its editors, bars and regions slide in from the
+ *   edges over the cover (a little overshoot as they settle).
+ */
+void WM_window_phantom_slide(
+    bContext *C, wmWindow *win, char mode, const int keep_xy[2], float duration);
 GPUViewport *WM_draw_region_get_bound_viewport(ARegion *region);
 
 int WM_main_playanim(int argc, const char **argv);

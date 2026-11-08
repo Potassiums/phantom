@@ -920,9 +920,9 @@ class VIEW3D_HT_header(Header):
             )
         del act_mode_item
 
-        # Phantom: the simple sculpting view, laid out like ZBrush for iPad (see phantom_simple_view).
+        # Phantom: Focus Mode, the simple sculpting view laid out like ZBrush for iPad (see phantom_simple_view).
         if mode_string == 'SCULPT':
-            layout.operator("view3d.phantom_simple_view_toggle", text="Simple", icon='FULLSCREEN_ENTER')
+            layout.operator("view3d.phantom_simple_view_toggle", text="Focus", icon='PHANTOM_FOCUS')
 
         layout.template_header_3D_mode()
 
@@ -7298,6 +7298,26 @@ class VIEW3D_PT_overlay_text(Panel):
         sub = split.column(align=True)
         sub.prop(overlay, "show_text", text="General Info")
         sub.prop(overlay, "show_stats", text="Statistics")
+        wm = context.window_manager
+        if hasattr(wm, "phantom_show_work_time"):
+            # Phantom: nested under Statistics.
+            row = sub.row()
+            row.separator(factor=2.0)
+            row.active = overlay.show_stats
+            row.prop(wm, "phantom_show_work_time", text="Session and Project Time")
+            row = sub.row()
+            row.separator(factor=4.0)
+            row.active = overlay.show_stats and (wm.phantom_show_work_time or getattr(wm, "phantom_show_save_time", False))
+            row.prop(wm, "phantom_show_work_time_seconds", text="Show Seconds")
+        if hasattr(wm, "phantom_show_save_time"):
+            row = sub.row()
+            row.separator(factor=2.0)
+            row.active = overlay.show_stats
+            row.prop(wm, "phantom_show_save_time", text="Last Saved")
+            row = sub.row()
+            row.separator(factor=4.0)
+            row.active = overlay.show_stats and wm.phantom_show_save_time
+            row.prop(wm, "phantom_save_remind", text="Remind")
 
         sub = split.column(align=True)
         sub.prop(overlay, "show_performance", text="Performance")

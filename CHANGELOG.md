@@ -4,6 +4,46 @@ Phantom is a fork of Blender tuned for sculpting. This file lists what Phantom c
 own changes come from the Blender version each release is built on.
 
 
+## 0.5.3 alpha (2026-11-08)
+
+Built on Blender 5.4 alpha, on top of 0.5.2. The simple sculpting view becomes **Focus Mode**: it
+opens and closes with the interface sliding away and back while the view stays put, and gains a
+pinnable Scene window, cleaner icons, work time and save reminders, and a warning before a full
+sculpt history deletes old steps.
+
+### Focus Mode (the simple sculpting view)
+
+- **Renamed Focus Mode**, with a glasses icon (the Sculpt Mode header's **Focus** button, its swap
+  button in the top bar, the View menu).
+- **Smooth switch:** opening it, the usual interface (editors, header, toolbars, bars) slides off
+  the window together, with a little wind-up, and Focus Mode's toolbars slide in; closing it, they
+  slide back the other way. The 3D View doesn't move: the model stays exactly where it was.
+- **A little bell** as Focus Mode opens.
+- **Scene window pin:** pinned, it stays open while you sculpt beside it; its button closes it.
+- **Geometry section** in the Scene window, with **ClayPolish** and its main settings.
+- **Icons:** thicker, even Save, Import and Export icons in the top bar; the color card's square and
+  triangle switch redrawn with an even outline.
+- **Color card:** the square/triangle switch sits in the top right corner beside the color wheel and
+  the eyedropper in the bottom left; the pin is an outline, filled when pinned, as in the Scene
+  window.
+
+### Statistics
+
+- **Session and Project Time** (an option under Statistics, in Focus Mode's Customize and the
+  Viewport Overlays): how long you have worked on the file this session and in all (saved in the
+  file). Only active time counts: the clocks stop after five minutes without input. **Show Seconds**
+  adds the seconds.
+- **Last Saved** (another option under Statistics): how long ago the file was saved. With unsaved
+  changes and no save for 30 minutes or an hour (**Remind**), a small yellow warning icon follows
+  it, with a soft chime: its tooltip reminds you to save, and clicking it saves.
+
+### Sculpt history
+
+- **Limit warning:** when the history is full (its step limit), the next stroke is held back and a
+  warning asks before the oldest entries are deleted: **Keep Sculpting**, **Don't Show Again** or
+  **Cancel** (turn it back on with **Warn When the Limit Is Reached** in the History dropdown).
+
+
 ## 0.5.2 alpha (2026-11-08)
 
 Built on Blender 5.4 alpha, on top of 0.5.1. A polish release for the simple sculpting view: frosted

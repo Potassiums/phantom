@@ -60,6 +60,13 @@
 
 #include "ED_info.hh"
 
+#include <string>
+#include <unordered_map>
+
+#include "GPU_immediate.hh"
+#include "GPU_state.hh"
+#include "UI_resources.hh"
+
 #include "WM_api.hh"
 
 #include "GPU_capabilities.hh"
@@ -865,6 +872,112 @@ static void stats_row(int col1,
   BLF_draw_default(col2, *y, 0.0f, values, sizeof(values));
 }
 
+/* Phantom: work time under the statistics, in seconds (negative: not shown). */
+static int g_phantom_session_seconds = -1;
+static int g_phantom_project_seconds = -1;
+static bool g_phantom_show_seconds = false;
+
+void ED_info_phantom_work_time_set(const int session_seconds,
+                                   const int project_seconds,
+                                   const bool show_seconds)
+{
+  g_phantom_session_seconds = session_seconds;
+  g_phantom_project_seconds = project_seconds;
+  g_phantom_show_seconds = show_seconds;
+}
+
+/* Phantom: when the file was last saved (empty: not shown), the save reminder's icon beside it,
+ * and where that icon was drawn in each 3D View (region coordinates). */
+static std::string g_phantom_saved_text;
+static bool g_phantom_save_warning = false;
+static const ARegion *g_phantom_stats_region = nullptr;
+static std::unordered_map<const ARegion *, rcti> g_phantom_warning_rects;
+
+void ED_info_phantom_saved_set(const char *text, const bool warning)
+{
+  g_phantom_saved_text = text ? text : "";
+  g_phantom_save_warning = warning;
+  if (!warning) {
+    g_phantom_warning_rects.clear();
+  }
+}
+
+void ED_info_phantom_stats_region_set(const ARegion *region)
+{
+  g_phantom_stats_region = region;
+  if (region) {
+    g_phantom_warning_rects.erase(region);
+  }
+}
+
+bool ED_info_phantom_save_warning_rect(const ARegion *region, rcti *r_rect)
+{
+  const auto it = g_phantom_warning_rects.find(region);
+  if (it == g_phantom_warning_rects.end()) {
+    return false;
+  }
+  *r_rect = it->second;
+  return true;
+}
+
+/** Phantom: the save reminder, a minimal yellow outline triangle with an exclamation mark,
+ * `size` pixels, its bottom left at (x, y). */
+static void phantom_draw_warning_icon(const float x, const float y, const float size)
+{
+  const float s = size;
+  const float w = std::max(1.2f, 0.09f * s);
+  float viewport[4];
+  GPU_viewport_size_get_f(viewport);
+  GPUVertFormat *format = immVertexFormat();
+  const uint pos = GPU_vertformat_attr_add(
+      format, "pos", gpu::VertAttrType::SFLOAT_32_32_32);
+  GPU_blend(GPU_BLEND_ALPHA);
+  immBindBuiltinProgram(GPU_SHADER_3D_POLYLINE_UNIFORM_COLOR);
+  immUniform2fv("viewportSize", &viewport[2]);
+  immUniform1f("lineWidth", w);
+  immUniformColor4f(1.0f, 0.82f, 0.25f, 1.0f);
+  /* The triangle, its corners a touch inside the box. */
+  const float m = 0.08f * s;
+  immBegin(GPU_PRIM_LINE_STRIP, 4);
+  immVertex3f(pos, x + 0.5f * s, y + s - m, 0.0f);
+  immVertex3f(pos, x + s - m, y + m, 0.0f);
+  immVertex3f(pos, x + m, y + m, 0.0f);
+  immVertex3f(pos, x + 0.5f * s, y + s - m, 0.0f);
+  immEnd();
+  /* The exclamation mark: a stroke and a dot. */
+  immBegin(GPU_PRIM_LINES, 4);
+  immVertex3f(pos, x + 0.5f * s, y + 0.64f * s, 0.0f);
+  immVertex3f(pos, x + 0.5f * s, y + 0.38f * s, 0.0f);
+  immVertex3f(pos, x + 0.5f * s, y + 0.25f * s, 0.0f);
+  immVertex3f(pos, x + 0.5f * s, y + 0.23f * s, 0.0f);
+  immEnd();
+  immUnbindProgram();
+  GPU_blend(GPU_BLEND_NONE);
+}
+
+static void phantom_format_duration(char *buf, const size_t buf_len, const int seconds)
+{
+  const int minutes = seconds / 60;
+  const int hours = minutes / 60;
+  if (g_phantom_show_seconds) {
+    if (hours > 0) {
+      BLI_snprintf(buf, buf_len, "%dh %02dm %02ds", hours, minutes % 60, seconds % 60);
+    }
+    else if (minutes > 0) {
+      BLI_snprintf(buf, buf_len, "%dm %02ds", minutes, seconds % 60);
+    }
+    else {
+      BLI_snprintf(buf, buf_len, "%ds", seconds);
+    }
+  }
+  else if (hours > 0) {
+    BLI_snprintf(buf, buf_len, "%dh %02dm", hours, minutes % 60);
+  }
+  else {
+    BLI_snprintf(buf, buf_len, "%dm", minutes);
+  }
+}
+
 void ED_info_draw_stats(
     Main *bmain, Scene *scene, ViewLayer *view_layer, View3D *v3d_local, int x, int *y, int height)
 {
@@ -894,6 +1007,9 @@ void ED_info_draw_stats(
     POINTS,
     LIGHTS,
     CURVES,
+    SESSION,
+    PROJECT,
+    SAVED,
     MAX_LABELS_COUNT
   };
   char labels[MAX_LABELS_COUNT][64];
@@ -911,6 +1027,9 @@ void ED_info_draw_stats(
   STRNCPY_UTF8(labels[POINTS], IFACE_("Points"));
   STRNCPY_UTF8(labels[LIGHTS], IFACE_("Lights"));
   STRNCPY_UTF8(labels[CURVES], IFACE_("Curves"));
+  STRNCPY_UTF8(labels[SESSION], IFACE_("Session"));
+  STRNCPY_UTF8(labels[PROJECT], IFACE_("Project"));
+  STRNCPY_UTF8(labels[SAVED], IFACE_("Last Saved"));
 
   int longest_label = 0;
   for (int i = 0; i < MAX_LABELS_COUNT; ++i) {
@@ -923,80 +1042,119 @@ void ED_info_draw_stats(
   /* Add some extra margin above this section. */
   *y -= (0.6f * height);
 
-  bool any_objects = !STREQ(&stats_fmt.totobj[0], "0");
-  bool any_selected = !STREQ(&stats_fmt.totobjsel[0], "0");
+  /* The rows for what is selected, then (Phantom) the work time. */
+  auto rows = [&]() {
+    bool any_objects = !STREQ(&stats_fmt.totobj[0], "0");
+    bool any_selected = !STREQ(&stats_fmt.totobjsel[0], "0");
 
-  if (any_selected) {
-    stats_row(col1, labels[OBJ], col2, stats_fmt.totobjsel, stats_fmt.totobj, y, height);
-  }
-  else if (any_objects) {
-    stats_row(col1, labels[OBJ], col2, stats_fmt.totobj, nullptr, y, height);
-    /* Show scene totals if nothing is selected. */
-    stats_row(col1, labels[VERTS], col2, stats_fmt.totvert, nullptr, y, height);
-    stats_row(col1, labels[EDGES], col2, stats_fmt.totedge, nullptr, y, height);
-    stats_row(col1, labels[FACES], col2, stats_fmt.totface, nullptr, y, height);
-    stats_row(col1, labels[TRIS], col2, stats_fmt.tottri, nullptr, y, height);
-    return;
-  }
-  else if (object_mode != OB_MODE_SCULPT_CURVES && !BKE_object_use_sculptsession(object_mode)) {
-    /* No objects in scene. */
-    stats_row(col1, labels[OBJ], col2, stats_fmt.totobj, nullptr, y, height);
-    return;
-  }
+    if (any_selected) {
+      stats_row(col1, labels[OBJ], col2, stats_fmt.totobjsel, stats_fmt.totobj, y, height);
+    }
+    else if (any_objects) {
+      stats_row(col1, labels[OBJ], col2, stats_fmt.totobj, nullptr, y, height);
+      /* Show scene totals if nothing is selected. */
+      stats_row(col1, labels[VERTS], col2, stats_fmt.totvert, nullptr, y, height);
+      stats_row(col1, labels[EDGES], col2, stats_fmt.totedge, nullptr, y, height);
+      stats_row(col1, labels[FACES], col2, stats_fmt.totface, nullptr, y, height);
+      stats_row(col1, labels[TRIS], col2, stats_fmt.tottri, nullptr, y, height);
+      return;
+    }
+    else if (object_mode != OB_MODE_SCULPT_CURVES && !BKE_object_use_sculptsession(object_mode)) {
+      /* No objects in scene. */
+      stats_row(col1, labels[OBJ], col2, stats_fmt.totobj, nullptr, y, height);
+      return;
+    }
 
-  if ((ob) && ob->type == OB_GREASE_PENCIL) {
-    stats_row(col1, labels[LAYERS], col2, stats_fmt.totgplayer, nullptr, y, height);
-    stats_row(col1, labels[FRAMES], col2, stats_fmt.totgpframe, nullptr, y, height);
-    stats_row(col1, labels[STROKES], col2, stats_fmt.totgpstroke, nullptr, y, height);
-    stats_row(col1, labels[POINTS], col2, stats_fmt.totpoints, nullptr, y, height);
-  }
-  else if (ob && ob->mode == OB_MODE_EDIT) {
-    if (ob->type == OB_MESH) {
+    if ((ob) && ob->type == OB_GREASE_PENCIL) {
+      stats_row(col1, labels[LAYERS], col2, stats_fmt.totgplayer, nullptr, y, height);
+      stats_row(col1, labels[FRAMES], col2, stats_fmt.totgpframe, nullptr, y, height);
+      stats_row(col1, labels[STROKES], col2, stats_fmt.totgpstroke, nullptr, y, height);
+      stats_row(col1, labels[POINTS], col2, stats_fmt.totpoints, nullptr, y, height);
+    }
+    else if (ob && ob->mode == OB_MODE_EDIT) {
+      if (ob->type == OB_MESH) {
+        stats_row(col1, labels[VERTS], col2, stats_fmt.totvertsel, stats_fmt.totvert, y, height);
+        stats_row(col1, labels[EDGES], col2, stats_fmt.totedgesel, stats_fmt.totedge, y, height);
+        stats_row(col1, labels[FACES], col2, stats_fmt.totfacesel, stats_fmt.totface, y, height);
+        stats_row(col1, labels[TRIS], col2, stats_fmt.tottri, nullptr, y, height);
+      }
+      else if (ob->type == OB_ARMATURE) {
+        stats_row(col1, labels[JOINTS], col2, stats_fmt.totvertsel, stats_fmt.totvert, y, height);
+        stats_row(col1, labels[BONES], col2, stats_fmt.totbonesel, stats_fmt.totbone, y, height);
+      }
+      else if (ob->type == OB_POINTCLOUD) {
+        stats_row(col1, labels[POINTS], col2, stats_fmt.totvertsel, stats_fmt.totpoints, y, height);
+      }
+      else if (ELEM(ob->type, OB_CURVES_LEGACY, OB_SURF, OB_CURVES)) {
+        stats_row(col1, labels[POINTS], col2, stats_fmt.totpointsel, stats_fmt.totpoints, y, height);
+        stats_row(col1, labels[CURVES], col2, stats_fmt.totcurvesel, stats_fmt.totcurves, y, height);
+      }
+      else if (ob->type != OB_FONT) {
+        stats_row(col1, labels[VERTS], col2, stats_fmt.totvertsel, stats_fmt.totvert, y, height);
+      }
+    }
+    else if (ob && BKE_object_use_sculptsession(object_mode)) {
+      if (stats_is_object_dynamic_topology_sculpt(ob)) {
+        stats_row(col1, labels[VERTS], col2, stats_fmt.totvertactive, nullptr, y, height);
+        stats_row(col1, labels[TRIS], col2, stats_fmt.tottriactive, nullptr, y, height);
+      }
+      else {
+        stats_row(col1, labels[VERTS], col2, stats_fmt.totvertactive, nullptr, y, height);
+        stats_row(col1, labels[FACES], col2, stats_fmt.totfaceactive, nullptr, y, height);
+      }
+    }
+    else if (ob && (object_mode & OB_MODE_SCULPT_CURVES)) {
+      stats_row(col1, labels[VERTS], col2, stats_fmt.totvertactive, nullptr, y, height);
+    }
+    else if (ob && (object_mode & OB_MODE_POSE)) {
+      stats_row(col1, labels[BONES], col2, stats_fmt.totbonesel, stats_fmt.totbone, y, height);
+    }
+    else if ((ob) && (ob->type == OB_LAMP)) {
+      stats_row(col1, labels[LIGHTS], col2, stats_fmt.totlampsel, stats_fmt.totlamp, y, height);
+    }
+    else if ((object_mode == OB_MODE_OBJECT) && ob && ELEM(ob->type, OB_MESH, OB_FONT)) {
+      /* Object mode with the active object a mesh or text object. */
       stats_row(col1, labels[VERTS], col2, stats_fmt.totvertsel, stats_fmt.totvert, y, height);
       stats_row(col1, labels[EDGES], col2, stats_fmt.totedgesel, stats_fmt.totedge, y, height);
       stats_row(col1, labels[FACES], col2, stats_fmt.totfacesel, stats_fmt.totface, y, height);
-      stats_row(col1, labels[TRIS], col2, stats_fmt.tottri, nullptr, y, height);
+      stats_row(col1, labels[TRIS], col2, stats_fmt.tottrisel, stats_fmt.tottri, y, height);
     }
-    else if (ob->type == OB_ARMATURE) {
-      stats_row(col1, labels[JOINTS], col2, stats_fmt.totvertsel, stats_fmt.totvert, y, height);
-      stats_row(col1, labels[BONES], col2, stats_fmt.totbonesel, stats_fmt.totbone, y, height);
+  };
+  rows();
+
+  const bool show_saved = !g_phantom_saved_text.empty();
+  if (g_phantom_session_seconds >= 0 || g_phantom_project_seconds >= 0 || show_saved) {
+    *y -= (0.6f * height);
+    char text[32];
+    if (g_phantom_session_seconds >= 0) {
+      phantom_format_duration(text, sizeof(text), g_phantom_session_seconds);
+      stats_row(col1, labels[SESSION], col2, text, nullptr, y, height);
     }
-    else if (ob->type == OB_POINTCLOUD) {
-      stats_row(col1, labels[POINTS], col2, stats_fmt.totvertsel, stats_fmt.totpoints, y, height);
+    if (g_phantom_project_seconds >= 0) {
+      phantom_format_duration(text, sizeof(text), g_phantom_project_seconds);
+      stats_row(col1, labels[PROJECT], col2, text, nullptr, y, height);
     }
-    else if (ELEM(ob->type, OB_CURVES_LEGACY, OB_SURF, OB_CURVES)) {
-      stats_row(col1, labels[POINTS], col2, stats_fmt.totpointsel, stats_fmt.totpoints, y, height);
-      stats_row(col1, labels[CURVES], col2, stats_fmt.totcurvesel, stats_fmt.totcurves, y, height);
+    if (show_saved) {
+      stats_row(col1, labels[SAVED], col2, g_phantom_saved_text.c_str(), nullptr, y, height);
+      if (g_phantom_save_warning) {
+        /* The reminder: a warning icon after the text (its tooltip is a gizmo's, see
+         * phantom_work_time.py). */
+        BLF_batch_draw_flush();
+        const float size = UI_ICON_SIZE * 1.05f;
+        const float ix = col2 +
+                         BLF_width(font_id,
+                                   g_phantom_saved_text.c_str(),
+                                   g_phantom_saved_text.size()) +
+                         0.4f * U.widget_unit;
+        const float iy = *y - 0.25f * size;
+        phantom_draw_warning_icon(ix, iy, size);
+        if (g_phantom_stats_region) {
+          const int pad = int(0.25f * U.widget_unit);
+          g_phantom_warning_rects[g_phantom_stats_region] = {
+              int(ix) - pad, int(ix + size) + pad, int(iy) - pad, int(iy + size) + pad};
+        }
+      }
     }
-    else if (ob->type != OB_FONT) {
-      stats_row(col1, labels[VERTS], col2, stats_fmt.totvertsel, stats_fmt.totvert, y, height);
-    }
-  }
-  else if (ob && BKE_object_use_sculptsession(object_mode)) {
-    if (stats_is_object_dynamic_topology_sculpt(ob)) {
-      stats_row(col1, labels[VERTS], col2, stats_fmt.totvertactive, nullptr, y, height);
-      stats_row(col1, labels[TRIS], col2, stats_fmt.tottriactive, nullptr, y, height);
-    }
-    else {
-      stats_row(col1, labels[VERTS], col2, stats_fmt.totvertactive, nullptr, y, height);
-      stats_row(col1, labels[FACES], col2, stats_fmt.totfaceactive, nullptr, y, height);
-    }
-  }
-  else if (ob && (object_mode & OB_MODE_SCULPT_CURVES)) {
-    stats_row(col1, labels[VERTS], col2, stats_fmt.totvertactive, nullptr, y, height);
-  }
-  else if (ob && (object_mode & OB_MODE_POSE)) {
-    stats_row(col1, labels[BONES], col2, stats_fmt.totbonesel, stats_fmt.totbone, y, height);
-  }
-  else if ((ob) && (ob->type == OB_LAMP)) {
-    stats_row(col1, labels[LIGHTS], col2, stats_fmt.totlampsel, stats_fmt.totlamp, y, height);
-  }
-  else if ((object_mode == OB_MODE_OBJECT) && ob && ELEM(ob->type, OB_MESH, OB_FONT)) {
-    /* Object mode with the active object a mesh or text object. */
-    stats_row(col1, labels[VERTS], col2, stats_fmt.totvertsel, stats_fmt.totvert, y, height);
-    stats_row(col1, labels[EDGES], col2, stats_fmt.totedgesel, stats_fmt.totedge, y, height);
-    stats_row(col1, labels[FACES], col2, stats_fmt.totfacesel, stats_fmt.totface, y, height);
-    stats_row(col1, labels[TRIS], col2, stats_fmt.tottrisel, stats_fmt.tottri, y, height);
   }
 }
 

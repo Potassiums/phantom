@@ -35,6 +35,7 @@
 #include "BLI_math_vector_c.hh"
 #include "BLI_string.hh"
 #include "BLI_string_utf8.hh"
+#include "BLI_time.hh"
 #include "BLI_timer.hh"
 
 #include "BKE_context.hh"
@@ -197,12 +198,24 @@ wmEvent *WM_event_add(wmWindow *win, const wmEvent *event_to_add)
   return wm_event_add_intern(win, event_to_add);
 }
 
+/* Phantom: when the user last did something (see #WM_phantom_idle_seconds). */
+static double g_phantom_last_input = 0.0;
+
+double WM_phantom_idle_seconds()
+{
+  if (g_phantom_last_input == 0.0) {
+    g_phantom_last_input = BLI_time_now_seconds();
+  }
+  return BLI_time_now_seconds() - g_phantom_last_input;
+}
+
 wmEvent *WM_event_add_simulate(wmWindow *win, const wmEvent *event_to_add)
 {
   if ((G.f & G_FLAG_EVENT_SIMULATE) == 0) {
     BLI_assert_unreachable();
     return nullptr;
   }
+  g_phantom_last_input = BLI_time_now_seconds();
   wmEvent *event = WM_event_add(win, event_to_add);
 
   /* Logic for setting previous value is documented on the #wmEvent struct,
@@ -6125,6 +6138,7 @@ void wm_event_add_ghostevent(wmWindowManager *wm,
   if (G.f & G_FLAG_EVENT_SIMULATE) [[unlikely]] {
     return;
   }
+  g_phantom_last_input = BLI_time_now_seconds();
 
   /**
    * Having both, \a event and \a event_state, can be highly confusing to work with,

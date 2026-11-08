@@ -92,7 +92,11 @@ ASK_MODES = (
 )
 
 # "ask_older": whether to ask before sculpting on an older step (False: never, remembered).
-_settings = {"show": True, "dock": 'TOP', "ask_older": True}
+# "ask_limit": whether to warn when the history is full (the step limit): the next stroke deletes
+# the oldest step (False: Don't Show Again).
+_settings = {"show": True, "dock": 'TOP', "ask_older": True, "ask_limit": True}
+# Meshes whose full history the user agreed to keep sculpting on this session: (name, limit).
+_limit_confirmed = set()
 # Asking was turned off until Phantom is closed.
 _ask_off_this_session = False
 _draw_handle = None
@@ -127,6 +131,8 @@ def _load_settings():
         _settings["dock"] = data["dock"]
     if isinstance(data.get("ask_older"), bool):
         _settings["ask_older"] = data["ask_older"]
+    if isinstance(data.get("ask_limit"), bool):
+        _settings["ask_limit"] = data["ask_limit"]
 
 
 def _save_settings():
@@ -168,6 +174,16 @@ def _set_dock(_self, value):
 
 def _asks_older():
     return _settings["ask_older"] and not _ask_off_this_session
+
+
+def _get_ask_limit(_self):
+    return _settings["ask_limit"]
+
+
+def _set_ask_limit(_self, value):
+    if _settings["ask_limit"] != bool(value):
+        _settings["ask_limit"] = bool(value)
+        _save_settings()
 
 
 def _get_ask(_self):
@@ -577,7 +593,10 @@ QUIET_HOVER_COLOR = (1.0, 1.0, 1.0, 0.16)
 # Ask Again (the same, without asking again this session) or Cancel. `t` moves toward `target`;
 # `later` is how many steps would go; `key` is the history state it asked about (it goes away
 # when that changes); `buttons` are where its buttons were last drawn.
-_warning = {"t": 0.0, "target": 0.0, "last": 0.0, "later": 0, "key": None, "buttons": []}
+# `kind` is 'OLDER' (a stroke on an older step) or 'LIMIT' (the history is full: the oldest step
+# goes), `limit` the step limit it asked about.
+_warning = {"t": 0.0, "target": 0.0, "last": 0.0, "later": 0, "key": None, "buttons": [],
+            "kind": 'OLDER', "limit": 0}
 # The history state the user agreed to sculpt from.
 _confirmed_key = None
 
@@ -618,7 +637,39 @@ def ask_older_step(ob, history):
     """Hold back a stroke on an older step: show the warning and its question."""
     _warning["later"] = later_steps(history)
     _warning["key"] = _history_key(ob, history)
+    _warning["kind"] = 'OLDER'
     _set_warning(True)
+
+
+def ask_limit(ob, history, limit):
+    """Hold back a stroke on a full history: warn that the oldest steps will be deleted."""
+    _warning["key"] = _history_key(ob, history)
+    _warning["kind"] = 'LIMIT'
+    _warning["limit"] = limit
+    _set_warning(True)
+
+
+def _brush_stroke(context, event):
+    """A brush or mask stroke about to start (what the history records as a step)."""
+    # Ctrl+Shift picks polygroups, which the history doesn't keep.
+    if event.ctrl and event.shift:
+        return False
+    # Only brush and mask strokes: tools like Transpose make their own steps.
+    tool = context.workspace.tools.from_space_view3d_mode(context.mode, create=False)
+    return tool is not None and tool.idname == "builtin.brush"
+
+
+def _stroke_on_full_history(context, event, ob, history):
+    """A stroke that will delete the oldest step (the history is at its limit), not agreed to
+    yet."""
+    edit = context.preferences.edit
+    limit = edit.sculpt_history_limit
+    if (not edit.use_sculpt_history or not _settings["ask_limit"] or history is None or
+            limit <= 0 or len(history.steps) < limit):
+        return 0
+    if (ob.name, limit) in _limit_confirmed:
+        return 0
+    return limit if _brush_stroke(context, event) else 0
 
 
 def _stroke_on_older_step(context, event, ob, history):
@@ -628,12 +679,7 @@ def _stroke_on_older_step(context, event, ob, history):
         return False
     if _confirmed_key == _history_key(ob, history):
         return False
-    # Ctrl+Shift picks polygroups, which the history doesn't keep.
-    if event.ctrl and event.shift:
-        return False
-    # Only brush and mask strokes: tools like Transpose make their own steps.
-    tool = context.workspace.tools.from_space_view3d_mode(context.mode, create=False)
-    return tool is not None and tool.idname == "builtin.brush"
+    return _brush_stroke(context, event)
 
 
 def _faded(color, t):
@@ -646,29 +692,44 @@ def _draw_warning(shader, region, s):
     _warning["buttons"] = []
     if t <= 0.0:
         return
-    later = str(_warning["later"])
-    lines = [
-        [("The current active Undo History is not the latest one.", TEXT_COLOR)],
-        [("Storing this action to the Undo History will remove ", TEXT_COLOR),
-         (later, ACCENT),
-         (" Undo History entries.", TEXT_COLOR)],
-        [("Press 'Keep Sculpting' to continue or 'Cancel' to abort.", TEXT_COLOR)],
-    ]
+    if _warning["kind"] == 'LIMIT':
+        lines = [
+            [("The Sculpt History has reached its limit of ", TEXT_COLOR),
+             (str(_warning["limit"]), ACCENT),
+             (" entries.", TEXT_COLOR)],
+            [("Storing this action will delete the oldest entry, and each one after it deletes",
+              TEXT_COLOR)],
+            [("the next oldest. Press 'Keep Sculpting' to continue or 'Cancel' to abort.",
+              TEXT_COLOR)],
+        ]
+    else:
+        later = str(_warning["later"])
+        lines = [
+            [("The current active Undo History is not the latest one.", TEXT_COLOR)],
+            [("Storing this action to the Undo History will remove ", TEXT_COLOR),
+             (later, ACCENT),
+             (" Undo History entries.", TEXT_COLOR)],
+            [("Press 'Keep Sculpting' to continue or 'Cancel' to abort.", TEXT_COLOR)],
+        ]
     cap = blf.dimensions(0, "H")[1]
     pad = WARNING_PAD * s
     gap = LINE_GAP * s
     line_h = cap + gap
     bh_ = BUTTON_H * s
+    second = ("NEVER", "Don't Show Again") if _warning["kind"] == 'LIMIT' else (
+        "CONTINUE_SESSION", "Yes, Don't Ask Again")
     buttons = [("CONTINUE", "Keep Sculpting", PRIMARY_COLOR, PRIMARY_HOVER_COLOR),
-               ("CONTINUE_SESSION", "Yes, Don't Ask Again", QUIET_COLOR, QUIET_HOVER_COLOR),
+               (*second, QUIET_COLOR, QUIET_HOVER_COLOR),
                ("CANCEL", "Cancel", QUIET_COLOR, QUIET_HOVER_COLOR)]
     widths = [max(BUTTON_W * s, blf.dimensions(0, label)[0] + pad)
               for _id, label, _c, _h in buttons]
     buttons_w = sum(widths) + gap * (len(buttons) - 1)
     text_w = max(sum(blf.dimensions(0, text)[0] for text, _c in line) for line in lines)
     w = max(text_w, buttons_w) + 2 * pad
-    # Lines with a blank line between them, like the paragraphs of a message.
-    h = pad + len(lines) * line_h + (len(lines) - 1) * line_h + gap + bh_ + pad
+    # Lines with a blank line between them, like the paragraphs of a message (a sentence running
+    # on to the next line stays with it).
+    blanks = [0 if (_warning["kind"] == 'LIMIT' and i == 1) else 1 for i in range(len(lines) - 1)]
+    h = pad + len(lines) * line_h + sum(blanks) * line_h + gap + bh_ + pad
     # It grows a little as it fades in.
     grow = 0.94 + 0.06 * t
     cx, cy = region.width / 2, region.height / 2
@@ -678,12 +739,12 @@ def _draw_warning(shader, region, s):
     if t < 1.0:
         return
     y = y0 + h - pad - cap / 2
-    for line in lines:
+    for i, line in enumerate(lines):
         x = x0 + pad
         for text, color in line:
             _text(text, x, y, 'LEFT', 'MIDDLE', color)
             x += blf.dimensions(0, text)[0]
-        y -= 2 * line_h
+        y -= line_h * (1 + (blanks[i] if i < len(blanks) else 1))
     x = x0 + w - pad - buttons_w
     for (identifier, label, color, hover_color), bw_ in zip(buttons, widths):
         brect = (x, y0 + pad, bw_, bh_)
@@ -788,15 +849,27 @@ class VIEW3D_OT_phantom_history_timeline_click(Operator):
         # The warning's answer buttons.
         if _warning["t"] >= 1.0:
             for identifier, rect in _warning["buttons"]:
-                if _hit(rect, mx, my):
-                    if identifier in {"CONTINUE", "CONTINUE_SESSION"}:
-                        # Agreed: the later steps (and the redo steps into them) go right away.
-                        bpy.ops.sculpt.phantom_history_truncate()
-                        _confirmed_key = None
-                    if identifier == "CONTINUE_SESSION":
-                        _ask_off_this_session = True
+                if not _hit(rect, mx, my):
+                    continue
+                if _warning["kind"] == 'LIMIT':
+                    # The full history: go ahead (not asking again for this mesh this session),
+                    # never warn again, or not.
+                    ob = timeline_object(context)
+                    if identifier == "CONTINUE" and ob is not None:
+                        _limit_confirmed.add((ob.name, _warning["limit"]))
+                    elif identifier == "NEVER":
+                        _settings["ask_limit"] = False
+                        _save_settings()
                     _set_warning(False)
                     return {'FINISHED'}
+                if identifier in {"CONTINUE", "CONTINUE_SESSION"}:
+                    # Agreed: the later steps (and the redo steps into them) go right away.
+                    bpy.ops.sculpt.phantom_history_truncate()
+                    _confirmed_key = None
+                if identifier == "CONTINUE_SESSION":
+                    _ask_off_this_session = True
+                _set_warning(False)
+                return {'FINISHED'}
         if not _hit(lay.bar, mx, my):
             ob = timeline_object(context)
             history = ob.sculpt_history
@@ -808,6 +881,11 @@ class VIEW3D_OT_phantom_history_timeline_click(Operator):
                     return {'PASS_THROUGH'}
                 # Hold the stroke back until the user agrees to delete the later steps.
                 ask_older_step(ob, history)
+                return {'FINISHED'}
+            limit = _stroke_on_full_history(context, event, ob, history)
+            if limit:
+                # Hold the stroke back until the user agrees to lose the oldest steps.
+                ask_limit(ob, history, limit)
                 return {'FINISHED'}
             # Let the click reach the sculpt brush.
             return {'PASS_THROUGH'}
@@ -886,6 +964,10 @@ class VIEW3D_PT_phantom_history(Panel):
         col.use_property_split = False
         col.label(text="Ask Before Sculpting on Older Steps")
         col.row(align=True).prop(wm, "phantom_history_ask", expand=True)
+        row = layout.row()
+        row.use_property_split = False
+        row.active = edit.sculpt_history_limit > 0
+        row.prop(wm, "phantom_history_ask_limit", text="Warn When the Limit Is Reached")
 
         layout.separator()
         ob = context.active_object
@@ -938,6 +1020,11 @@ def register():
         name="Dock", description="Where the sculpt history timeline sits in the viewport",
         items=[(i, l, d, icon, n) for n, (i, l, d, icon) in enumerate(DOCKS)],
         get=_get_dock, set=_set_dock)
+    WM.phantom_history_ask_limit = bpy.props.BoolProperty(
+        name="Warn When the Limit Is Reached",
+        description="When the history is full (its step limit), ask before a stroke deletes the "
+        "oldest steps",
+        get=_get_ask_limit, set=_set_ask_limit)
     WM.phantom_history_ask = bpy.props.EnumProperty(
         name="Ask Before Sculpting on Older Steps",
         description="Whether a stroke on an older step of the sculpt history asks before it "
@@ -976,3 +1063,4 @@ def unregister():
     del bpy.types.WindowManager.phantom_history_bar_show
     del bpy.types.WindowManager.phantom_history_bar_dock
     del bpy.types.WindowManager.phantom_history_ask
+    del bpy.types.WindowManager.phantom_history_ask_limit

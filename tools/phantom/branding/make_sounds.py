@@ -294,6 +294,40 @@ def mode_switch():
     return s, 2400, 0.18
 
 
+def focus_chime():
+    """Focus Mode opening: a little shop-door bell. One small brass bell (its partials a little
+    off the harmonic series, each in a close pair that shimmers), struck three times as its
+    clapper bounces, each strike softer. One pitch, no chord."""
+    dur = 1.1
+    t = _time(dur)
+    f0 = 1568.0  # G6: a small bell.
+    # (ratio, gain, decay): a small bell's partials; the upper ones die away fast.
+    partials = ((1.0, 1.0, 0.30), (2.32, 0.38, 0.12), (4.25, 0.14, 0.05), (6.8, 0.05, 0.025))
+    bell = np.zeros_like(t)
+    for ratio, gain, tau in partials:
+        for detune, share in ((1.0, 0.62), (1.0021, 0.38)):  # The pair beats: the shimmer.
+            bell += share * gain * _osc(f0 * ratio * detune, t) * envelope(t, 0.0012, tau)
+    strike = grain(0.006, cutoff=6000, tau=0.0012, seed=88, amp=0.05)
+    s = mix((bell + np.pad(strike, (0, len(bell) - len(strike))), 0),
+            (0.55 * bell[:int(0.9 * RATE)], 0.105),
+            (0.28 * bell[:int(0.8 * RATE)], 0.185))
+    return s, 7000, 0.2
+
+
+def save_reminder():
+    """The save reminder: a quiet, lower little bell (the Focus Mode bell's sound) tapped twice on
+    the same pitch, like a gentle nudge. No second note."""
+    t = _time(0.9)
+    f0 = 1046.5  # C6.
+    partials = ((1.0, 1.0, 0.26), (2.32, 0.3, 0.1), (4.25, 0.1, 0.04))
+    bell = np.zeros_like(t)
+    for ratio, gain, tau in partials:
+        for detune, share in ((1.0, 0.62), (1.0021, 0.38)):
+            bell += share * gain * _osc(f0 * ratio * detune, t) * envelope(t, 0.002, tau)
+    s = mix((bell, 0), (0.6 * bell[:int(0.75 * RATE)], 0.16))
+    return s, 5000, 0.18
+
+
 def paper_crumple():
     """Soft paper crumple for deleting a file (the start picker): little muffled creases in two
     squeezes of the hand (the second smaller) settling over a faint rustle."""
@@ -361,6 +395,8 @@ SOUNDS = {
     "undo.wav": (undo, -3.0),
     "redo.wav": (redo, -3.0),
     "mode_switch.wav": (mode_switch, -1.0),
+    "focus_on.wav": (focus_chime, -3.0),
+    "save_reminder.wav": (save_reminder, -7.0),
     "measure_tick.wav": (measure_tick, -13.0),
     "loop_add.wav": (loop_add, -6.0),
     "loop_remove.wav": (loop_remove, -7.0),

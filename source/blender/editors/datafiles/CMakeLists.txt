@@ -824,6 +824,10 @@ if(WITH_BLENDER)
       scriptplugins
       sculptmode_hlt
       phantom_garment
+      phantom_focus
+      phantom_save
+      phantom_import
+      phantom_export
       select_difference
       select_extend
       select_intersect

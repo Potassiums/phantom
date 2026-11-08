@@ -1118,6 +1118,414 @@ void WM_phantom_backdrop_set(gpu::Texture *texture, const rcti *rect)
   }
 }
 
+/* Phantom: see #WM_window_phantom_slide. */
+struct PhantomSlidePiece {
+  rcti rect;
+  /* Unit direction it leaves in, and how far it goes to be off the window. */
+  float2 dir;
+  float dist;
+};
+
+static struct {
+  wmWindow *win = nullptr;
+  /* The pieces' picture (the layout leaving or arriving), and the cover. */
+  GPUOffScreen *pieces_image = nullptr;
+  GPUOffScreen *cover = nullptr;
+  /* A std::vector: this lives in a static (no guarded allocations freed after the leak check). */
+  std::vector<PhantomSlidePiece> pieces;
+  rcti keep = {0, 0, 0, 0};
+  int2 keep_xy = {0, 0};
+  char mode = 0;
+  bool capture_pending = false;
+  double start = 0.0;
+  float duration = 0.0f;
+} g_phantom_slide;
+
+/* A cover nobody follows up (a script error) doesn't stay up. */
+static constexpr double PHANTOM_SLIDE_COVER_MAX = 1.5;
+
+static void wm_phantom_slide_free()
+{
+  if (g_phantom_slide.pieces_image) {
+    GPU_offscreen_free(g_phantom_slide.pieces_image);
+  }
+  if (g_phantom_slide.cover) {
+    GPU_offscreen_free(g_phantom_slide.cover);
+  }
+  g_phantom_slide.pieces_image = nullptr;
+  g_phantom_slide.cover = nullptr;
+  g_phantom_slide.pieces.clear();
+  g_phantom_slide.win = nullptr;
+  g_phantom_slide.mode = 0;
+  g_phantom_slide.capture_pending = false;
+}
+
+static bool wm_phantom_slide_active(const wmWindow *win)
+{
+  return g_phantom_slide.win == win && g_phantom_slide.mode != 0;
+}
+
+static void wm_draw_window_onscreen(bContext *C, wmWindow *win, int view);
+
+/** The window as it shows now (its regions' last drawings, put together). */
+static GPUOffScreen *wm_phantom_window_picture(bContext *C, wmWindow *win)
+{
+  const int2 win_size = WM_window_native_pixel_size(win);
+  GPUOffScreen *offscreen = GPU_offscreen_create(
+      win_size[0],
+      win_size[1],
+      false,
+      get_hdr_framebuffer_format(WM_window_get_active_scene(win)),
+      GPU_TEXTURE_USAGE_SHADER_READ,
+      false,
+      nullptr);
+  if (offscreen == nullptr) {
+    return nullptr;
+  }
+  GPU_offscreen_bind(offscreen, false);
+  GPU_clear_color(0.0f, 0.0f, 0.0f, 1.0f);
+  wm_draw_window_onscreen(C, win, -1);
+  GPU_offscreen_unbind(offscreen, false);
+  return offscreen;
+}
+
+static void wm_phantom_slide_add_piece(const rcti &rect, const float2 dir, const int2 win_size)
+{
+  if (BLI_rcti_size_x(&rect) <= 0 || BLI_rcti_size_y(&rect) <= 0) {
+    return;
+  }
+  const float margin = 24.0f * UI_SCALE_FAC;
+  float dist;
+  if (dir.x > 0.0f) {
+    dist = win_size[0] - rect.xmin + margin;
+  }
+  else if (dir.x < 0.0f) {
+    dist = rect.xmax + 1 + margin;
+  }
+  else if (dir.y > 0.0f) {
+    dist = win_size[1] - rect.ymin + margin;
+  }
+  else {
+    dist = rect.ymax + 1 + margin;
+  }
+  g_phantom_slide.pieces.push_back({rect, dir, dist});
+}
+
+/** What slides: every editor but the 3D Viewport at `keep_xy` (towards the window edge on its
+ * side), and that viewport's own bars and regions (towards the side they sit on). */
+static void wm_phantom_slide_pieces(wmWindow *win)
+{
+  bScreen *screen = WM_window_get_active_screen(win);
+  const int2 win_size = WM_window_native_pixel_size(win);
+  g_phantom_slide.pieces.clear();
+
+  ScrArea *keep_area = nullptr;
+  ED_screen_areas_iter (win, screen, area) {
+    if (area->spacetype == SPACE_VIEW3D &&
+        BLI_rcti_isect_pt_v(&area->totrct, g_phantom_slide.keep_xy))
+    {
+      keep_area = area;
+    }
+  }
+  ARegion *keep_region = keep_area ? BKE_area_find_region_type(keep_area, RGN_TYPE_WINDOW) :
+                                     nullptr;
+  if (keep_region == nullptr) {
+    g_phantom_slide.keep = {0, -1, 0, -1};
+    return;
+  }
+  g_phantom_slide.keep = keep_region->winrct;
+  const rcti &keep = g_phantom_slide.keep;
+
+  ED_screen_areas_iter (win, screen, area) {
+    if (area == keep_area) {
+      for (ARegion &region : area->regionbase) {
+        if (&region == keep_region || !region.runtime->visible ||
+            (region.flag & RGN_FLAG_HIDDEN))
+        {
+          continue;
+        }
+        float2 dir = {0.0f, 1.0f};
+        switch (RGN_ALIGN_ENUM_FROM_MASK(region.alignment)) {
+          case RGN_ALIGN_LEFT:
+            dir = {-1.0f, 0.0f};
+            break;
+          case RGN_ALIGN_RIGHT:
+            dir = {1.0f, 0.0f};
+            break;
+          case RGN_ALIGN_BOTTOM:
+            dir = {0.0f, -1.0f};
+            break;
+          default:
+            break;
+        }
+        wm_phantom_slide_add_piece(region.winrct, dir, win_size);
+      }
+      continue;
+    }
+    const rcti &r = area->totrct;
+    float2 dir;
+    if (r.xmin >= keep.xmax) {
+      dir = {1.0f, 0.0f};
+    }
+    else if (r.xmax <= keep.xmin) {
+      dir = {-1.0f, 0.0f};
+    }
+    else if (r.ymin >= keep.ymax) {
+      dir = {0.0f, 1.0f};
+    }
+    else if (r.ymax <= keep.ymin) {
+      dir = {0.0f, -1.0f};
+    }
+    else {
+      /* Overlapping it somehow: the nearest edge. */
+      const int2 c = {BLI_rcti_cent_x(&r), BLI_rcti_cent_y(&r)};
+      const int d[4] = {c[0], win_size[0] - c[0], c[1], win_size[1] - c[1]};
+      const int best = int(std::min_element(d, d + 4) - d);
+      const float2 dirs[4] = {{-1.0f, 0.0f}, {1.0f, 0.0f}, {0.0f, -1.0f}, {0.0f, 1.0f}};
+      dir = dirs[best];
+    }
+    wm_phantom_slide_add_piece(r, dir, win_size);
+  }
+}
+
+void WM_window_phantom_slide(
+    bContext *C, wmWindow *win, const char mode, const int keep_xy[2], const float duration)
+{
+  wmWindowManager *wm = CTX_wm_manager(C);
+  if (win == nullptr || win->runtime->gpuctx == nullptr) {
+    return;
+  }
+  wm_window_make_drawable(wm, win);
+  if (mode == 'O' && g_phantom_slide.win == win && g_phantom_slide.mode == 'C' &&
+      g_phantom_slide.cover)
+  {
+    /* After a cover (the layout changed under it, settled): the cover is what slides off, in
+     * the pieces it recorded. */
+    g_phantom_slide.pieces_image = g_phantom_slide.cover;
+    g_phantom_slide.cover = nullptr;
+    g_phantom_slide.duration = std::max(duration, 0.01f);
+    g_phantom_slide.start = BLI_time_now_seconds();
+    g_phantom_slide.mode = 'O';
+    return;
+  }
+  if (g_phantom_slide.win != win || mode != 'I') {
+    /* 'I' follows a cover: keep it. */
+    GPUOffScreen *cover = (g_phantom_slide.win == win) ? g_phantom_slide.cover : nullptr;
+    g_phantom_slide.cover = nullptr;
+    wm_phantom_slide_free();
+    g_phantom_slide.cover = cover;
+  }
+  g_phantom_slide.win = win;
+  g_phantom_slide.keep_xy = {keep_xy[0], keep_xy[1]};
+  g_phantom_slide.duration = std::max(duration, 0.01f);
+  g_phantom_slide.start = BLI_time_now_seconds();
+
+  if (mode == 'O') {
+    g_phantom_slide.pieces_image = wm_phantom_window_picture(C, win);
+    if (g_phantom_slide.pieces_image == nullptr) {
+      wm_phantom_slide_free();
+      return;
+    }
+    if (g_phantom_slide.cover) {
+      GPU_offscreen_free(g_phantom_slide.cover);
+      g_phantom_slide.cover = nullptr;
+    }
+    wm_phantom_slide_pieces(win);
+    g_phantom_slide.mode = 'O';
+  }
+  else if (mode == 'C') {
+    if (g_phantom_slide.cover) {
+      GPU_offscreen_free(g_phantom_slide.cover);
+    }
+    g_phantom_slide.cover = wm_phantom_window_picture(C, win);
+    /* Its pieces, in case it slides off ('O' next). */
+    wm_phantom_slide_pieces(win);
+    g_phantom_slide.mode = g_phantom_slide.cover ? 'C' : 0;
+  }
+  else if (mode == 'I') {
+    /* Captured as soon as the new layout has drawn (#wm_phantom_slide_draw). */
+    g_phantom_slide.capture_pending = true;
+    g_phantom_slide.mode = 'I';
+  }
+  else {
+    wm_phantom_slide_free();
+  }
+}
+
+static float wm_phantom_back_in(const float t)
+{
+  /* Ease in with a little wind-up (it moves back a touch before leaving). */
+  const float c = 1.2f;
+  return (c + 1.0f) * t * t * t - c * t * t;
+}
+
+static float wm_phantom_back_out(const float t)
+{
+  /* Ease out with a little overshoot as it settles. */
+  const float c = 1.2f;
+  const float u = t - 1.0f;
+  return 1.0f + (c + 1.0f) * u * u * u + c * u * u;
+}
+
+static void wm_phantom_slide_image(gpu::Texture *texture,
+                                   const int2 win_size,
+                                   const rcti &src,
+                                   const float2 offset,
+                                   const float alpha = 1.0f)
+{
+  gpu::Shader *shader = GPU_shader_get_builtin_shader(GPU_SHADER_2D_IMAGE_RECT_COLOR);
+  GPU_shader_bind(shader);
+  const float rect_tex[4] = {float(src.xmin) / win_size[0],
+                             float(src.ymin) / win_size[1],
+                             float(src.xmax + 1) / win_size[0],
+                             float(src.ymax + 1) / win_size[1]};
+  const float rect_geo[4] = {src.xmin + offset.x,
+                             src.ymin + offset.y,
+                             src.xmax + 1 + offset.x,
+                             src.ymax + 1 + offset.y};
+  GPU_texture_bind(texture, GPU_shader_get_sampler_binding(shader, "image"));
+  GPU_shader_uniform_float_ex(shader,
+                              GPU_shader_get_builtin_uniform(shader, GPU_UNIFORM_COLOR),
+                              4,
+                              1,
+                              float4{alpha, alpha, alpha, alpha});
+  GPU_shader_uniform_float_ex(shader, GPU_shader_get_uniform(shader, "rect_icon"), 4, 1, rect_tex);
+  GPU_shader_uniform_float_ex(shader, GPU_shader_get_uniform(shader, "rect_geom"), 4, 1, rect_geo);
+  gpu::Batch *quad = GPU_batch_preset_quad();
+  GPU_batch_set_shader(quad, shader);
+  GPU_batch_draw(quad);
+  GPU_texture_unbind(texture);
+}
+
+/** Phantom: draw the sliding pieces (and the cover) over the window. */
+static void wm_phantom_slide_draw(bContext *C, wmWindow *win)
+{
+  if (!wm_phantom_slide_active(win)) {
+    return;
+  }
+  const int2 win_size = WM_window_native_pixel_size(win);
+  const double now = BLI_time_now_seconds();
+
+  if (g_phantom_slide.mode == 'C' && now - g_phantom_slide.start > PHANTOM_SLIDE_COVER_MAX) {
+    wm_phantom_slide_free();
+    return;
+  }
+  if (g_phantom_slide.mode == 'I' && g_phantom_slide.capture_pending) {
+    /* The new layout has just drawn: its picture slides in, starting now. */
+    g_phantom_slide.pieces_image = wm_phantom_window_picture(C, win);
+    g_phantom_slide.capture_pending = false;
+    if (g_phantom_slide.pieces_image == nullptr) {
+      wm_phantom_slide_free();
+      return;
+    }
+    wm_phantom_slide_pieces(win);
+    g_phantom_slide.start = now;
+  }
+
+  for (GPUOffScreen *offscreen : {g_phantom_slide.pieces_image, g_phantom_slide.cover}) {
+    if (offscreen) {
+      gpu::Texture *texture = GPU_offscreen_color_texture(offscreen);
+      if (GPU_texture_width(texture) != win_size[0] || GPU_texture_height(texture) != win_size[1])
+      {
+        /* The window was resized: the pictures no longer fit. */
+        wm_phantom_slide_free();
+        return;
+      }
+    }
+  }
+
+  wmWindowViewport(win);
+  GPU_blend(GPU_BLEND_ALPHA_PREMULT);
+
+  if (g_phantom_slide.mode == 'C') {
+    wm_phantom_slide_image(GPU_offscreen_color_texture(g_phantom_slide.cover),
+                           win_size,
+                           {0, win_size[0] - 1, 0, win_size[1] - 1},
+                           {0.0f, 0.0f});
+    GPU_blend(GPU_BLEND_NONE);
+    return;
+  }
+
+  const float t = std::clamp(float(now - g_phantom_slide.start) / g_phantom_slide.duration,
+                             0.0f,
+                             1.0f);
+  if (t >= 1.0f) {
+    wm_phantom_slide_free();
+    GPU_blend(GPU_BLEND_NONE);
+    return;
+  }
+
+  /* Over the viewport the old picture fades away: the view is the same, but its overlays
+   * (thumbnail, history bar, navigation gizmo) sit elsewhere in the new layout. */
+  const float fade = 1.0f - t * t * (3.0f - 2.0f * t);
+  {
+    GPUOffScreen *old = (g_phantom_slide.mode == 'I') ? g_phantom_slide.cover :
+                                                        g_phantom_slide.pieces_image;
+    rcti keep_clip;
+    const rcti win_rect = {0, win_size[0] - 1, 0, win_size[1] - 1};
+    /* Not under its bars (they slide on their own): they sit along its edges. */
+    rcti inner = g_phantom_slide.keep;
+    for (const PhantomSlidePiece &piece : g_phantom_slide.pieces) {
+      if (!BLI_rcti_isect(&piece.rect, &g_phantom_slide.keep, nullptr)) {
+        continue;
+      }
+      if (piece.dir.x < 0.0f) {
+        inner.xmin = std::max(inner.xmin, piece.rect.xmax + 1);
+      }
+      else if (piece.dir.x > 0.0f) {
+        inner.xmax = std::min(inner.xmax, piece.rect.xmin - 1);
+      }
+      else if (piece.dir.y > 0.0f) {
+        inner.ymax = std::min(inner.ymax, piece.rect.ymin - 1);
+      }
+      else {
+        inner.ymin = std::max(inner.ymin, piece.rect.ymax + 1);
+      }
+    }
+    if (old && BLI_rcti_isect(&inner, &win_rect, &keep_clip)) {
+      wm_phantom_slide_image(
+          GPU_offscreen_color_texture(old), win_size, keep_clip, {0.0f, 0.0f}, fade);
+    }
+  }
+
+  if (g_phantom_slide.mode == 'I' && g_phantom_slide.cover) {
+    /* The cover where the new layout isn't there yet: everywhere but the viewport (the same
+     * view, live), and under its bars. */
+    gpu::Texture *cover = GPU_offscreen_color_texture(g_phantom_slide.cover);
+    const rcti &k = g_phantom_slide.keep;
+    const int W = win_size[0] - 1, H = win_size[1] - 1;
+    const rcti strips[4] = {{0, W, k.ymax + 1, H},
+                            {0, W, 0, k.ymin - 1},
+                            {0, k.xmin - 1, k.ymin, k.ymax},
+                            {k.xmax + 1, W, k.ymin, k.ymax}};
+    for (const rcti &strip : strips) {
+      if (strip.xmax >= strip.xmin && strip.ymax >= strip.ymin) {
+        wm_phantom_slide_image(cover, win_size, strip, {0.0f, 0.0f});
+      }
+    }
+    for (const PhantomSlidePiece &piece : g_phantom_slide.pieces) {
+      rcti inside;
+      if (BLI_rcti_isect(&piece.rect, &k, &inside)) {
+        wm_phantom_slide_image(cover, win_size, inside, {0.0f, 0.0f});
+      }
+    }
+  }
+
+  const float f = (g_phantom_slide.mode == 'O') ? wm_phantom_back_in(t) :
+                                                  1.0f - wm_phantom_back_out(t);
+  gpu::Texture *texture = GPU_offscreen_color_texture(g_phantom_slide.pieces_image);
+  /* The wind-up and the overshoot (below 0) are the same few pixels for every piece, however
+   * far it travels. */
+  const float back_depth = 0.09f;
+  const float back_px = 18.0f * UI_SCALE_FAC;
+  for (const PhantomSlidePiece &piece : g_phantom_slide.pieces) {
+    const float offset = f >= 0.0f ? f * piece.dist :
+                                     f / back_depth * std::min(back_depth * piece.dist, back_px);
+    wm_phantom_slide_image(texture, win_size, piece.rect, piece.dir * offset);
+  }
+  GPU_blend(GPU_BLEND_NONE);
+}
+
 gpu::Texture *WM_phantom_backdrop_get(rcti *r_rect)
 {
   if (r_rect) {
@@ -1467,6 +1875,7 @@ static void wm_draw_window(bContext *C, wmWindow *win)
   if (!stereo) {
     /* Regular mono drawing. */
     wm_draw_window_onscreen(C, win, -1);
+    wm_phantom_slide_draw(C, win);
   }
   else if (win->stereo3d_format->display_mode == S3D_DISPLAY_PAGEFLIP) {
     /* For page-flip we simply draw to both back buffers. */
@@ -1765,6 +2174,11 @@ static bool wm_draw_update_test_window(Main *bmain, bContext *C, wmWindow *win)
   Depsgraph *depsgraph = BKE_scene_ensure_depsgraph(bmain, scene, view_layer);
   bScreen *screen = WM_window_get_active_screen(win);
   bool do_draw = false;
+
+  /* Phantom: the interface slides (see #WM_window_phantom_slide). */
+  if (wm_phantom_slide_active(win)) {
+    do_draw = true;
+  }
 
   for (ARegion &region : screen->regionbase) {
     if (region.runtime->do_draw_paintcursor) {

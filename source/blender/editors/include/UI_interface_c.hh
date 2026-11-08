@@ -1010,6 +1010,15 @@ void popup_anchor_set(const rcti &rect,
 void simple_style_apply(ThemeUI &tui);
 
 /**
+ * Phantom: pin or unpin a popup: the one the context is in (a button of it calling this), else
+ * the newest one of the window. A pinned popup stays open while one works beside it: the events
+ * away from it go on to the window. Returns false when there is no popup.
+ */
+bool popup_phantom_pin_set(bContext *C, bool pinned);
+/** Phantom: close the window's pinned popups. Returns true if there was one. */
+bool popup_phantom_pinned_close(bContext *C);
+
+/**
  * Only return handler, and set optional title.
  *
  * \param from_active_button: Use the active button for positioning,

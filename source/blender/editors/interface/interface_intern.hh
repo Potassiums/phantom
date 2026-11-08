@@ -1130,6 +1130,11 @@ struct PopupBlockHandle {
   rcti phantom_anchor_rect = {0, 0, 0, 0};
   char phantom_anchor_side = 0;
   bool phantom_anchor_centered = false;
+  /**
+   * Phantom: pinned (see #popup_phantom_pin_set): stays open, and the events away from it go on
+   * to the window, so one can keep working with it open.
+   */
+  bool phantom_pinned = false;
 
   wmTimer *scrolltimer = nullptr;
   float scrolloffset = 0.0f;

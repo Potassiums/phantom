@@ -924,6 +924,10 @@ DEF_ICON(MEMORY)
 
 /* Phantom. */
 DEF_ICON(PHANTOM_GARMENT)
+DEF_ICON(PHANTOM_FOCUS)
+DEF_ICON(PHANTOM_SAVE)
+DEF_ICON(PHANTOM_IMPORT)
+DEF_ICON(PHANTOM_EXPORT)
 
 /* The items above are initiated sequentially while the ones that
  * follow are initiated individually. Therefore this item marks

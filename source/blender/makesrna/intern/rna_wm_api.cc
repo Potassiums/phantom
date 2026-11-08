@@ -85,6 +85,7 @@ const EnumPropertyItem rna_enum_window_cursor_items[] = {
 #  include "DNA_userdef_types.h"
 
 #  include "ED_geometry.hh"
+#  include "ED_info.hh"
 #  include "ED_screen.hh"
 
 #  include "BLI_listbase.hh"
@@ -766,6 +767,51 @@ static void rna_WindowManager_phantom_popup_anchor_set(
   ui::popup_anchor_set(rect, char(side), simple_style, centered);
 }
 
+static bool rna_WindowManager_phantom_popup_pin_set(bContext *C, bool pinned)
+{
+  return ui::popup_phantom_pin_set(C, pinned);
+}
+
+static bool rna_WindowManager_phantom_popup_pinned_close(bContext *C)
+{
+  return ui::popup_phantom_pinned_close(C);
+}
+
+static void rna_Window_phantom_slide(
+    wmWindow *win, bContext *C, int mode, const int keep[2], float duration)
+{
+  WM_window_phantom_slide(C, win, char(mode), keep, duration);
+}
+
+static void rna_WindowManager_phantom_work_time_set(int session, int project, bool seconds)
+{
+  ED_info_phantom_work_time_set(session, project, seconds);
+}
+
+static void rna_WindowManager_phantom_saved_set(const char *text, bool warning)
+{
+  ED_info_phantom_saved_set(text, warning);
+}
+
+static void rna_WindowManager_phantom_save_warning_rect(ARegion *region, int r_rect[4])
+{
+  rcti rect;
+  if (region && ED_info_phantom_save_warning_rect(region, &rect)) {
+    r_rect[0] = rect.xmin;
+    r_rect[1] = rect.ymin;
+    r_rect[2] = rect.xmax;
+    r_rect[3] = rect.ymax;
+  }
+  else {
+    r_rect[0] = r_rect[1] = r_rect[2] = r_rect[3] = 0;
+  }
+}
+
+static float rna_WindowManager_phantom_idle_seconds()
+{
+  return float(WM_phantom_idle_seconds());
+}
+
 static void rna_WindowManager_tag_script_reload()
 {
   WM_script_tag_reload();
@@ -1243,6 +1289,32 @@ void RNA_api_window(StructRNA *srna)
       func, "Restore the previous cursor after calling ``cursor_modal_set``");
 
   /* Arguments match 'rna_KeyMap_item_new'. */
+  static const EnumPropertyItem phantom_slide_items[] = {
+      {'O', "OUT", 0, "Out", "Slide the interface as it shows now off the window"},
+      {'C', "COVER", 0, "Cover", "Hold a picture of the window over it while the layout changes"},
+      {'I', "IN", 0, "In", "Slide the new layout's interface in over the cover"},
+      {0, "NONE", 0, "None", "Stop"},
+      {0, nullptr, 0, nullptr, nullptr},
+  };
+  func = RNA_def_function(srna, "phantom_slide", "rna_Window_phantom_slide");
+  RNA_def_function_ui_description(func,
+                                  "Phantom: slide the interface around a 3D Viewport off or on "
+                                  "(Focus Mode opening and closing)");
+  RNA_def_function_flag(func, FUNC_USE_CONTEXT);
+  parm = RNA_def_enum(func, "mode", phantom_slide_items, 'O', "Mode", "");
+  RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
+  RNA_def_int_array(func,
+                    "keep",
+                    2,
+                    nullptr,
+                    INT_MIN,
+                    INT_MAX,
+                    "Keep",
+                    "A point of the 3D Viewport that stays (window pixels)",
+                    INT_MIN,
+                    INT_MAX);
+  RNA_def_float(func, "duration", 0.4f, 0.0f, 5.0f, "Duration", "In seconds", 0.0f, 5.0f);
+
   func = RNA_def_function(srna, "event_simulate", "rna_Window_event_add_simulate");
   RNA_def_function_flag(func, FUNC_USE_REPORTS);
   parm = RNA_def_enum(func, "type", rna_enum_event_type_items, 0, "Type", "");
@@ -1770,6 +1842,64 @@ void RNA_api_wm(StructRNA *srna)
                   "Centered",
                   "Beside the rectangle, centered on its middle (off: running from its top or "
                   "bottom)");
+
+  func = RNA_def_function(
+      srna, "phantom_popup_pin_set", "rna_WindowManager_phantom_popup_pin_set");
+  RNA_def_function_ui_description(func,
+                                  "Pin or unpin a popup (the one a button of it calls this from, "
+                                  "else the newest): a pinned popup stays open, and the events "
+                                  "away from it go on to the window");
+  RNA_def_function_flag(func, FUNC_NO_SELF | FUNC_USE_CONTEXT);
+  parm = RNA_def_boolean(func, "pinned", true, "Pinned", "");
+  RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
+  parm = RNA_def_boolean(func, "found", false, "Found", "There was a popup");
+  RNA_def_function_return(func, parm);
+
+  func = RNA_def_function(
+      srna, "phantom_popup_pinned_close", "rna_WindowManager_phantom_popup_pinned_close");
+  RNA_def_function_ui_description(func, "Close the window's pinned popups");
+  RNA_def_function_flag(func, FUNC_NO_SELF | FUNC_USE_CONTEXT);
+  parm = RNA_def_boolean(func, "closed", false, "Closed", "There was a pinned popup");
+  RNA_def_function_return(func, parm);
+
+  func = RNA_def_function(
+      srna, "phantom_work_time_set", "rna_WindowManager_phantom_work_time_set");
+  RNA_def_function_ui_description(func,
+                                  "Show the session's and the project's work time under the "
+                                  "viewport statistics (seconds, -1 hides a row)");
+  RNA_def_function_flag(func, FUNC_NO_SELF);
+  parm = RNA_def_int(func, "session", -1, -1, INT_MAX, "Session", "", -1, INT_MAX);
+  RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
+  parm = RNA_def_int(func, "project", -1, -1, INT_MAX, "Project", "", -1, INT_MAX);
+  RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
+  RNA_def_boolean(func, "seconds", false, "Seconds", "Show the seconds too");
+
+  func = RNA_def_function(srna, "phantom_saved_set", "rna_WindowManager_phantom_saved_set");
+  RNA_def_function_ui_description(func,
+                                  "Show when the file was last saved under the viewport "
+                                  "statistics (empty hides it), with a save reminder icon");
+  RNA_def_function_flag(func, FUNC_NO_SELF);
+  parm = RNA_def_string(func, "text", nullptr, 0, "Text", "");
+  RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
+  RNA_def_boolean(func, "warning", false, "Warning", "Show the save reminder icon");
+
+  func = RNA_def_function(
+      srna, "phantom_save_warning_rect", "rna_WindowManager_phantom_save_warning_rect");
+  RNA_def_function_ui_description(func,
+                                  "Where the save reminder icon was drawn in a 3D View region "
+                                  "(xmin, ymin, xmax, ymax, region pixels; zeros: not shown)");
+  RNA_def_function_flag(func, FUNC_NO_SELF);
+  parm = RNA_def_pointer(func, "region", "Region", "", "");
+  RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
+  parm = RNA_def_int_array(func, "rect", 4, nullptr, INT_MIN, INT_MAX, "", "", INT_MIN, INT_MAX);
+  RNA_def_parameter_flags(parm, PROP_THICK_WRAP, ParameterFlag(0));
+  RNA_def_function_output(func, parm);
+
+  func = RNA_def_function(srna, "phantom_idle_seconds", "rna_WindowManager_phantom_idle_seconds");
+  RNA_def_function_ui_description(func, "Seconds since the last input in any window");
+  RNA_def_function_flag(func, FUNC_NO_SELF);
+  parm = RNA_def_float(func, "seconds", 0.0f, 0.0f, FLT_MAX, "Seconds", "", 0.0f, FLT_MAX);
+  RNA_def_function_return(func, parm);
 
   /* Used by (#SCRIPT_OT_reload). */
   func = RNA_def_function(srna, "tag_script_reload", "rna_WindowManager_tag_script_reload");

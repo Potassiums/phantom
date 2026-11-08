@@ -81,8 +81,15 @@ DRAG_THRESHOLD = 4
 
 # Phantom's region slide (screen_ops.cc), and the toolbars' own easing.
 REGION_SLIDE = 0.30
-BAR_IN = 0.30
-BAR_OUT = 0.18
+BAR_IN = 0.36
+BAR_OUT = 0.30
+# The usual interface sliding off as Focus Mode opens, and back on as it closes (see
+# #WM_window_phantom_slide); the toolbars come in once it has mostly gone.
+SLIDE_OUT = 0.42
+SLIDE_IN = 0.46
+BARS_AFTER_SLIDE = 0.6
+# How far the slides overshoot ("back" easing): a little wind-up going, a little settle coming.
+BACK = 1.2
 STAGGER = 0.018
 # When each toolbar starts sliding in: left, right, bottom.
 BAR_DELAYS = (0.0, 0.04, 0.08)
@@ -310,6 +317,14 @@ _settings = {
     "color_shape": 'SQUARE',
     # The color card stays open while sculpting (and opens with the simple view).
     "color_pinned": False,
+    # The Scene window stays open while sculpting beside it.
+    "scene_pinned": False,
+    # Session and project time under the statistics (phantom_work_time).
+    "work_time": False,
+    "work_time_seconds": False,
+    # When the file was last saved, and the save reminder ('OFF', 'MIN30', 'HOUR').
+    "save_time": False,
+    "save_remind": 'MIN30',
     # Tools pinned to the left toolbar, under Tools (their ids).
     "left_tools": [],
     # The brush Ctrl masks with ({type, identifier, relative}; empty: the Essentials Mask brush).
@@ -528,7 +543,19 @@ def enter(window, area):
     _busy[pointer] = "ENTER"
     _busy_at[pointer] = time.perf_counter()
     animate = _motion_ok()
-    _play("toggle_on")
+    # A little bell as Focus Mode opens.
+    _play("focus_on")
+    if _slide_ok(window):
+        # Everything around the viewport slides off at once, Focus Mode already under it; the
+        # view itself doesn't move.
+        region = _region(area, 'WINDOW')
+        before = (region.x, region.y, region.width, region.height)
+        # A picture of the window as it is covers it while Focus Mode is laid out (one frame),
+        # then slides off in pieces (see `_maximize`).
+        window.phantom_slide(mode='COVER', keep=_rect_center(before))
+        _start_bars(1, delay=SLIDE_OUT * BARS_AFTER_SLIDE + 0.05)
+        _maximize(window, area, keep_view=before)
+        return True
     _set_regions(window, area, {key: False for key, _prop in REGION_PROPS}, animate=animate)
     tries = [0]
 
@@ -549,7 +576,41 @@ def enter(window, area):
     return True
 
 
-def _maximize(window, area):
+def _slide_ok(window):
+    return _motion_ok() and hasattr(window, "phantom_slide")
+
+
+def _rect_center(rect):
+    x, y, w, h = rect
+    return (int(x + w / 2), int(y + h / 2))
+
+
+def _keep_view(area, before, after):
+    """Keep what the 3D View shows where it was on screen, its region having moved from window
+    rectangle `before` to `after` (x, y, width, height): the same pixels per unit at the view's
+    center (Blender scales the view to the region's longer side), and that center at the same
+    window position. Only the interface around it seems to change."""
+    space = area.spaces.active
+    rv3d = getattr(space, "region_3d", None)
+    if rv3d is None or rv3d.view_perspective == 'CAMERA':
+        return
+    bx, by, bw, bh = before
+    ax, ay, aw, ah = after
+    if min(bw, bh, aw, ah) <= 1:
+        return
+    from mathutils import Vector
+    rv3d.view_distance *= max(aw, ah) / max(bw, bh)
+    # World units per pixel at the view's center (72: twice the 36 mm sensor, see
+    # BKE_camera_params_from_view3d), the same as before now.
+    per_pixel = 72.0 * rv3d.view_distance / (space.lens * max(aw, ah))
+    dx = (bx + bw / 2) - (ax + aw / 2)
+    dy = (by + bh / 2) - (ay + ah / 2)
+    rot = rv3d.view_rotation
+    shift = (rot @ Vector((1.0, 0.0, 0.0))) * dx + (rot @ Vector((0.0, 1.0, 0.0))) * dy
+    rv3d.view_location = rv3d.view_location - shift * per_pixel
+
+
+def _maximize(window, area, keep_view=None):
     pointer = window.as_pointer()
     screen = window.screen
     try:
@@ -580,7 +641,29 @@ def _maximize(window, area):
         phantom_viewport.refresh_grid()
     except (ImportError, AttributeError):
         pass
-    _start_bars(1)
+    delay = 0.0
+    if keep_view is None:
+        _start_bars(1)
+    else:
+        # Started by `enter`, after the slide.
+        delay = max(0.0, _bars["start"] - time.perf_counter())
+
+        def slide_out():
+            # Focus Mode has been laid out once (the status bar gone, the view filling the
+            # window): keep the view where it was, then the old interface slides off.
+            window = _window_by_pointer(pointer)
+            if window is None:
+                return None
+            target = _view3d_area(window.screen)
+            if target is None:
+                window.phantom_slide(mode='NONE')
+                return None
+            region = _region(target, 'WINDOW')
+            _keep_view(target, keep_view, (region.x, region.y, region.width, region.height))
+            window.phantom_slide(mode='OUT', keep=_rect_center(keep_view), duration=SLIDE_OUT)
+            return None
+
+        bpy.app.timers.register(slide_out, first_interval=0.0)
 
     def done():
         _busy.pop(pointer, None)
@@ -588,7 +671,7 @@ def _maximize(window, area):
             _open_pinned_color_card(pointer)
         return None
 
-    bpy.app.timers.register(done, first_interval=_bars_duration())
+    bpy.app.timers.register(done, first_interval=_bars_duration() + delay)
 
 
 def leave(window, turn_off=True):
@@ -633,6 +716,13 @@ def _unmaximize(window, area):
     if area is not None and area.spaces.active.show_region_ui:
         # The sidebar goes back hidden; the usual layout shows it again if it was on.
         area.spaces.active.show_region_ui = False
+    slide = _slide_ok(window) and area is not None
+    before = None
+    if slide:
+        region = _region(area, 'WINDOW')
+        before = (region.x, region.y, region.width, region.height)
+        # Focus Mode stays in view while the layout changes under it.
+        window.phantom_slide(mode='COVER', keep=_rect_center(before))
     try:
         with bpy.context.temp_override(window=window, screen=temp, area=area,
                                        region=_region(area, 'WINDOW') if area else None):
@@ -640,17 +730,38 @@ def _unmaximize(window, area):
     except (RuntimeError, TypeError) as ex:
         print("Phantom: could not leave the simple view:", ex)
         temp.pop(MARKER, None)
-    _restore_layout(window, window.screen, animate=_motion_ok())
+    usual = _restore_layout(window, window.screen, animate=_motion_ok() and not slide)
+
+    def slide_in():
+        # The usual layout has been laid out once (its regions placed): keep the view where it
+        # was, then its interface slides in.
+        window = _window_by_pointer(pointer)
+        if window is None:
+            return None
+        target = usual if usual is not None and usual in list(window.screen.areas) else \
+            _view3d_area(window.screen)
+        if target is None:
+            window.phantom_slide(mode='NONE')
+            return None
+        region = _region(target, 'WINDOW')
+        after = (region.x, region.y, region.width, region.height)
+        _keep_view(target, before, after)
+        window.phantom_slide(mode='IN', keep=_rect_center(after), duration=SLIDE_IN)
+        return None
+
+    if slide:
+        bpy.app.timers.register(slide_in, first_interval=0.0)
 
     def done():
         _busy.pop(pointer, None)
         return None
 
-    bpy.app.timers.register(done, first_interval=REGION_SLIDE + 0.05)
+    bpy.app.timers.register(done, first_interval=(SLIDE_IN + 0.1) if slide else REGION_SLIDE + 0.05)
 
 
 def _restore_layout(window, screen, animate):
-    """Put the usual screen's 3D View back as the snapshot says, and forget the snapshot."""
+    """Put the usual screen's 3D View back as the snapshot says, and forget the snapshot. Returns
+    that 3D View's area."""
     try:
         snapshot = json.loads(screen.get(SNAPSHOT, "{}"))
     except (TypeError, ValueError):
@@ -664,7 +775,7 @@ def _restore_layout(window, screen, animate):
     area = areas[index] if 0 <= index < len(areas) and areas[index].type == 'VIEW_3D' else None
     area = area or _view3d_area(screen)
     if area is None:
-        return
+        return None
     space = area.spaces.active
     if "stats" in snapshot:
         space.overlay.show_stats = snapshot["stats"]
@@ -677,6 +788,7 @@ def _restore_layout(window, screen, animate):
         _flip_sidebar(window, area, snapshot.get("sidebar", sidebar.alignment))
     shown = {key: snapshot.get(key, key != "ui") for key, _prop in REGION_PROPS}
     _set_regions(window, area, shown, animate=animate)
+    return area
 
 
 def _watch():
@@ -728,8 +840,8 @@ def _anim_tick():
     return 1.0 / 60.0 if elapsed < duration + 0.05 else None
 
 
-def _start_bars(direction):
-    _bars["start"] = time.perf_counter() if _motion_ok() else 0.0
+def _start_bars(direction, delay=0.0):
+    _bars["start"] = time.perf_counter() + delay if _motion_ok() else 0.0
     _bars["dir"] = direction
     if not bpy.app.timers.is_registered(_anim_tick):
         bpy.app.timers.register(_anim_tick, first_interval=0.0)
@@ -744,6 +856,18 @@ def _progress(bar, item=0):
         return 1.0 - (1.0 - t) ** 3
     t = min(max(elapsed / BAR_OUT, 0.0), 1.0)
     return 1.0 - t ** 3
+
+
+def _slide_progress(bar):
+    """Where toolbar `bar` is on its way in (0 off the window, 1 in place), with a little
+    overshoot as it settles, and a little wind-up (back in a touch) before it leaves."""
+    elapsed = time.perf_counter() - _bars["start"]
+    if _bars["dir"] > 0:
+        t = min(max((elapsed - BAR_DELAYS[bar]) / BAR_IN, 0.0), 1.0)
+        u = t - 1.0
+        return 1.0 + (BACK + 1.0) * u ** 3 + BACK * u ** 2
+    t = min(max(elapsed / BAR_OUT, 0.0), 1.0)
+    return 1.0 - ((BACK + 1.0) * t ** 3 - BACK * t ** 2)
 
 
 # -----------------------------------------------------------------------------
@@ -1928,12 +2052,10 @@ def _color_geometry(context, lay, s):
     x0, top = x + COLOR_PAD * u, y + h - COLOR_PAD * u
     iw = inner * u
 
-    # Title, then the triangle/square switch and the eyedropper on the right.
+    # Title, then the pin on the right.
     g["title"] = (x0, top - ROW * u / 2)
     b = ROW * u
-    g["buttons"] += [('PIN', (x0 + iw - 3 * b - 16 * u, top - b, b, b)),
-                     ('SWITCH', (x0 + iw - 2 * b - 8 * u, top - b, b, b)),
-                     ('EYEDROPPER', (x0 + iw - b, top - b, b, b))]
+    g["buttons"].append(('PIN', (x0 + iw - b, top - b, b, b)))
     top -= (ROW + SECTION_GAP) * u
     # How the color mixes with what is under it (the brush's blend mode).
     g["buttons"].append(('BLEND', (x0, top - ROW * u, iw, ROW * u)))
@@ -1946,6 +2068,10 @@ def _color_geometry(context, lay, s):
     # The wheel.
     radius = iw / 2
     g["wheel"] = (x0 + radius, top - radius, radius, RING_W * u)
+    # In the free corners beside the ring: the square/triangle switch top right, the eyedropper
+    # bottom left (a button fits there, clear of the ring).
+    g["buttons"] += [('SWITCH', (x0 + iw - b, top - b, b, b)),
+                     ('EYEDROPPER', (x0, top - iw, b, b))]
     top -= (inner + SECTION_GAP) * u
     # Hue, saturation and value of the color itself, as in any color picker.
     for key, label in HSV_SLIDERS:
@@ -2053,13 +2179,62 @@ def _bucket_icon(cx, cy, r, color):
     _disc(cx + 0.75 * r, cy - 0.45 * r, 0.2 * r, color)
 
 
-def _shape_icon(cx, cy, r, shape, color):
-    """The switch shows the shape it switches to."""
+def _round_corners(corners, radius, segments=4):
+    """A closed polygon with its corners rounded (each a short curve `radius` along its sides)."""
+    n = len(corners)
+    points = []
+    for i in range(n):
+        (px, py), (cx, cy), (nx, ny) = corners[i - 1], corners[i], corners[(i + 1) % n]
+        la, lb = math.hypot(px - cx, py - cy), math.hypot(nx - cx, ny - cy)
+        r = min(radius, la / 2.0, lb / 2.0)
+        ax, ay = cx + (px - cx) * r / la, cy + (py - cy) * r / la
+        bx, by = cx + (nx - cx) * r / lb, cy + (ny - cy) * r / lb
+        for j in range(segments + 1):
+            f = j / segments
+            # A quadratic curve from a to b, the corner its control point.
+            points.append(((1 - f) ** 2 * ax + 2 * (1 - f) * f * cx + f * f * bx,
+                           (1 - f) ** 2 * ay + 2 * (1 - f) * f * cy + f * f * by))
+    return points
+
+
+def _stroke_loop(points, width, color, feather=1.0):
+    """A closed outline of even width with smooth edges: mitered at its corners and faded over
+    `feather` pixels on both sides (a thick GPU line is uneven at its joins and jagged)."""
+    n = len(points)
+    normals = []
+    for i in range(n):
+        (x0, y0), (x1, y1), (x2, y2) = points[i - 1], points[i], points[(i + 1) % n]
+        d0 = math.hypot(x1 - x0, y1 - y0) or 1.0
+        d1 = math.hypot(x2 - x1, y2 - y1) or 1.0
+        n0 = ((y1 - y0) / d0, -(x1 - x0) / d0)
+        n1 = ((y2 - y1) / d1, -(x2 - x1) / d1)
+        mx, my = n0[0] + n1[0], n0[1] + n1[1]
+        m = math.hypot(mx, my) or 1.0
+        mx, my = mx / m, my / m
+        # The miter: longer at sharp corners, capped.
+        k = 1.0 / max(mx * n0[0] + my * n0[1], 0.35)
+        normals.append((mx * k, my * k))
+    half = width / 2.0
+    rings = ((-half - feather, 0.0), (-half, 1.0), (half, 1.0), (half + feather, 0.0))
+    r, g, b, a = color
+    for (o0, a0), (o1, a1) in zip(rings, rings[1:]):
+        verts, colors = [], []
+        for i in range(n + 1):
+            (x, y), (nx, ny) = points[i % n], normals[i % n]
+            verts += [(x + nx * o0, y + ny * o0), (x + nx * o1, y + ny * o1)]
+            colors += [(r, g, b, a * a0), (r, g, b, a * a1)]
+        _draw_smooth('TRI_STRIP', verts, colors)
+
+
+def _shape_icon(cx, cy, r, shape, color, width=1.6):
+    """The switch shows the shape it switches to: an outline of even weight, softly rounded."""
     if shape == 'SQUARE':
-        _outline([(cx - r, cy - r), (cx + r, cy - r), (cx + r, cy + r), (cx - r, cy + r)], color, 1.4)
+        r *= 0.88
+        corners = [(cx - r, cy - r), (cx + r, cy - r), (cx + r, cy + r), (cx - r, cy + r)]
     else:
-        _outline([(cx + r, cy), (cx - r * 0.6, cy + r * 0.95), (cx - r * 0.6, cy - r * 0.95)],
-                 color, 1.4)
+        # Pointing right (the pure hue's corner), centered on its middle.
+        corners = [(cx + r * 1.05, cy), (cx - r * 0.75, cy + r * 1.0), (cx - r * 0.75, cy - r * 1.0)]
+    _stroke_loop(_round_corners(corners, r * 0.22), width, color)
 
 
 def _draw_color_card(context, lay, s):
@@ -2100,15 +2275,15 @@ def _draw_color_card(context, lay, s):
         else:
             fill = PILL_COLOR if key in {'FILL', 'BLEND'} else (0, 0, 0, 0)
         outline = _rounded_rect(x, y, w, h, 8 * u, fill)
-        if (key == 'EYEDROPPER' and _color_card["picking"]) or \
-                (key == 'PIN' and _settings["color_pinned"]):
+        # Pinned shows as the filled pin, as in the Scene window (no ring around it).
+        if key == 'EYEDROPPER' and _color_card["picking"]:
             _outline(outline, ACCENT, max(1.5, 1.5 * s))
         if key == 'PIN':
             _draw_icon('PINNED' if _settings["color_pinned"] else 'UNPINNED', cx, cy,
                        ICON_SIZE * u * 0.9, 0.92)
         elif key == 'SWITCH':
             other = 'TRIANGLE' if _settings["color_shape"] == 'SQUARE' else 'SQUARE'
-            _shape_icon(cx, cy, 6.5 * u, other, TEXT_COLOR)
+            _shape_icon(cx, cy, 6.5 * u, other, TEXT_COLOR, max(1.6, 1.6 * u))
         elif key == 'EYEDROPPER':
             _draw_icon('EYEDROPPER', cx, cy, ICON_SIZE * u * 0.9, 0.92)
         elif key == 'SWAP':
@@ -2984,19 +3159,19 @@ def draw_callback():
         p = _progress(bar)
         if p <= 0.0:
             continue
-        dx, dy = _slide(bar, x, y, w, h, W, p)
+        dx, dy = _slide(bar, x, y, w, h, W, _slide_progress(bar))
         points = _panel(x + dx, y + dy, w, h, BAR_CORNER * s, min(1.0, p * 1.5), shadow=False)
         _outline(points, (*OUTLINE_COLOR[:3], OUTLINE_COLOR[3] * p))
     for bar, x0, y0, x1, y1 in lay.dividers:
         p = _progress(bar)
-        dx, dy = _slide(bar, x0, y0, 0, 0, W, p)
+        dx, dy = _slide(bar, x0, y0, 0, 0, W, _slide_progress(bar))
         _line(x0 + dx, y0 + dy, x1 + dx, y1 + dy, (*DIVIDER_COLOR[:3], DIVIDER_COLOR[3] * p))
     for item in lay.items:
         p_bar = _progress(item.bar)
         if p_bar <= 0.0:
             continue
         p_item = _progress(item.bar, item.index + 1) if _bars["dir"] > 0 else p_bar
-        dx, dy = _slide(item.bar, item.x, item.y, item.w, item.h, W, p_bar)
+        dx, dy = _slide(item.bar, item.x, item.y, item.w, item.h, W, _slide_progress(item.bar))
         moved = Item(item.key, item.bar, item.index, item.x + dx, item.y + dy, item.w, item.h)
         _draw_item(context, moved, p_item, -(1.0 - p_item) * 8 * s)
     # Each window pops out of its button as it opens (#_pop).
@@ -3238,8 +3413,14 @@ def _perform(context, key):
     elif key == 'PALETTES':
         _toggle_sidebar(context)
     elif key == 'SUBTOOLS':
+        wm = context.window_manager
+        # Pinned and open: its button closes it.
+        if hasattr(wm, "phantom_popup_pinned_close") and wm.phantom_popup_pinned_close():
+            return
         _sync_scene_rows(context)
         _call_panel(VIEW3D_PT_phantom_simple_subtools.__name__)
+        if _settings["scene_pinned"] and hasattr(wm, "phantom_popup_pin_set"):
+            wm.phantom_popup_pin_set(pinned=True)
     elif key == 'RENDER':
         bpy.ops.render.opengl('INVOKE_DEFAULT', view_context=True)
     elif key == 'PERSP':
@@ -3313,18 +3494,18 @@ _slot_menu = {"slot": 0}
 # Operators
 
 class VIEW3D_OT_phantom_simple_view_toggle(Operator):
-    """Switch between the simple sculpting view (laid out like ZBrush for iPad) and the usual """ \
-        """interface"""
+    """Switch between Focus Mode (sculpting with only the essentials, laid out like ZBrush for """ \
+        """iPad) and the usual interface"""
     bl_idname = "view3d.phantom_simple_view_toggle"
-    bl_label = "Simple View"
+    bl_label = "Focus Mode"
     bl_options = {'INTERNAL'}
 
     @classmethod
     def description(cls, context, properties):
         if context.window is not None and is_simple_screen(context.window.screen):
             return "Back to the usual interface (Shift Tab)"
-        return ("Switch to the simple sculpting view, laid out like ZBrush for iPad (Shift Tab). "
-                "Phantom opens Sculpt Mode in it until you switch back")
+        return ("Focus Mode: sculpt with only the essentials, laid out like ZBrush for iPad "
+                "(Shift Tab). Phantom opens Sculpt Mode in it until you switch back")
 
     @classmethod
     def poll(cls, context):
@@ -4830,7 +5011,7 @@ SCENE_ACTIONS = (
 
 
 class VIEW3D_OT_phantom_simple_scene_action(Operator):
-    """An action of the simple view's Scene window, on the mesh being sculpted"""
+    """An action of the Scene window, on the mesh being sculpted"""
     bl_idname = "view3d.phantom_simple_scene_action"
     bl_label = "Scene Action"
     bl_options = {'INTERNAL', 'UNDO'}
@@ -5108,6 +5289,27 @@ class _NameDialog:
         layout.prop(self, "name", text="")
 
 
+class VIEW3D_OT_phantom_simple_scene_pin(Operator):
+    """Keep the Scene window open while you sculpt (click its button again to close it)"""
+    bl_idname = "view3d.phantom_simple_scene_pin"
+    bl_label = "Pin the Scene Window"
+    bl_options = {'INTERNAL'}
+
+    @classmethod
+    def description(cls, context, properties):
+        if _settings["scene_pinned"]:
+            return "Unpin: the Scene window closes again when you click away from it"
+        return "Keep the Scene window open while you sculpt (click its button again to close it)"
+
+    def execute(self, context):
+        pinned = not _settings["scene_pinned"]
+        _set_setting("scene_pinned", pinned)
+        wm = context.window_manager
+        if hasattr(wm, "phantom_popup_pin_set"):
+            wm.phantom_popup_pin_set(pinned=pinned)
+        return {'FINISHED'}
+
+
 class VIEW3D_OT_phantom_simple_new_folder(_NameDialog, Operator):
     """Make a folder (a collection) and put the mesh being sculpted in it"""
     bl_idname = "view3d.phantom_simple_new_folder"
@@ -5249,7 +5451,7 @@ def _draw_scene_row_menu(self, context):
 
 
 class VIEW3D_OT_phantom_simple_scene_menu(Operator):
-    """Open this menu (in the simple view's style, beside the cursor)"""
+    """Open this menu (beside the cursor)"""
     bl_idname = "view3d.phantom_simple_scene_menu"
     bl_label = "Menu"
     bl_options = {'INTERNAL'}
@@ -5321,7 +5523,12 @@ class VIEW3D_PT_phantom_simple_subtools(Panel):
     def draw(self, context):
         layout = self.layout
         op = VIEW3D_OT_phantom_simple_scene_action.bl_idname
-        layout.label(text="Scene")
+        # The title, and the pin on the right: pinned, the window stays open while you sculpt.
+        title = layout.row()
+        title.label(text="Scene")
+        pinned = _settings["scene_pinned"]
+        title.operator(VIEW3D_OT_phantom_simple_scene_pin.bl_idname, text="",
+                       icon='PINNED' if pinned else 'UNPINNED', emboss=False, depress=pinned)
         # Add, duplicate, a new folder, more: bare icons spread evenly, nothing around them.
         header = layout.grid_flow(row_major=True, columns=4, even_columns=True, align=False)
         header.scale_y = 1.3
@@ -5363,6 +5570,27 @@ class VIEW3D_PT_phantom_simple_subtools(Panel):
             col.separator()
             col.operator(op, text="Center", icon='PIVOT_CURSOR').action = 'CENTER'
             col.operator(op, text="On Floor", icon='TRIA_DOWN').action = 'FLOOR'
+
+        header, body = layout.panel("phantom_simple_scene_geometry", default_closed=True)
+        header.label(text="Geometry")
+        if body is not None:
+            col = body.column(align=True)
+            col.scale_y = 1.3
+            settings = getattr(context.scene, "phantom_clay_polish", None)
+            props = col.operator("sculpt.phantom_clay_polish", text="ClayPolish", icon='SHADERFX')
+            if settings is not None:
+                # The same settings as Properties > Phantom Sculpting > ClayPolish.
+                try:
+                    from phantom_properties import CLAY_POLISH_SETTINGS
+                except ImportError:
+                    CLAY_POLISH_SETTINGS = ()
+                for name in CLAY_POLISH_SETTINGS:
+                    setattr(props, name, getattr(settings, name))
+                col.separator()
+                col.prop(settings, "sharpness")
+                col.prop(settings, "softness")
+                col.prop(settings, "repeat_polish", text="Polish Repeats")
+                col.prop(settings, "angle_preservation", toggle=True)
 
         header, body = layout.panel("phantom_simple_scene_masking", default_closed=True)
         header.label(text="Masking")
@@ -5427,7 +5655,7 @@ class VIEW3D_PT_phantom_simple_subtools(Panel):
 
 
 class TOPBAR_PT_phantom_simple_customize(Panel):
-    """What the simple view shows"""
+    """What Focus Mode shows"""
     bl_space_type = 'TOPBAR'
     bl_region_type = 'HEADER'
     bl_label = "Customize"
@@ -5436,12 +5664,31 @@ class TOPBAR_PT_phantom_simple_customize(Panel):
     def draw(self, context):
         layout = self.layout
         wm = context.window_manager
-        layout.label(text="Simple View")
+        layout.label(text="Focus Mode")
         col = layout.column()
         col.prop(wm, "phantom_simple_right_bar", text="Right Toolbar")
         col.prop(wm, "phantom_simple_bottom_bar", text="Bottom Toolbar")
         col.prop(wm, "phantom_simple_left_handed", text="Left-Handed (Swap Toolbars)")
         col.prop(wm, "phantom_simple_stats", text="Statistics Under the Thumbnail")
+        if hasattr(wm, "phantom_show_work_time"):
+            # Nested under Statistics.
+            sub = col.row()
+            sub.separator(factor=2.0)
+            sub.active = wm.phantom_simple_stats
+            sub.prop(wm, "phantom_show_work_time", text="Session and Project Time")
+            sub = col.row()
+            sub.separator(factor=4.0)
+            sub.active = wm.phantom_simple_stats and (wm.phantom_show_work_time or getattr(wm, "phantom_show_save_time", False))
+            sub.prop(wm, "phantom_show_work_time_seconds", text="Show Seconds")
+        if hasattr(wm, "phantom_show_save_time"):
+            sub = col.row()
+            sub.separator(factor=2.0)
+            sub.active = wm.phantom_simple_stats
+            sub.prop(wm, "phantom_show_save_time", text="Last Saved")
+            sub = col.row()
+            sub.separator(factor=4.0)
+            sub.active = wm.phantom_simple_stats and wm.phantom_show_save_time
+            sub.prop(wm, "phantom_save_remind", text="Remind")
         if hasattr(wm, "phantom_silhouette"):
             col.prop(wm, "phantom_silhouette", text="Silhouette Thumbnail")
             sub = col.row()
@@ -5460,7 +5707,7 @@ class TOPBAR_PT_phantom_simple_customize(Panel):
 
 
 class TOPBAR_PT_phantom_simple_help(Panel):
-    """How the simple view works"""
+    """How Focus Mode works"""
     bl_space_type = 'TOPBAR'
     bl_region_type = 'HEADER'
     bl_label = "Help"
@@ -5485,7 +5732,7 @@ class TOPBAR_PT_phantom_simple_help(Panel):
 
     def draw(self, context):
         layout = self.layout
-        layout.label(text="Simple View", icon='INFO')
+        layout.label(text="Focus Mode", icon='INFO')
         split = layout.split(factor=0.42)
         keys, what = split.column(), split.column()
         for key, text in self.LINES:
@@ -5535,12 +5782,12 @@ def draw_top_bar(layout, context, right):
         return
     row = _top_bar_group(layout)
     row.operator(TOPBAR_OT_phantom_simple_file_menu.bl_idname, text="", icon='HOME', emboss=False)
-    row.operator(VIEW3D_OT_phantom_simple_view_toggle.bl_idname, text="", icon='ARROW_LEFTRIGHT',
+    row.operator(VIEW3D_OT_phantom_simple_view_toggle.bl_idname, text="", icon='PHANTOM_FOCUS',
                  emboss=False)
     row.separator()
-    row.operator("wm.save_mainfile", text="", icon='FILE_TICK', emboss=False)
-    row.operator("wm.call_menu", text="", icon='IMPORT', emboss=False).name = "TOPBAR_MT_file_import"
-    row.operator("wm.call_menu", text="", icon='EXPORT', emboss=False).name = "TOPBAR_MT_file_export"
+    row.operator("wm.save_mainfile", text="", icon='PHANTOM_SAVE', emboss=False)
+    row.operator("wm.call_menu", text="", icon='PHANTOM_IMPORT', emboss=False).name = "TOPBAR_MT_file_import"
+    row.operator("wm.call_menu", text="", icon='PHANTOM_EXPORT', emboss=False).name = "TOPBAR_MT_file_export"
 
     # Between two spacers the header centers what is there on the bar's left part, a little left of
     # the window's middle (its right part, measured): a pad before the name makes up for both.
@@ -5583,8 +5830,8 @@ def draw_top_bar(layout, context, right):
 def _draw_view_menu(self, context):
     if context.mode == 'SCULPT':
         self.layout.separator()
-        self.layout.operator(VIEW3D_OT_phantom_simple_view_toggle.bl_idname, text="Simple View",
-                             icon='FULLSCREEN_ENTER')
+        self.layout.operator(VIEW3D_OT_phantom_simple_view_toggle.bl_idname, text="Focus Mode",
+                             icon='PHANTOM_FOCUS')
 
 
 # -----------------------------------------------------------------------------
@@ -5658,6 +5905,7 @@ classes = (
     VIEW3D_OT_phantom_simple_scene_menu,
     VIEW3D_MT_phantom_simple_scene_more,
     VIEW3D_MT_phantom_simple_boolean,
+    VIEW3D_OT_phantom_simple_scene_pin,
     VIEW3D_PT_phantom_simple_subtools,
     TOPBAR_PT_phantom_simple_customize,
     TOPBAR_PT_phantom_simple_help,

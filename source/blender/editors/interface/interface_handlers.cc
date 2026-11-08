@@ -13267,6 +13267,25 @@ static int popup_handler(bContext *C, const wmEvent *event, void *userdata)
   bool reset_pie = false;
 
   ARegion *region_popup = CTX_wm_region_popup(C);
+
+  /* Phantom: a pinned popup stays open, the events away from it go on to the window (sculpting
+   * beside it, the keys). Not while one of its buttons is being dragged or edited. */
+  if (menu->phantom_pinned && menu->menuretval == 0 && menu->region &&
+      (ISMOUSE(event->type) || ISKEYBOARD(event->type) || ISNDOF(event->type)) &&
+      !BLI_rcti_isect_pt_v(&menu->region->winrct, event->xy))
+  {
+    Button *but = region_find_active_but(menu->region);
+    if (but == nullptr || but->active == nullptr || !button_modal_state(but->active->state)) {
+      if (but && but->active && but->active->state == BUTTON_STATE_HIGHLIGHT) {
+        /* Its highlight goes as the mouse leaves it. */
+        but->active->cancel = true;
+        button_activate_exit(C, but, but->active, true, false);
+        ED_region_tag_redraw_no_rebuild(menu->region);
+      }
+      return WM_UI_HANDLER_CONTINUE;
+    }
+  }
+
   CTX_wm_region_popup_set(C, menu->region);
 
   if (event->type == EVT_DROP || event->val == KM_DBL_CLICK) {
@@ -13371,6 +13390,75 @@ void region_handlers_add(ListBaseT<wmEventHandler> *handlers)
   WM_event_remove_ui_handler(handlers, region_handler, region_handler_remove, nullptr, false);
   WM_event_add_ui_handler(
       nullptr, handlers, region_handler, region_handler_remove, nullptr, eWM_EventHandlerFlag(0));
+}
+
+static PopupBlockHandle *popup_phantom_find(bContext *C, wmWindow *win)
+{
+  ARegion *region_popup = CTX_wm_region_popup(C);
+  PopupBlockHandle *newest = nullptr;
+  for (wmEventHandler &handler_base : win->runtime->modalhandlers) {
+    if (handler_base.type != WM_HANDLER_TYPE_UI) {
+      continue;
+    }
+    wmEventHandler_UI *handler = reinterpret_cast<wmEventHandler_UI *>(&handler_base);
+    if (handler->handle_fn != popup_handler || handler->user_data == nullptr) {
+      continue;
+    }
+    PopupBlockHandle *menu = static_cast<PopupBlockHandle *>(handler->user_data);
+    if (region_popup && menu->region == region_popup) {
+      return menu;
+    }
+    if (newest == nullptr) {
+      newest = menu;
+    }
+  }
+  return region_popup ? nullptr : newest;
+}
+
+bool popup_phantom_pin_set(bContext *C, const bool pinned)
+{
+  wmWindow *win = CTX_wm_window(C);
+  if (win == nullptr) {
+    return false;
+  }
+  PopupBlockHandle *menu = popup_phantom_find(C, win);
+  if (menu == nullptr) {
+    return false;
+  }
+  menu->phantom_pinned = pinned;
+  if (menu->region) {
+    ED_region_tag_refresh_ui(menu->region);
+  }
+  return true;
+}
+
+bool popup_phantom_pinned_close(bContext *C)
+{
+  wmWindow *win = CTX_wm_window(C);
+  if (win == nullptr) {
+    return false;
+  }
+  bool closed = false;
+  for (wmEventHandler &handler_base : win->runtime->modalhandlers) {
+    if (handler_base.type != WM_HANDLER_TYPE_UI) {
+      continue;
+    }
+    wmEventHandler_UI *handler = reinterpret_cast<wmEventHandler_UI *>(&handler_base);
+    if (handler->handle_fn != popup_handler || handler->user_data == nullptr) {
+      continue;
+    }
+    PopupBlockHandle *menu = static_cast<PopupBlockHandle *>(handler->user_data);
+    if (menu->phantom_pinned && menu->menuretval == 0) {
+      /* Closed on its next event, as by a click away from it. */
+      menu->phantom_pinned = false;
+      menu->menuretval = RETURN_OK;
+      closed = true;
+    }
+  }
+  if (closed) {
+    WM_event_add_mousemove(win);
+  }
+  return closed;
 }
 
 void popup_handlers_add(bContext *C,

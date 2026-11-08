@@ -1644,6 +1644,7 @@ void view3d_draw_region_info(const bContext *C, ARegion *region)
 
     if (v3d->overlay.flag & V3D_OVERLAY_STATS && region_ok) {
       View3D *v3d_local = v3d->localvd ? v3d : nullptr;
+      ED_info_phantom_stats_region_set(region);
       ED_info_draw_stats(
           bmain, scene, view_layer, v3d_local, xoffset, &yoffset, VIEW3D_OVERLAY_LINEHEIGHT);
     }
