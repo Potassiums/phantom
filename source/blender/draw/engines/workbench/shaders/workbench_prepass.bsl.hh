@@ -195,6 +195,9 @@ struct VertOutSculpt {
   [[flat]] float roughness;
   [[flat]] float metallic;
   [[flat]] int matcap_layer;
+  /* Phantom: how lit up the mesh is (#SceneState::sculpt_flash): its pixels are tagged for the
+   * outline around it (#OutlinePass). */
+  [[flat]] float flash;
 };
 
 struct SculptIn {
@@ -208,6 +211,9 @@ struct SculptIn {
 struct SculptTint {
   [[push_constant]] const float sculpt_mask_opacity;
   [[push_constant]] const float sculpt_face_sets_opacity;
+  /* Phantom: the lit-up mesh (#SceneState::sculpt_flash). */
+  [[push_constant]] const float sculpt_flash;
+  [[push_constant]] const float sculpt_flash_phase;
 };
 
 [[vertex]] void vert_sculpt([[resource_table]] color::Materials &materials,
@@ -251,6 +257,22 @@ struct SculptTint {
 
   materials.material_data_get(
       custom_id, v_in.ac.rgb, v_out.color, v_out.alpha, v_out.roughness, v_out.metallic);
+
+  /* Phantom: lit up for a moment (picked in the Scene window): brighter, and a warm band
+   * sweeping diagonally across the view over it. Light is added, so dark surfaces (black
+   * polypaint) light up too. */
+  v_out.flash = tint.sculpt_flash;
+  if (tint.sculpt_flash > 0.0f) {
+    const float2 ndc = out_position.xy / max(out_position.w, 1e-6f);
+    const float across = (ndc.x + ndc.y) * 0.5f;
+    /* Once across (no wrapping round for a second pass). */
+    const float center = -1.6f + 3.2f * clamp(tint.sculpt_flash_phase, 0.0f, 1.0f);
+    const float d = (across - center) / 0.32f;
+    const float band = exp(-d * d);
+    const float3 warm = float3(1.0f, 0.55f, 0.25f);
+    v_out.color = v_out.color * (1.0f + 0.25f * tint.sculpt_flash) +
+                  (float3(0.16f) + warm * (0.75f * band)) * tint.sculpt_flash;
+  }
 
   v_out.matcap_layer = materials.matcap_layer_get(custom_id);
 }
@@ -510,7 +532,12 @@ struct OpaqueOut {
 {
   const ViewMatrices view = views.get(0);
   frag_out.object_id = uint(v_out.object_id);
-  frag_out.normal = normal_encode(facing, sculpt_face_normal(view, v_out.view_position, facing));
+  const float3 N = sculpt_face_normal(view, v_out.view_position, facing);
+  frag_out.normal = normal_encode(facing, N);
+  /* Phantom: the lit-up mesh's pixels are tagged (the top bit) for the outline around it. */
+  if (v_out.flash > 0.0f) {
+    frag_out.object_id |= WB_OBJECT_ID_FLASH;
+  }
 
   frag_out.material = float4(v_out.color, float_pair_encode(v_out.roughness, v_out.metallic));
 

@@ -112,7 +112,6 @@ POLYGROUP_OUTSIDE = 1
 POLYGROUP_INSIDE = 2
 POLYGROUP_RIM = 3
 # Polygroup colors, as `BKE_paint_face_set_overlay_color_get` picks their hues (keep in step).
-GOLDEN_RATIO_CONJUGATE = 0.618033988749895
 DEFAULT_HUE = 0.0235  # Scarlet, the default polygroup's.
 RED_BAND = 0.06
 
@@ -122,12 +121,23 @@ def _hue_distance(a, b):
     return min(d, 1.0 - d)
 
 
+def _color_hash(face_set, seed):
+    """`face_set_color_hash` of `paint.cc` (32-bit unsigned arithmetic)."""
+    m = 0xFFFFFFFF
+    h = ((face_set * 0x9E3779B1) & m) ^ ((seed * 0x85EBCA77) & m)
+    h ^= h >> 15
+    h = (h * 0x2C1B3C6D) & m
+    h ^= h >> 12
+    h = (h * 0x297A2D39) & m
+    h ^= h >> 15
+    return h
+
+
 def polygroup_hue(face_set, default_face_set, seed):
     """The hue a polygroup is drawn in."""
     if face_set == default_face_set:
         return DEFAULT_HUE
-    hue = GOLDEN_RATIO_CONJUGATE * (face_set + math.fmod(seed, 10))
-    hue -= math.floor(hue)
+    hue = (_color_hash(face_set, seed) & 0xFFFF) / 65536.0
     from_scarlet = hue - DEFAULT_HUE
     from_scarlet -= math.floor(from_scarlet + 0.5)
     if abs(from_scarlet) < RED_BAND:
@@ -154,8 +164,8 @@ def distinct_seed(ids, avoid_hues, default_face_set=0):
     def score(seed):
         hues = [polygroup_hue(i, default_face_set, seed) for i in ids]
         return min(_hue_distance(h, a) for h in hues for a in avoid_hues)
-    # Only the seed's last digit moves the hues.
-    return max(range(10), key=score)
+    # Every seed gives other hues: the best of a few dozen.
+    return max(range(64), key=score)
 
 
 def _ui_scale():
@@ -404,7 +414,9 @@ def _draw(op):
     lay = _Layout(context.area, context.region)
     shader = gpu.shader.from_builtin('UNIFORM_COLOR')
     tris, outline = _rounded_rect(*lay.panel, CORNER * s)
-    _shape(shader, 'TRIS', tris, PANEL_COLOR, alpha)
+    # Frosted glass and the darkness of the simple view's windows.
+    import phantom_simple_view as sv
+    sv._panel(*lay.panel, CORNER * s, alpha)
     _shape(shader, 'LINE_LOOP', outline, OUTLINE_COLOR, alpha)
     _text("Extract", *lay.title, 'LEFT', TITLE_SIZE * s, TEXT_COLOR, alpha)
     for slider in SLIDERS:
@@ -484,8 +496,12 @@ class SCULPT_OT_phantom_extract(Operator):
         if source.use_dynamic_topology_sculpting:
             self.report({'WARNING'}, "Turn off Dyntopo to extract")
             return {'CANCELLED'}
-        if any(m.type == 'MULTIRES' and m.show_viewport for m in source.modifiers):
-            self.report({'WARNING'}, "Extract works on the mesh's own mask, not with Multires yet")
+        # Multires sculpted at level 0 keeps its mask on the mesh itself: that extracts. Higher
+        # levels keep it in their grids, which Python can't read (nor Blender's Mask Extract).
+        if any(m.type == 'MULTIRES' and m.show_viewport and m.sculpt_levels > 0
+               for m in source.modifiers):
+            self.report({'WARNING'}, "Extract works at Multires level 0: step down to level 0 "
+                        "(or apply Multires), then extract")
             return {'CANCELLED'}
         keep = _masked_faces(source.data)
         if keep is None or not keep.any():

@@ -39,6 +39,13 @@ namespace blender::bke::phantom_history {
 
 /** The mask attribute sculpting writes. */
 static constexpr StringRef MASK_ATTRIBUTE = ".sculpt_mask";
+/** The face sets (polygroups) attribute, on the faces of the (base) mesh. */
+static constexpr StringRef FACE_SET_ATTRIBUTE = ".sculpt_face_set";
+/**
+ * The face set the history gives the faces of a mesh without face sets: the one sculpting fills
+ * them with when it adds the attribute (#face_set::ensure_face_sets_mesh), so that is no change.
+ */
+static constexpr int DEFAULT_FACE_SET = 1;
 
 /** What the points are: mesh vertices (with faces), or Multires grid points. */
 struct Layout {
@@ -91,6 +98,13 @@ struct Runtime {
   Array<int> last_position_step;
   /** Empty when no mask changed since the keyframe. */
   Array<int> last_mask_step;
+  /** Whether the current keyframe has face sets (#PHANTOM_HISTORY_STEP_FACE_SETS). */
+  bool face_sets_known = false;
+  int face_sets_num = 0;
+  /** The face sets at the current step; empty when every face has #DEFAULT_FACE_SET. */
+  Array<int> face_sets;
+  int face_sets_color_seed = 0;
+  int face_sets_color_default = 0;
   /**
    * The mesh is known to be in the current step's shape apart from the points edits touch, since
    * it was last compared in full, in this sculpt session (#record).
@@ -111,7 +125,26 @@ struct State {
   VArraySpan<float> mesh_masks;
   const Mesh *mesh = nullptr;
   SubdivCCG *subdiv_ccg = nullptr;
+  /** The face sets of the (base) mesh's faces; empty when it has none. */
+  Span<int> face_sets;
+  VArraySpan<int> mesh_face_sets;
+  int face_sets_num = 0;
+  int face_sets_color_seed = 0;
+  int face_sets_color_default = 0;
 };
+
+static void read_face_sets(const Mesh &mesh, State &state)
+{
+  state.face_sets_num = mesh.faces_num;
+  state.face_sets_color_seed = mesh.face_sets_color_seed;
+  state.face_sets_color_default = mesh.face_sets_color_default;
+  if (const VArray<int> face_sets = *mesh.attributes().lookup<int>(FACE_SET_ATTRIBUTE,
+                                                                     AttrDomain::Face))
+  {
+    state.mesh_face_sets = face_sets;
+    state.face_sets = state.mesh_face_sets;
+  }
+}
 
 static SubdivCCG *object_grids(const Object &ob)
 {
@@ -129,6 +162,7 @@ static bool read_state(const Object &ob, State &state)
   if (ob.type != OB_MESH) {
     return false;
   }
+  read_face_sets(*id_cast<const Mesh *>(ob.data), state);
   if (SubdivCCG *subdiv_ccg = object_grids(ob)) {
     state.subdiv_ccg = subdiv_ccg;
     state.positions = subdiv_ccg->positions;
@@ -152,6 +186,17 @@ static bool read_state(const Object &ob, State &state)
 static float mask_at(const Span<float> masks, const int64_t i)
 {
   return masks.is_empty() ? 0.0f : masks[i];
+}
+
+static int face_set_at(const Span<int> face_sets, const int64_t i)
+{
+  return face_sets.is_empty() ? DEFAULT_FACE_SET : face_sets[i];
+}
+
+static bool all_default_face_sets(const Span<int> face_sets)
+{
+  return std::all_of(
+      face_sets.begin(), face_sets.end(), [](const int i) { return i == DEFAULT_FACE_SET; });
 }
 
 /** Number of live #ScopedPause. */
@@ -196,6 +241,7 @@ static void invalidate_compare(PhantomHistory &history)
     runtime.in_sync = false;
     runtime.last_position_step = {};
     runtime.last_mask_step = {};
+    runtime.face_sets = {};
   }
 }
 
@@ -243,6 +289,9 @@ static void free_step(PhantomHistory &history, PhantomHistoryStep &step)
   MEM_SAFE_DELETE(step.masks);
   MEM_SAFE_DELETE(step.mask_delta_indices);
   MEM_SAFE_DELETE(step.mask_delta_values);
+  MEM_SAFE_DELETE(step.face_sets);
+  MEM_SAFE_DELETE(step.face_set_delta_indices);
+  MEM_SAFE_DELETE(step.face_set_delta_values);
 }
 
 void free(PhantomHistory *history)
@@ -348,6 +397,53 @@ static Span<float3> delta_positions(const PhantomHistoryStep &step)
   return {reinterpret_cast<const float3 *>(step.delta_positions), step.delta_num};
 }
 
+/**
+ * The face sets at step `index`, from its keyframe (which has face sets) and the deltas after it;
+ * empty when every face has #DEFAULT_FACE_SET.
+ */
+static Array<int> step_face_sets(const PhantomHistory &history,
+                                 const int keyframe_index,
+                                 const int index)
+{
+  const PhantomHistoryStep &keyframe = history.steps[keyframe_index];
+  bool any_delta = false;
+  for (int i = keyframe_index + 1; i <= index; i++) {
+    any_delta |= history.steps[i].face_set_delta_num > 0;
+  }
+  if (keyframe.face_sets == nullptr && !any_delta) {
+    return {};
+  }
+  Array<int> face_sets(keyframe.face_sets_num);
+  if (keyframe.face_sets) {
+    face_sets.as_mutable_span().copy_from({keyframe.face_sets, keyframe.face_sets_num});
+  }
+  else {
+    face_sets.fill(DEFAULT_FACE_SET);
+  }
+  for (int i = keyframe_index + 1; i <= index; i++) {
+    const PhantomHistoryStep &step = history.steps[i];
+    scatter<int>({step.face_set_delta_indices, step.face_set_delta_num},
+                 {step.face_set_delta_values, step.face_set_delta_num},
+                 face_sets);
+  }
+  return face_sets;
+}
+
+/** The comparison data's face sets become those of the current step. */
+static void start_face_sets_compare(const PhantomHistory &history, Runtime &runtime)
+{
+  const int keyframe_index = keyframe_of(history, history.current);
+  const PhantomHistoryStep &keyframe = history.steps[keyframe_index];
+  const PhantomHistoryStep &current = history.steps[history.current];
+  runtime.face_sets_known = keyframe.flag & PHANTOM_HISTORY_STEP_FACE_SETS;
+  runtime.face_sets_num = keyframe.face_sets_num;
+  runtime.face_sets = runtime.face_sets_known ?
+                          step_face_sets(history, keyframe_index, history.current) :
+                          Array<int>();
+  runtime.face_sets_color_seed = current.face_sets_color_seed;
+  runtime.face_sets_color_default = current.face_sets_color_default;
+}
+
 StepShape step_shape(const PhantomHistory &history, const int index)
 {
   StepShape shape;
@@ -367,6 +463,12 @@ StepShape step_shape(const PhantomHistory &history, const int index)
     scatter<float>({step.mask_delta_indices, step.mask_delta_num},
                    {step.mask_delta_values, step.mask_delta_num},
                    shape.masks);
+  }
+  shape.has_face_sets = keyframe.flag & PHANTOM_HISTORY_STEP_FACE_SETS;
+  if (shape.has_face_sets) {
+    shape.face_sets = step_face_sets(history, shape.keyframe, index);
+    shape.face_sets_color_seed = history.steps[index].face_sets_color_seed;
+    shape.face_sets_color_default = history.steps[index].face_sets_color_default;
   }
   return shape;
 }
@@ -402,6 +504,7 @@ static void start_compare_at_keyframe(PhantomHistory &history, const Layout &lay
   runtime.last_position_step.reinitialize(layout.points_num);
   fill_parallel(runtime.last_position_step, -1);
   runtime.last_mask_step = {};
+  start_face_sets_compare(history, runtime);
   runtime.compare_valid = true;
   runtime.in_sync = true;
 }
@@ -429,6 +532,7 @@ static Runtime &ensure_compare(PhantomHistory &history)
     fill_parallel(runtime.last_mask_step, -1);
     scatter_numbers(since, true, runtime.last_mask_step);
   }
+  start_face_sets_compare(history, runtime);
   runtime.compare_valid = true;
   runtime.in_sync = false;
   return runtime;
@@ -588,6 +692,14 @@ static void set_keyframe(PhantomHistory &history, PhantomHistoryStep &step, cons
     step.masks = MEM_new_array_uninitialized<float>(size_t(layout.points_num), __func__);
     MutableSpan<float>(step.masks, layout.points_num).copy_from(state.masks);
   }
+  step.flag |= PHANTOM_HISTORY_STEP_FACE_SETS;
+  step.face_sets_num = state.face_sets_num;
+  if (!all_default_face_sets(state.face_sets)) {
+    step.face_sets = MEM_new_array_uninitialized<int>(size_t(state.face_sets_num), __func__);
+    MutableSpan<int>(step.face_sets, state.face_sets_num).copy_from(state.face_sets);
+  }
+  step.face_sets_color_seed = state.face_sets_color_seed;
+  step.face_sets_color_default = state.face_sets_color_default;
 }
 
 
@@ -674,6 +786,18 @@ void apply_limit(PhantomHistory &history)
                        {second.mask_delta_values, second.mask_delta_num},
                        {first.masks, first.verts_num});
       }
+      if (second.face_set_delta_num > 0 && (first.flag & PHANTOM_HISTORY_STEP_FACE_SETS)) {
+        if (first.face_sets == nullptr) {
+          first.face_sets = MEM_new_array_uninitialized<int>(size_t(first.face_sets_num),
+                                                             __func__);
+          MutableSpan<int>(first.face_sets, first.face_sets_num).fill(DEFAULT_FACE_SET);
+        }
+        scatter<int>({second.face_set_delta_indices, second.face_set_delta_num},
+                     {second.face_set_delta_values, second.face_set_delta_num},
+                     {first.face_sets, first.face_sets_num});
+      }
+      first.face_sets_color_seed = second.face_sets_color_seed;
+      first.face_sets_color_default = second.face_sets_color_default;
       /* The comparison data reads values of the folded step from the keyframe (#CurrentStep), and
        * the keyframe's shared arrays go by its number. */
       if (history.runtime) {
@@ -693,7 +817,11 @@ void apply_limit(PhantomHistory &history)
   }
 }
 
-void record(Object &ob, const StringRef name, bool topology_changed, const BitSpan touched)
+void record(Object &ob,
+            const StringRef name,
+            bool topology_changed,
+            const BitSpan touched,
+            const bool face_sets_edited)
 {
   if (pause_count > 0 || !is_recording(ob)) {
     return;
@@ -714,15 +842,37 @@ void record(Object &ob, const StringRef name, bool topology_changed, const BitSp
   Runtime &runtime = ensure_compare(history);
   const Span<float3> positions = state.positions;
   topology_changed |= state.layout != runtime.layout;
+  if (runtime.face_sets_known) {
+    topology_changed |= state.face_sets_num != runtime.face_sets_num;
+  }
+  else if (face_sets_edited) {
+    /* The current keyframe is from a history saved without face sets: a keyframe starts them. */
+    topology_changed = true;
+  }
 
   IndexMaskMemory memory;
   IndexMask moved;
   IndexMask remasked;
+  IndexMask refaced;
+  bool colors_changed = false;
   if (!topology_changed) {
     /* Only the points the edit touched can differ, once the rest is known to match. */
-    const IndexMask candidates = runtime.in_sync && touched.size() == positions.size() ?
-                                     IndexMask::from_bits(touched, memory) :
-                                     IndexMask(positions.index_range());
+    const bool compare_all = !runtime.in_sync || touched.size() != positions.size();
+    const IndexMask candidates = compare_all ? IndexMask(positions.index_range()) :
+                                               IndexMask::from_bits(touched, memory);
+    /* Face sets only change in face set edits (and outside of the sculpt session). */
+    if (runtime.face_sets_known && (face_sets_edited || compare_all)) {
+      const Span<int> face_sets = state.face_sets;
+      const Span<int> current_face_sets = runtime.face_sets;
+      if (!(face_sets.is_empty() && current_face_sets.is_empty())) {
+        refaced = IndexMask::from_predicate(
+            IndexRange(state.face_sets_num), memory, [&](const int64_t i) {
+              return face_set_at(face_sets, i) != face_set_at(current_face_sets, i);
+            });
+      }
+      colors_changed = state.face_sets_color_seed != runtime.face_sets_color_seed ||
+                       state.face_sets_color_default != runtime.face_sets_color_default;
+    }
     /* Compare bits, so the step restores exactly. */
     const CurrentStep current_step(history, runtime);
     moved = IndexMask::from_predicate(candidates, memory, [&](const int64_t i) {
@@ -740,8 +890,8 @@ void record(Object &ob, const StringRef name, bool topology_changed, const BitSp
       });
     }
     runtime.in_sync = true;
-    if (moved.is_empty() && remasked.is_empty()) {
-      /* A face set or visibility edit: nothing the history keeps. */
+    if (moved.is_empty() && remasked.is_empty() && refaced.is_empty() && !colors_changed) {
+      /* A visibility edit, or nothing changed: nothing the history keeps. */
       return;
     }
   }
@@ -752,6 +902,8 @@ void record(Object &ob, const StringRef name, bool topology_changed, const BitSp
   PhantomHistoryStep &step = append_step(history, name);
   if (topology_changed) {
     set_keyframe(history, step, state);
+    /* (The comparison data is of the current step.) */
+    history.current = history.steps_num - 1;
     start_compare_at_keyframe(history, state.layout);
   }
   else {
@@ -786,6 +938,28 @@ void record(Object &ob, const StringRef name, bool topology_changed, const BitSp
           },
           exec_mode::grain_size(4096));
     }
+    if (!refaced.is_empty()) {
+      step.face_set_delta_num = int(refaced.size());
+      step.face_set_delta_indices = MEM_new_array_uninitialized<int>(refaced.size(), __func__);
+      step.face_set_delta_values = MEM_new_array_uninitialized<int>(refaced.size(), __func__);
+      refaced.to_indices<int>({step.face_set_delta_indices, step.face_set_delta_num});
+      if (runtime.face_sets.is_empty()) {
+        runtime.face_sets.reinitialize(runtime.face_sets_num);
+        runtime.face_sets.fill(DEFAULT_FACE_SET);
+      }
+      MutableSpan<int> current_face_sets = runtime.face_sets;
+      int *face_set_values = step.face_set_delta_values;
+      refaced.foreach_index(
+          [&](const int64_t i, const int64_t pos) {
+            face_set_values[pos] = face_set_at(state.face_sets, i);
+            current_face_sets[i] = face_set_values[pos];
+          },
+          exec_mode::grain_size(4096));
+    }
+    step.face_sets_color_seed = state.face_sets_color_seed;
+    step.face_sets_color_default = state.face_sets_color_default;
+    runtime.face_sets_color_seed = state.face_sets_color_seed;
+    runtime.face_sets_color_default = state.face_sets_color_default;
   }
   history.current = history.steps_num - 1;
   apply_limit(history);
@@ -868,8 +1042,71 @@ bool write_mesh_positions(const PhantomHistory &history, const int index, Mesh &
   return true;
 }
 
-ApplyResult apply_step(Object &ob, int index)
+/**
+ * Gives `mesh` the face sets (and their colors) of `shape`, when its keyframe has them and the
+ * mesh has its faces. True when anything changed.
+ */
+static bool write_mesh_face_sets(Mesh &mesh,
+                                 const StepShape &shape,
+                                 const PhantomHistoryStep &keyframe)
 {
+  if (!shape.has_face_sets || keyframe.face_sets_num != mesh.faces_num) {
+    return false;
+  }
+  bool changed = mesh.face_sets_color_seed != shape.face_sets_color_seed ||
+                 mesh.face_sets_color_default != shape.face_sets_color_default;
+  mesh.face_sets_color_seed = shape.face_sets_color_seed;
+  mesh.face_sets_color_default = shape.face_sets_color_default;
+  MutableAttributeAccessor attributes = mesh.attributes_for_write();
+  {
+    const VArray<int> current = *attributes.lookup<int>(FACE_SET_ATTRIBUTE, AttrDomain::Face);
+    if (!current) {
+      /* A mesh without face sets has the default one (#DEFAULT_FACE_SET) everywhere. */
+      if (shape.face_sets.is_empty()) {
+        return changed;
+      }
+    }
+    else {
+      const VArraySpan<int> current_span(current);
+      const bool same = !threading::parallel_reduce(
+          IndexRange(mesh.faces_num),
+          4096,
+          false,
+          [&](const IndexRange range, bool differs) {
+            for (const int64_t i : range) {
+              if (differs) {
+                break;
+              }
+              differs = current_span[i] != face_set_at(shape.face_sets, i);
+            }
+            return differs;
+          },
+          [](const bool a, const bool b) { return a || b; });
+      if (same) {
+        return changed;
+      }
+    }
+  }
+  SpanAttributeWriter<int> writer = attributes.lookup_or_add_for_write_only_span<int>(
+      FACE_SET_ATTRIBUTE, AttrDomain::Face);
+  if (!writer) {
+    return changed;
+  }
+  if (shape.face_sets.is_empty()) {
+    writer.span.fill(DEFAULT_FACE_SET);
+  }
+  else {
+    writer.span.copy_from(shape.face_sets);
+  }
+  writer.finish();
+  return true;
+}
+
+ApplyResult apply_step(Object &ob, int index, bool *r_face_sets_changed)
+{
+  if (r_face_sets_changed) {
+    *r_face_sets_changed = false;
+  }
   PhantomHistory *history = ob.phantom_history;
   State state;
   if (history == nullptr || history->steps_num == 0 || !read_state(ob, state)) {
@@ -902,20 +1139,24 @@ ApplyResult apply_step(Object &ob, int index)
   }
 
   StepShape shape = step_shape(*history, index);
+  bool face_sets_changed = false;
   if (state.subdiv_ccg) {
     SubdivCCG &subdiv_ccg = *state.subdiv_ccg;
     subdiv_ccg.positions.as_mutable_span().copy_from(shape.positions);
     if (!subdiv_ccg.masks.is_empty()) {
       subdiv_ccg.masks.as_mutable_span().copy_from(shape.masks);
     }
+    /* The face sets are the base mesh's. */
+    face_sets_changed = write_mesh_face_sets(*id_cast<Mesh *>(ob.data), shape, keyframe);
   }
   else if (result == ApplyResult::Positions) {
-    /* Within the current keyframe's span the topology is the mesh's: write positions and masks
-     * only, which keeps all other attributes. */
+    /* Within the current keyframe's span the topology is the mesh's: write positions, masks and
+     * face sets only, which keeps all other attributes. */
     Mesh &mesh = *id_cast<Mesh *>(ob.data);
     mesh.vert_positions_for_write().copy_from(shape.positions);
     mesh.tag_positions_changed();
     write_mesh_masks(mesh, shape.masks);
+    face_sets_changed = write_mesh_face_sets(mesh, shape, keyframe);
   }
   else {
     Mesh *mesh = id_cast<Mesh *>(ob.data);
@@ -929,7 +1170,12 @@ ApplyResult apply_step(Object &ob, int index)
     new_mesh->corner_verts_for_write().copy_from({keyframe.corner_verts, keyframe.corners_num});
     mesh_calc_edges(*new_mesh, false, false);
     write_mesh_masks(*new_mesh, shape.masks);
+    write_mesh_face_sets(*new_mesh, shape, keyframe);
     BKE_mesh_nomain_to_mesh(new_mesh, mesh, &ob);
+    face_sets_changed = true;
+  }
+  if (r_face_sets_changed) {
+    *r_face_sets_changed = face_sets_changed;
   }
 
   history->current = index;
@@ -949,6 +1195,21 @@ bool is_at_current(const Object &ob)
   const Runtime &runtime = ensure_compare(*history);
   if (state.layout != runtime.layout) {
     return false;
+  }
+  if (runtime.face_sets_known) {
+    if (state.face_sets_num != runtime.face_sets_num ||
+        state.face_sets_color_seed != runtime.face_sets_color_seed ||
+        state.face_sets_color_default != runtime.face_sets_color_default)
+    {
+      return false;
+    }
+    const Span<int> face_sets = state.face_sets;
+    const Span<int> current_face_sets = runtime.face_sets;
+    for (const int64_t i : IndexRange(state.face_sets_num)) {
+      if (face_set_at(face_sets, i) != face_set_at(current_face_sets, i)) {
+        return false;
+      }
+    }
   }
   const CurrentStep current_step(*history, runtime);
   const Span<float3> positions = state.positions;
@@ -996,6 +1257,10 @@ int64_t memory_bytes(const PhantomHistory &history)
     }
     bytes += (sizeof(int) + sizeof(float3)) * int64_t(step.delta_num);
     bytes += (sizeof(int) + sizeof(float)) * int64_t(step.mask_delta_num);
+    if (step.face_sets) {
+      bytes += sizeof(int) * int64_t(step.face_sets_num);
+    }
+    bytes += sizeof(int) * 2 * int64_t(step.face_set_delta_num);
   }
   return bytes;
 }
@@ -1026,18 +1291,26 @@ void blend_write(BlendWriter &writer, const PhantomHistory &history)
       if (step.masks) {
         writer.write_float_array(step.verts_num, step.masks);
       }
+      if (step.face_sets) {
+        writer.write_int32_array(step.face_sets_num, step.face_sets);
+      }
     }
     else {
       writer.write_int32_array(step.delta_num, step.delta_indices);
       writer.write_float_array(int64_t(step.delta_num) * 3, step.delta_positions);
       writer.write_int32_array(step.mask_delta_num, step.mask_delta_indices);
       writer.write_float_array(step.mask_delta_num, step.mask_delta_values);
+      writer.write_int32_array(step.face_set_delta_num, step.face_set_delta_indices);
+      writer.write_int32_array(step.face_set_delta_num, step.face_set_delta_values);
     }
   }
 }
 
 /** Reads every array of the step (so all its pointers are valid or null), then checks them. */
-static bool read_step(BlendDataReader &reader, PhantomHistoryStep &step, const int keyframe_verts)
+static bool read_step(BlendDataReader &reader,
+                      PhantomHistoryStep &step,
+                      const int keyframe_verts,
+                      const int keyframe_faces)
 {
   bool ok = true;
   if (step.flag & PHANTOM_HISTORY_STEP_KEYFRAME) {
@@ -1049,11 +1322,26 @@ static bool read_step(BlendDataReader &reader, PhantomHistoryStep &step, const i
     if (step.masks) {
       ok &= BLO_read_array(&reader, &step.masks, std::max(step.verts_num, 0));
     }
+    /* Only written when there are face sets, by files from after face sets were recorded. */
+    if (step.flag & PHANTOM_HISTORY_STEP_FACE_SETS) {
+      ok &= step.face_sets_num >= 0;
+      if (step.face_sets) {
+        ok &= BLO_read_array(&reader, &step.face_sets, std::max(step.face_sets_num, 0));
+        ok &= step.face_sets != nullptr;
+      }
+    }
+    else {
+      step.face_sets = nullptr;
+      step.face_sets_num = 0;
+    }
     step.delta_indices = nullptr;
     step.delta_positions = nullptr;
     step.mask_delta_indices = nullptr;
     step.mask_delta_values = nullptr;
     step.mask_delta_num = 0;
+    step.face_set_delta_indices = nullptr;
+    step.face_set_delta_values = nullptr;
+    step.face_set_delta_num = 0;
     if (!ok || step.positions == nullptr || step.face_offsets == nullptr ||
         (step.corners_num > 0 && step.corner_verts == nullptr))
     {
@@ -1086,14 +1374,27 @@ static bool read_step(BlendDataReader &reader, PhantomHistoryStep &step, const i
   ok &= BLO_read_array(&reader, &step.delta_positions, int64_t(std::max(step.delta_num, 0)) * 3);
   ok &= BLO_read_array(&reader, &step.mask_delta_indices, std::max(step.mask_delta_num, 0));
   ok &= BLO_read_array(&reader, &step.mask_delta_values, std::max(step.mask_delta_num, 0));
+  ok &= step.face_set_delta_num >= 0;
+  ok &= BLO_read_array(
+      &reader, &step.face_set_delta_indices, std::max(step.face_set_delta_num, 0));
+  ok &= BLO_read_array(&reader, &step.face_set_delta_values, std::max(step.face_set_delta_num, 0));
   step.positions = nullptr;
   step.face_offsets = nullptr;
   step.corner_verts = nullptr;
   step.masks = nullptr;
+  step.face_sets = nullptr;
   if (!ok || (step.delta_num > 0 && (!step.delta_indices || !step.delta_positions)) ||
-      (step.mask_delta_num > 0 && (!step.mask_delta_indices || !step.mask_delta_values)))
+      (step.mask_delta_num > 0 && (!step.mask_delta_indices || !step.mask_delta_values)) ||
+      (step.face_set_delta_num > 0 &&
+       (!step.face_set_delta_indices || !step.face_set_delta_values)))
   {
     return false;
+  }
+  for (const int i : IndexRange(step.face_set_delta_num)) {
+    /* (No faces when the keyframe has no face sets: no face set deltas either.) */
+    if (step.face_set_delta_indices[i] < 0 || step.face_set_delta_indices[i] >= keyframe_faces) {
+      return false;
+    }
   }
   for (const int i : IndexRange(step.delta_num)) {
     if (step.delta_indices[i] < 0 || step.delta_indices[i] >= keyframe_verts) {
@@ -1132,6 +1433,7 @@ void blend_read(BlendDataReader &reader, Object &ob)
 
   /* Read all steps even after a failure, so freeing only meets valid pointers. */
   int keyframe_verts = -1;
+  int keyframe_faces = 0;
   for (const int i : IndexRange(history->steps_num)) {
     PhantomHistoryStep &step = history->steps[i];
     if (i == 0 && !(step.flag & PHANTOM_HISTORY_STEP_KEYFRAME)) {
@@ -1141,8 +1443,11 @@ void blend_read(BlendDataReader &reader, Object &ob)
     }
     if (step.flag & PHANTOM_HISTORY_STEP_KEYFRAME) {
       keyframe_verts = step.verts_num;
+      keyframe_faces = (step.flag & PHANTOM_HISTORY_STEP_FACE_SETS) ?
+                           std::max(step.face_sets_num, 0) :
+                           0;
     }
-    ok &= read_step(reader, step, keyframe_verts);
+    ok &= read_step(reader, step, keyframe_verts, keyframe_faces);
   }
   if (history->steps_num > 0) {
     ok &= history->current >= 0 && history->current < history->steps_num;

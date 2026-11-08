@@ -18,6 +18,7 @@
 
 #include "BLI_listbase.hh"
 #include "BLI_math_color_c.hh"
+#include "BLI_math_geom_c.hh"
 #include "BLI_math_matrix.hh"
 #include "BLI_math_vector.hh"
 #include "BLI_rect.hh"
@@ -256,6 +257,173 @@ static std::optional<float3> sample_texture_paint_color(
   return rgba_f.xyz();
 }
 
+/**
+ * Phantom: where the ray under the cursor hits the active object, in world space (at its active
+ * vertex, close enough to tell which object is in front).
+ */
+static std::optional<float3> active_vert_position_world(const Depsgraph &depsgraph,
+                                                        const Object &object,
+                                                        const ActiveElementInfo &info)
+{
+  if (!std::holds_alternative<int>(info.vert)) {
+    return std::nullopt;
+  }
+  const int vert = std::get<int>(info.vert);
+  const SculptSession *ss = object.runtime->sculpt_session;
+  const bke::pbvh::Tree *pbvh = bke::object::pbvh_get(object);
+  if (ss == nullptr || pbvh == nullptr) {
+    return std::nullopt;
+  }
+  float3 position;
+  if (pbvh->type() == bke::pbvh::Type::Grids) {
+    if (ss->subdiv_ccg == nullptr || vert >= ss->subdiv_ccg->positions.size()) {
+      return std::nullopt;
+    }
+    position = ss->subdiv_ccg->positions[vert];
+  }
+  else if (pbvh->type() == bke::pbvh::Type::Mesh) {
+    const Span<float3> positions = bke::pbvh::vert_positions_eval(depsgraph, object);
+    if (vert >= positions.size()) {
+      return std::nullopt;
+    }
+    position = positions[vert];
+  }
+  else {
+    return std::nullopt;
+  }
+  return math::transform_point(object.object_to_world(), position);
+}
+
+/** Phantom: another mesh under the cursor (#sample_other_objects). */
+struct OtherObjectHit {
+  /** From the start of the view ray, in world space. */
+  float distance = std::numeric_limits<float>::max();
+  /** Its active color attribute there; none when it has no colors. */
+  std::optional<float3> color;
+};
+
+/**
+ * Phantom: like ZBrush, the color picker reads any mesh under the cursor, not only the one being
+ * sculpted. This finds the nearest of the visible meshes other than `active` under the cursor and
+ * its color there: its evaluated mesh's active color attribute, interpolated in the triangle hit.
+ * That includes Multires polypaint, which Object Mode evaluates into the active color attribute
+ * (see #subdiv_mesh_grid_color_init).
+ */
+static std::optional<OtherObjectHit> sample_other_objects(ViewContext &vc,
+                                                          const Object *active,
+                                                          const int2 mval)
+{
+  if (vc.v3d == nullptr || vc.rv3d == nullptr) {
+    return std::nullopt;
+  }
+  float3 start_world;
+  float3 end_world;
+  if (!ED_view3d_win_to_segment_clipped(vc.depsgraph,
+                                        vc.region,
+                                        vc.v3d,
+                                        float2(mval.x, mval.y),
+                                        start_world,
+                                        end_world,
+                                        true))
+  {
+    return std::nullopt;
+  }
+  BKE_view_layer_synced_ensure(*vc.bmain, vc.scene, vc.view_layer);
+  std::optional<OtherObjectHit> nearest;
+  const Object *nearest_object = nullptr;
+  int nearest_tri = -1;
+  float3 nearest_position_object;
+  for (Base &base : *BKE_view_layer_object_bases_get(vc.view_layer)) {
+    Object *ob = base.object;
+    if (ob == active || ob->type != OB_MESH || !BKE_base_is_visible(vc.v3d, &base)) {
+      continue;
+    }
+    const Object *ob_eval = DEG_get_evaluated(vc.depsgraph, ob);
+    const Mesh *mesh_eval = ob_eval ? BKE_object_get_evaluated_mesh(ob_eval) : nullptr;
+    if (mesh_eval == nullptr || mesh_eval->faces_num == 0) {
+      continue;
+    }
+    const float4x4 &world_to_object = ob_eval->world_to_object();
+    const float3 start = math::transform_point(world_to_object, start_world);
+    const float3 end = math::transform_point(world_to_object, end_world);
+    const float3 direction = math::normalize(end - start);
+    /* Only meshes whose bounds the ray crosses build their triangle tree (once, it is cached). */
+    const std::optional<Bounds<float3>> bounds = mesh_eval->bounds_min_max();
+    float tmin;
+    float tmax;
+    if (!bounds ||
+        !isect_ray_aabb_v3_simple(start, direction, bounds->min, bounds->max, &tmin, &tmax))
+    {
+      continue;
+    }
+    const bke::bvh::Tree &mesh_bvh = mesh_eval->bvh_tris();
+    const bke::bvh::Ray ray(start, direction);
+    const std::optional<bke::bvh::RayHit> ray_hit = mesh_bvh.ray_intersect(ray);
+    if (!ray_hit) {
+      continue;
+    }
+    const float3 position = ray_hit->position(ray);
+    const float distance = math::distance(
+        start_world, math::transform_point(ob_eval->object_to_world(), position));
+    if (nearest && distance >= nearest->distance) {
+      continue;
+    }
+    nearest = OtherObjectHit{distance, std::nullopt};
+    nearest_object = ob_eval;
+    nearest_tri = ray_hit->index;
+    nearest_position_object = position;
+  }
+  if (!nearest) {
+    return std::nullopt;
+  }
+
+  const Mesh &mesh = *BKE_object_get_evaluated_mesh(nearest_object);
+  if (mesh.active_color_attribute == nullptr) {
+    return nearest;
+  }
+  const StringRef name = mesh.active_color_attribute;
+  const bke::AttributeAccessor attributes = mesh.attributes();
+  const std::optional<bke::AttributeMetaData> meta_data = attributes.lookup_meta_data(name);
+  if (!meta_data || !ELEM(meta_data->data_type, bke::AttrType::ColorFloat, bke::AttrType::ColorByte))
+  {
+    return nearest;
+  }
+  /* Byte colors convert to scene linear, like the colors sculpting paints. */
+  const VArray<ColorGeometry4f> colors = *attributes.lookup<ColorGeometry4f>(name,
+                                                                             meta_data->domain);
+  if (!colors) {
+    return nearest;
+  }
+  const int3 tri = mesh.corner_tris()[nearest_tri];
+  const Span<int> corner_verts = mesh.corner_verts();
+  const float3 bary = bke::mesh_surface_sample::compute_bary_coord_in_triangle(
+      mesh.vert_positions(), corner_verts, tri, nearest_position_object);
+  const auto color_at = [&](const int i) {
+    const ColorGeometry4f value = colors[i];
+    return float3(value.r, value.g, value.b);
+  };
+  float3 color(0.0f);
+  switch (meta_data->domain) {
+    case bke::AttrDomain::Point:
+      for (const int i : IndexRange(3)) {
+        color += color_at(corner_verts[tri[i]]) * bary[i];
+      }
+      break;
+    case bke::AttrDomain::Corner:
+      for (const int i : IndexRange(3)) {
+        color += color_at(tri[i]) * bary[i];
+      }
+      break;
+    case bke::AttrDomain::Face:
+      color = color_at(mesh.corner_tri_faces()[nearest_tri]);
+      break;
+    default:
+      return nearest;
+  }
+  nearest->color = color;
+  return nearest;
+}
+
 static std::optional<float3> sample_mesh_attribute_color(ViewContext &vc,
                                                          Object &object,
                                                          int2 mval)
@@ -267,6 +435,24 @@ static std::optional<float3> sample_mesh_attribute_color(ViewContext &vc,
   const bke::GAttributeReader color_attribute = color::active_color_attribute(mesh);
 
   std::optional<ActiveElementInfo> active_element = active_element_info_get(vc, float2(mval));
+
+  /* Phantom: another mesh in front of the active one (or the active one not under the cursor):
+   * its color. When it has none, nothing is returned and the shaded color on screen is picked,
+   * as ZBrush does. */
+  if (const std::optional<OtherObjectHit> other = sample_other_objects(vc, &object, mval)) {
+    const std::optional<float3> active_position =
+        active_element ? active_vert_position_world(*vc.depsgraph, object, *active_element) :
+                         std::nullopt;
+    float3 start_world;
+    float3 end_world;
+    ED_view3d_win_to_segment_clipped(
+        vc.depsgraph, vc.region, vc.v3d, float2(mval.x, mval.y), start_world, end_world, true);
+    if (!active_element || !active_position ||
+        math::distance(start_world, *active_position) > other->distance)
+    {
+      return other->color;
+    }
+  }
 
   /* Phantom: Multires polypaint, the active vertex indexes all grid vertices. */
   const SculptSession *ss = object.runtime->sculpt_session;

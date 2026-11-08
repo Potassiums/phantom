@@ -18,6 +18,10 @@ void vert([[vertex_id]] const int vert_id, [[position]] float4 &position)
 struct Outlines {
   [[sampler(0)]] usampler2D object_id_buffer;
   [[uniform(WB_WORLD_SLOT)]] WorldData &world_data;
+  /* Phantom: the object outline setting; the lit-up mesh's outline (how lit, its gradient). */
+  [[push_constant]] const bool use_object_outline;
+  [[push_constant]] const float flash;
+  [[push_constant]] const float flash_phase;
 };
 
 struct FragOut {
@@ -34,14 +38,47 @@ void frag([[resource_table]] const Outlines &srt,
   float3 offset = float3(srt.world_data.viewport_size_inv, 0.0f) * srt.world_data.ui_scale;
 
   uint center_id = texture(srt.object_id_buffer, uv).r;
-  uint4 adjacent_ids = uint4(texture(srt.object_id_buffer, uv + offset.zy).r,
-                             texture(srt.object_id_buffer, uv - offset.zy).r,
-                             texture(srt.object_id_buffer, uv + offset.xz).r,
-                             texture(srt.object_id_buffer, uv - offset.xz).r);
+  frag_out.color = float4(0.0f);
 
-  float outline_opacity = 1.0f - dot(float4(equal(uint4(center_id), adjacent_ids)), float4(0.25f));
+  if (srt.use_object_outline) {
+    /* The lit-up mesh's tag left out: its usual outline stays as it is. */
+    const uint4 mask = uint4(~WB_OBJECT_ID_FLASH & 0xFFFFu);
+    uint4 adjacent_ids = uint4(texture(srt.object_id_buffer, uv + offset.zy).r,
+                               texture(srt.object_id_buffer, uv - offset.zy).r,
+                               texture(srt.object_id_buffer, uv + offset.xz).r,
+                               texture(srt.object_id_buffer, uv - offset.xz).r);
+    float outline_opacity = 1.0f -
+                            dot(float4(equal(uint4(center_id) & mask, adjacent_ids & mask)),
+                                float4(0.25f));
+    frag_out.color = srt.world_data.object_outline_color * outline_opacity;
+  }
 
-  frag_out.color = srt.world_data.object_outline_color * outline_opacity;
+  /* Phantom: the lit-up mesh (picked in the Scene window): a glowing outline just outside it,
+   * its warm colors running along it, fading with it. */
+  if (srt.flash > 0.0f && (center_id & WB_OBJECT_ID_FLASH) == 0u) {
+    const float2 px = srt.world_data.viewport_size_inv * srt.world_data.ui_scale;
+    float near = 0.0f;
+    for (int ring = 1; ring <= 3; ring++) {
+      const float radius = 1.2f * float(ring);
+      for (int i = 0; i < 12; i++) {
+        const float a = 0.5235988f * float(i) + 0.26f * float(ring);
+        const uint id = texture(srt.object_id_buffer, uv + float2(cos(a), sin(a)) * px * radius).r;
+        if ((id & WB_OBJECT_ID_FLASH) != 0u) {
+          /* Closer rings count more: solid next to the mesh, softening outward. */
+          near = max(near, 1.0f - float(ring - 1) * 0.3f);
+        }
+      }
+    }
+    if (near > 0.0f) {
+      const float along = (frag_co.x + frag_co.y) / max(float(textureSize(srt.object_id_buffer, 0).x),
+                                                         1.0f);
+      const float wave = 0.5f + 0.5f * sin(6.2831853f * (along * 3.0f - srt.flash_phase));
+      const float3 gradient = mix(float3(1.0f, 0.36f, 0.08f), float3(1.0f, 0.82f, 0.3f), wave);
+      const float alpha = near * srt.flash;
+      /* Pre-multiplied, over what is there. */
+      frag_out.color = float4(gradient * alpha, alpha) + frag_out.color * (1.0f - alpha);
+    }
+  }
 }
 
 }  // namespace workbench::outline

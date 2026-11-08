@@ -748,6 +748,16 @@ static void rna_userdef_script_autoexec_update(Main * /*bmain*/,
 }
 
 /* Phantom: the head is drawn by the interactive navigation gizmo, which turning it on shows. */
+static void rna_userdef_title_filepath_update(Main *bmain, Scene * /*scene*/, PointerRNA * /*ptr*/)
+{
+  if (wmWindowManager *wm = bmain->wm.first()) {
+    for (wmWindow &win : wm->windows) {
+      WM_window_title_refresh(wm, &win);
+    }
+  }
+  USERDEF_TAG_DIRTY;
+}
+
 static void rna_userdef_navigate_head_set(PointerRNA *ptr, bool value)
 {
   UserDef *userdef = static_cast<UserDef *>(ptr->data);
@@ -5365,6 +5375,15 @@ static void rna_def_userdef_view(BlenderRNA *brna)
                            "Display View Name",
                            "Include the name of the view orientation in the text info overlay");
   RNA_def_property_update(prop, 0, "rna_userdef_update");
+
+  /* Phantom. */
+  prop = RNA_def_property(srna, "show_title_filepath", PROP_BOOLEAN, PROP_NONE);
+  RNA_def_property_boolean_negative_sdna(prop, nullptr, "title_hide_filepath", 1);
+  RNA_def_property_ui_text(prop,
+                           "File Path in Title",
+                           "Show the folder of the open file in the window's title (off: only "
+                           "the file's name)");
+  RNA_def_property_update(prop, 0, "rna_userdef_title_filepath_update");
 
   prop = RNA_def_property(srna, "show_splash", PROP_BOOLEAN, PROP_NONE);
   RNA_def_property_boolean_negative_sdna(prop, nullptr, "uiflag", USER_SPLASH_DISABLE);

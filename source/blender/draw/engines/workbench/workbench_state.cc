@@ -16,6 +16,7 @@
 #include "BKE_mesh.hh"
 #include "BKE_mesh_types.hh"
 #include "BKE_paint.hh"
+#include "BLI_time.hh"
 #include "BKE_paint_bvh.hh"
 
 #include "DEG_depsgraph_query.hh"
@@ -283,6 +284,32 @@ void SceneState::init(const DRWContext *context,
     reset_taa = true;
   }
 
+  /* Phantom: the mesh being sculpted lit up for a moment: in quickly, held while the gradient
+   * sweeps over it, then fading out. While it changes, every redraw starts the samples over. */
+  float flash = 0.0f;
+  float flash_phase = 0.0f;
+  const double flash_start = BKE_paint_phantom_flash_start_time();
+  if (flash_start > 0.0) {
+    constexpr float flash_in = 0.08f, flash_hold = 0.5f, flash_end = 1.2f;
+    const float t = float(BLI_time_now_seconds() - flash_start);
+    if (t >= 0.0f && t < flash_end) {
+      const float fade = t < flash_hold ?
+                             1.0f :
+                             1.0f - (t - flash_hold) / (flash_end - flash_hold);
+      flash = std::min(t / flash_in, 1.0f) * fade * fade * (3.0f - 2.0f * fade);
+      /* One sweep over the whole flash. */
+      flash_phase = t / flash_end;
+    }
+  }
+  if (assign_if_different(sculpt_flash, flash) | (flash > 0.0f)) {
+    reset_taa = true;
+  }
+  sculpt_flash_phase = flash_phase;
+  /* The outline around the lit-up mesh reads the object IDs (#OutlinePass). */
+  if (flash > 0.0f) {
+    draw_object_id = true;
+  }
+
   if (reset_taa || samples_len <= 1) {
     sample = 0;
   }
@@ -365,6 +392,18 @@ ObjectState::ObjectState(const DRWContext *draw_ctx,
   }
   else if (color_type == V3D_SHADING_VERTEX_COLOR && !has_color()) {
     color_type = V3D_SHADING_MATERIAL_COLOR;
+  }
+
+  if (sculpt_pbvh && is_active && draw_ctx->v3d &&
+      (draw_ctx->v3d->overlay.flag & V3D_OVERLAY_SCULPT_SHOW_FACE_SETS) &&
+      draw_ctx->v3d->overlay.sculpt_mode_face_sets_opacity > 0.0f &&
+      ob->type == OB_MESH)
+  {
+    /* Phantom: polygroup colors over a light neutral, not over polypaint or a dark material
+     * (which tint and darken them and make the groups hard to tell apart). A mesh without
+     * polygroups is all in polygroup 1, so this holds for it too. */
+    color_type = V3D_SHADING_MATERIAL_COLOR;
+    polygroup_base = true;
   }
 
   if (sculpt_pbvh) {

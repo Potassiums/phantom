@@ -10,6 +10,8 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <optional>
+#include <string>
 
 #include "MEM_guardedalloc.h"
 
@@ -31,10 +33,12 @@
 #include "BLI_rect.hh"
 #include "BLI_set.hh"
 #include "BLI_span.hh"
+#include "BLI_string.hh"
 #include "BLI_task.hh"
 #include "BLI_task_c.hh"
 #include "BLI_vector.hh"
 
+#include "DNA_asset_types.h"
 #include "DNA_brush_types.h"
 #include "DNA_customdata_types.h"
 #include "DNA_key_types.h"
@@ -3795,6 +3799,55 @@ static void smooth_brush_toggle_off(Paint *paint, StrokeCache *cache)
   }
 }
 
+/* Phantom: the brush Ctrl masks with (see #phantom_mask_brush_set); none: Essentials' "Mask".
+ * Plain strings: a static #AssetWeakReference would free its guarded allocations after the
+ * allocator's leak check at exit. */
+struct PhantomMaskBrush {
+  eAssetLibraryType library_type = ASSET_LIBRARY_ESSENTIALS;
+  std::string library_identifier;
+  std::string relative_identifier;
+};
+static std::optional<PhantomMaskBrush> g_phantom_mask_brush;
+
+void phantom_mask_brush_set(const char *library_type,
+                            const char *library_identifier,
+                            const char *relative_identifier)
+{
+  if (!relative_identifier || !relative_identifier[0]) {
+    g_phantom_mask_brush.reset();
+    return;
+  }
+  PhantomMaskBrush brush;
+  const StringRef type = library_type ? library_type : "";
+  brush.library_type = type == "CUSTOM" ? ASSET_LIBRARY_CUSTOM :
+                       type == "LOCAL"  ? ASSET_LIBRARY_LOCAL :
+                                          ASSET_LIBRARY_ESSENTIALS;
+  brush.library_identifier = library_identifier ? library_identifier : "";
+  brush.relative_identifier = relative_identifier;
+  g_phantom_mask_brush = std::move(brush);
+}
+
+/** Switch to the mask brush chosen in Phantom, if there is one and it is a mask brush. */
+static bool phantom_mask_brush_switch(Main *bmain, Paint *paint)
+{
+  if (!g_phantom_mask_brush) {
+    return false;
+  }
+  AssetWeakReference reference;
+  reference.asset_library_type = g_phantom_mask_brush->library_type;
+  reference.asset_library_identifier = g_phantom_mask_brush->library_identifier.empty() ?
+                                           nullptr :
+                                           BLI_strdup(
+                                               g_phantom_mask_brush->library_identifier.c_str());
+  reference.relative_asset_identifier = BLI_strdup(
+      g_phantom_mask_brush->relative_identifier.c_str());
+  if (!BKE_paint_brush_set(bmain, paint, reference)) {
+    return false;
+  }
+  const Brush *brush = BKE_paint_brush(paint);
+  return brush && brush->sculpt_brush_type == SCULPT_BRUSH_TYPE_MASK;
+}
+
 static void mask_brush_toggle_on(Main *bmain, Paint *paint, StrokeToggleSettings &toggle_settings)
 {
   Brush *cur_brush = BKE_paint_brush(paint);
@@ -3809,8 +3862,12 @@ static void mask_brush_toggle_on(Main *bmain, Paint *paint, StrokeToggleSettings
   /* Save current brush */
   toggle_settings.original_active_brush = cur_brush;
 
-  /* Switch to Mask essentials brush */
-  if (!BKE_paint_brush_set_essentials(bmain, paint, "Mask")) {
+  /* Switch to the mask brush chosen in Phantom (if it can be found), else to Mask essentials
+   * brush. */
+  if (phantom_mask_brush_switch(bmain, paint)) {
+    /* Chosen brush in place. */
+  }
+  else if (!BKE_paint_brush_set_essentials(bmain, paint, "Mask")) {
     BKE_paint_brush_set(paint, cur_brush);
     toggle_settings.original_active_brush = nullptr;
     CLOG_WARN(&LOG, "Unable to switch to the 'Mask' essentials brush asset");

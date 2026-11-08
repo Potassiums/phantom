@@ -140,6 +140,9 @@ class Instance : public DrawEngine {
     shadow_ps_.end_sync();
   }
 
+  /** Phantom: the light neutral polygroup colors are drawn over (#ObjectState::polygroup_base). */
+  static constexpr float POLYGROUP_BASE = 0.8f;
+
   Material get_material(ObjectRef ob_ref, eV3DShadingColorType color_type, int slot = 0)
   {
     Material material = get_material_base(ob_ref, color_type, slot);
@@ -414,6 +417,9 @@ class Instance : public DrawEngine {
     if (object_state.use_per_material_batches) {
       for (SculptBatch &batch : sculpt_batches_get(ob_ref.object, features)) {
         Material mat = this->get_material(ob_ref, object_state.color_type, batch.material_slot);
+        if (object_state.polygroup_base) {
+          mat.base_color = float3(POLYGROUP_BASE);
+        }
         if (scene_state_.show_paint_bvh_debug) {
           mat.base_color = batch.debug_color();
         }
@@ -429,6 +435,9 @@ class Instance : public DrawEngine {
     }
     else {
       Material mat = this->get_material(ob_ref, object_state.color_type);
+      if (object_state.polygroup_base) {
+        mat.base_color = float3(POLYGROUP_BASE);
+      }
       for (SculptBatch &batch : sculpt_batches_get(ob_ref.object, features)) {
         if (scene_state_.show_paint_bvh_debug) {
           mat.base_color = batch.debug_color();

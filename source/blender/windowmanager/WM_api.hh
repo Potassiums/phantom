@@ -37,6 +37,9 @@ class GHOST_IContext;
 
 namespace blender {
 
+namespace gpu {
+class Texture;
+}
 struct ARegion;
 struct GPUViewport;
 struct ID;
@@ -2242,6 +2245,12 @@ void WM_draw_region_viewport_unbind(ARegion *region);
 
 void WM_draw_region_free(ARegion *region);
 GPUViewport *WM_draw_region_get_viewport(ARegion *region);
+/**
+ * Phantom: a blurred copy of what the simple view's 3D Viewport shows (frosted glass), covering
+ * `rect` of the window; the simple view's popups draw it behind them. Null clears it.
+ */
+void WM_phantom_backdrop_set(gpu::Texture *texture, const rcti *rect);
+gpu::Texture *WM_phantom_backdrop_get(rcti *r_rect);
 GPUViewport *WM_draw_region_get_bound_viewport(ARegion *region);
 
 int WM_main_playanim(int argc, const char **argv);

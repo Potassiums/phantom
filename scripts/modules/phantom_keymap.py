@@ -35,7 +35,14 @@ OPTIONS = (
      "Ctrl-D subdivides the mesh with a Multiresolution modifier, adding one if needed, like "
      "ZBrush's Divide.\n"
      "Off: the keymap's own Ctrl-D"),
+    ("rmb_navigation", "phantom_rmb_navigation", "Right Mouse Navigation",
+     "For tablets, like ZBrush: right-drag in the 3D View rotates, Alt-right-drag pans and "
+     "Ctrl-right-drag zooms. A right-click (no drag) still opens the context menu"),
 )
+# Options that are off until turned on (the others start on).
+OFF_BY_DEFAULT = {"rmb_navigation"}
+# Options only the Blender keymap has.
+BLENDER_KEYMAP_ONLY = {"rmb_navigation"}
 # Not a keymap item: quick-brush shortcuts switching off other Sculpt shortcuts on their key.
 QUICK_BRUSH_TAKEOVER = "phantom_quick_brush_takeover"
 
@@ -46,9 +53,9 @@ def add_properties(prefs_cls, update_fn):
     if annotations is None:
         annotations = {}
         prefs_cls.__annotations__ = annotations
-    for _option, prop, label, description in OPTIONS:
-        annotations[prop] = BoolProperty(name=label, description=description, default=True,
-                                         update=update_fn)
+    for option, prop, label, description in OPTIONS:
+        annotations[prop] = BoolProperty(name=label, description=description,
+                                         default=option not in OFF_BY_DEFAULT, update=update_fn)
     annotations[QUICK_BRUSH_TAKEOVER] = BoolProperty(
         name="Quick Brush Keys Take Over",
         description=(
@@ -61,7 +68,8 @@ def add_properties(prefs_cls, update_fn):
 
 def enabled(prefs):
     """The Phantom options that are on, for the keymap data's `Params(phantom=...)`."""
-    return frozenset(option for option, prop, _label, _desc in OPTIONS if getattr(prefs, prop, True))
+    return frozenset(option for option, prop, _label, _desc in OPTIONS
+                     if getattr(prefs, prop, option not in OFF_BY_DEFAULT))
 
 
 def quick_brush_takeover(context):
@@ -76,6 +84,9 @@ def draw(prefs, layout):
     col = layout.column()
     col.label(text="Phantom Sculpting")
     sub = col.column(align=True)
-    for _option, prop, _label, _desc in OPTIONS:
+    blender_keymap = getattr(prefs, "bl_idname", "") == "Blender"
+    for option, prop, _label, _desc in OPTIONS:
+        if option in BLENDER_KEYMAP_ONLY and not blender_keymap:
+            continue
         sub.prop(prefs, prop)
     sub.prop(prefs, QUICK_BRUSH_TAKEOVER)

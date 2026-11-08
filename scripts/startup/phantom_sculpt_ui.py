@@ -142,7 +142,8 @@ def _redraw_sidebars(context):
         for area in window.screen.areas:
             if area.type == 'VIEW_3D':
                 for region in area.regions:
-                    if region.type == 'UI':
+                    # The simple view's Tools button shows Ctrl's mask brush (in the window).
+                    if region.type in {'UI', 'WINDOW'}:
                         region.tag_redraw()
 
 
@@ -354,13 +355,14 @@ class SCULPT_OT_phantom_mask_to_face_set(Operator):
         overlay = context.space_data.overlay if context.space_data and \
             context.space_data.type == 'VIEW_3D' else None
         shown = overlay.show_sculpt_face_sets if overlay is not None else None
-        # Both steps make their own sculpt undo step.
-        result = bpy.ops.sculpt.face_sets_create(mode='MASKED')
+        # Both steps make their own sculpt undo step (and sculpt history step): `True`, or Python
+        # calls push no undo step and the second would drop the first's.
+        result = bpy.ops.sculpt.face_sets_create('EXEC_DEFAULT', True, mode='MASKED')
         if overlay is not None:
             overlay.show_sculpt_face_sets = shown
         if result != {'FINISHED'}:
             return {'CANCELLED'}
-        bpy.ops.paint.mask_flood_fill(mode='VALUE', value=0.0)
+        bpy.ops.paint.mask_flood_fill('EXEC_DEFAULT', True, mode='VALUE', value=0.0)
         # The new polygroup has the highest number: the polygroup bar works on it.
         import numpy as np
         import phantom_mask_bar

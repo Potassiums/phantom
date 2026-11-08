@@ -9,10 +9,11 @@
  *
  * Phantom: per-object sculpt history (#Object.phantom_history), scrubbed on a timeline.
  *
- * Every sculpt edit of a mesh (each stroke, mask, filter, remesh...) adds a step. The first step
- * and every step that changes the topology (remesh, another Multires level) are keyframes holding
- * the whole shape and mask; other steps hold only the points that moved and the points whose mask
- * changed, with their exact new values. Any step is rebuilt bit-exactly from the keyframe before
+ * Every sculpt edit of a mesh (each stroke, mask, polygroup, filter, remesh...) adds a step. The
+ * first step and every step that changes the topology (remesh, another Multires level) are
+ * keyframes holding the whole shape, mask and face sets; other steps hold only the points that
+ * moved, the points whose mask changed and the faces whose face set changed, with their exact new
+ * values. Any step is rebuilt bit-exactly from the keyframe before
  * it and the deltas after that. The points are the mesh's vertices, or with Multires in Sculpt
  * Mode the grid points at the level being sculpted.
  *
@@ -76,8 +77,15 @@ void begin_edit(Object &ob, StringRef name);
  * `touched` (one bit per point, optional) holds every point the edit may have changed: only those
  * are compared, rather than the whole mesh. The first edit recorded in a sculpt session (and after
  * undo moved the history) still compares every point, to catch changes made outside of it.
+ *
+ * The face sets (polygroups, on the faces of the base mesh also with Multires) and their colors
+ * are compared when `face_sets_edited`, and in those full comparisons.
  */
-void record(Object &ob, StringRef name, bool topology_changed, BitSpan touched = {});
+void record(Object &ob,
+            StringRef name,
+            bool topology_changed,
+            BitSpan touched = {},
+            bool face_sets_edited = false);
 
 /** The object's sculpt session ended: the mesh may change before the next edit is recorded. */
 void session_ended(Object &ob);
@@ -89,12 +97,18 @@ class ScopedPause {
   ~ScopedPause();
 };
 
-/** The shape and mask at a step. */
+/** The shape, mask and face sets at a step. */
 struct StepShape {
   Array<float3> positions;
   Array<float> masks;
   /** The keyframe the step builds on, which has its topology. */
   int keyframe = 0;
+  /** False for steps of histories saved without face sets. */
+  bool has_face_sets = false;
+  /** The face set of each (base) mesh face; empty when all have the default one (1). */
+  Array<int> face_sets;
+  int face_sets_color_seed = 0;
+  int face_sets_color_default = 0;
 };
 StepShape step_shape(const PhantomHistory &history, int index);
 
@@ -141,9 +155,9 @@ enum class ApplyResult {
 
 /**
  * Put the mesh (or, for Multires in Sculpt Mode, its grids) in the state of step `index` and make
- * it current.
+ * it current. `r_face_sets_changed` tells whether the face sets or their colors changed.
  */
-ApplyResult apply_step(Object &ob, int index);
+ApplyResult apply_step(Object &ob, int index, bool *r_face_sets_changed = nullptr);
 
 /** Delete the steps after the current one (sculpting from an older step replaces them). */
 void truncate_after_current(PhantomHistory &history);

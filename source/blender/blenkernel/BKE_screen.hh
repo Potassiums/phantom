@@ -697,6 +697,12 @@ struct ARegionRuntime {
    * submenu is clipped to its edge, so it seems to come out from underneath it.
    */
   rcti popup_anim_parent = {};
+  /**
+   * Phantom: a popup of the simple view that changed size (a section opened or closed) glides
+   * from this window-space rectangle to its new one, from this time (0 = not resizing).
+   */
+  rcti popup_resize_from = {};
+  double popup_resize_start = 0.0;
 
   /** For calling after building a blocks. */
   Vector<std::function<void(const bContext &C, ui::Block &Block)>> post_block_layout_fns;

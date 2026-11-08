@@ -167,7 +167,8 @@ static bool apply_step(bContext *C, Object &ob, int index)
     }
   }
 
-  const ApplyResult result = bke::phantom_history::apply_step(ob, index);
+  bool face_sets_changed = false;
+  const ApplyResult result = bke::phantom_history::apply_step(ob, index, &face_sets_changed);
   if (result == ApplyResult::Failed) {
     return false;
   }
@@ -203,6 +204,11 @@ static bool apply_step(bContext *C, Object &ob, int index)
     flush_update_done(C, ob, UpdateType::Position);
     flush_update_step(C, UpdateType::Mask);
     flush_update_done(C, ob, UpdateType::Mask);
+    if (face_sets_changed) {
+      pbvh->tag_face_sets_changed(node_mask);
+      flush_update_step(C, UpdateType::FaceSet);
+      flush_update_done(C, ob, UpdateType::FaceSet);
+    }
     return true;
   }
   BKE_sculptsession_free_pbvh(ob);

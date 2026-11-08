@@ -16,7 +16,10 @@ namespace blender::workbench {
 
 void OutlinePass::init(const SceneState &scene_state)
 {
-  enabled_ = scene_state.draw_outline;
+  object_outline_ = scene_state.draw_outline;
+  flash_ = scene_state.sculpt_flash;
+  flash_phase_ = scene_state.sculpt_flash_phase;
+  enabled_ = object_outline_ || flash_ > 0.0f;
   if (!enabled_) {
     return;
   }
@@ -33,6 +36,9 @@ void OutlinePass::sync(SceneResources &resources)
   ps_.shader_set(ShaderCache::get().outline.get());
   ps_.bind_ubo("world_data", resources.world_buf);
   ps_.bind_texture("object_id_buffer", &resources.object_id_tx);
+  ps_.push_constant("use_object_outline", object_outline_);
+  ps_.push_constant("flash", flash_);
+  ps_.push_constant("flash_phase", flash_phase_);
   ps_.draw_procedural(GPU_PRIM_TRIS, 1, 3);
 }
 

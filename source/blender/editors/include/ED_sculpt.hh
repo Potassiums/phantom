@@ -148,6 +148,15 @@ void store_mesh_from_eval(const wmOperator &op,
                           Object &object,
                           Mesh *new_mesh);
 
+/**
+ * Phantom: the brush Ctrl masks with while sculpting, an asset (library type "ESSENTIALS",
+ * "CUSTOM" or "LOCAL", the library's identifier and the asset's relative identifier). An empty
+ * relative identifier goes back to the Essentials "Mask" brush.
+ */
+void phantom_mask_brush_set(const char *library_type,
+                            const char *library_identifier,
+                            const char *relative_identifier);
+
 }  // namespace ed::sculpt_paint
 
 }  // namespace blender

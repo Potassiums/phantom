@@ -4,6 +4,51 @@ Phantom is a fork of Blender tuned for sculpting. This file lists what Phantom c
 own changes come from the Blender version each release is built on.
 
 
+## 0.5.2 alpha (2026-11-08)
+
+Built on Blender 5.4 alpha, on top of 0.5.1. A polish release for the simple sculpting view: frosted
+glass behind its bars and windows, smooth animations, a full-window brush browser, new Scene window
+sections, and polygroups that show clearly and undo properly.
+
+### Simple sculpting view
+
+- **Frosted glass:** the view behind the toolbars, windows and menus is blurred and darkened, the
+  same everywhere, with a soft shadow under windows and menus.
+- **Animations:** windows pop out of their button; the Scene window glides when a section opens or
+  closes and comes back to where it was.
+- **Brush browser:** the + of the quick brushes opens a full window of brushes with search.
+- **Left toolbar:** pin any tool from the Tools menu to it (right-click a pinned tool to take it
+  off). Holding **Ctrl** shows the mask brush on the Tools button; click it to pick the brush Ctrl
+  masks with, or the mask shape.
+- **Color card:** a **Blend** mode dropdown at the top; menu hover is readable again.
+- **Alpha:** its own menu, centered on the button, with the alpha large and its settings aligned.
+- **Materials:** apply a matcap to **All**, the **Active** object or **Chosen** objects.
+- **Scene window:** at most 16 rows, then it scrolls (centered beside the toolbar); opening a folder
+  keeps the list where it was; **Select All** and **Delete All** in its ⋮ menu; the Delete key
+  deletes without asking; new **Masking** and **Polygroups** sections.
+- **Picked mesh lights up:** choosing a mesh in the Scene window brightens it with a warm sweep and
+  an outline for a moment.
+
+### Sculpting
+
+- **Polygroups show clearly:** drawn over a light grey, not over polypaint or a dark material, also
+  on meshes without polygroups yet.
+- **New Colors** gives every polygroup a random color (hue, saturation and value), also when the
+  mesh has one polygroup or none.
+- **Polygroups in the history and undo:** polygroup changes are history steps and undo and redo
+  properly, also on Multires.
+- **C samples any mesh** under the cursor, not only the one sculpted (Multires polypaint too).
+- **Extract** works on Multires meshes sculpted at level 0.
+- Fixed: a crash redoing a mask step on Multires after an undo that reloaded the file's state.
+
+### Also
+
+- **Right Mouse Navigation** (Preferences > Keymap, off by default), for tablets: right-drag
+  rotates, Alt-right-drag pans, Ctrl-right-drag zooms; a right-click still opens context menus.
+- **File Path in Title** (Preferences > Interface): turn it off to show only the file's name in
+  the window title.
+
+
 ## 0.5.1 alpha (2026-11-02)
 
 Built on Blender 5.4 alpha, on top of 0.5.0. ZBrush's gizmo options come to Phantom's Move,

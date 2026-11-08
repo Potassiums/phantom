@@ -65,6 +65,7 @@
 #include "BKE_multires.hh"
 #include "BKE_object.hh"
 #include "BKE_paint.hh"
+#include "BLI_time.hh"
 #include "BKE_paint_bvh.hh"
 #include "BKE_paint_types.hh"
 #include "BKE_phantom_history.hh"
@@ -2781,15 +2782,40 @@ bool BKE_sculptsession_use_pbvh_draw(const Object *ob, const RegionView3D *rv3d)
   return true;
 }
 
+static double g_phantom_flash_start = 0.0;
+
+void BKE_paint_phantom_flash_start()
+{
+  g_phantom_flash_start = BLI_time_now_seconds();
+}
+
+double BKE_paint_phantom_flash_start_time()
+{
+  return g_phantom_flash_start;
+}
+
+/** Phantom: a well mixed hash of a polygroup and the color seed (`phantom_extract.py` mirrors it).
+ */
+static uint32_t face_set_color_hash(const int face_set, const int seed)
+{
+  uint32_t h = (uint32_t(face_set) * 0x9E3779B1u) ^ (uint32_t(seed) * 0x85EBCA77u);
+  h ^= h >> 15;
+  h *= 0x2C1B3C6Du;
+  h ^= h >> 12;
+  h *= 0x297A2D39u;
+  h ^= h >> 15;
+  return h;
+}
+
 /* Returns the face set random color for rendering in the overlay given its ID and a color seed.
- * Phantom: always a vivid color (never grey, white or black), and never near scarlet, which is
- * the default polygroup's (#BKE_paint_face_set_color_get). `phantom_extract.py` mirrors the hue. */
-#define GOLDEN_RATIO_CONJUGATE 0.618033988749895f
+ * Phantom: a random hue, saturation and value for each seed (New Colors), always vivid (never
+ * grey, white or black) and never near scarlet, which is the default polygroup's
+ * (#BKE_paint_face_set_color_get). `phantom_extract.py` mirrors the hue. */
 void BKE_paint_face_set_overlay_color_get(const int face_set, const int seed, uchar r_color[4])
 {
   float rgba[4];
-  float random_mod_hue = GOLDEN_RATIO_CONJUGATE * (face_set + (seed % 10));
-  random_mod_hue = random_mod_hue - floorf(random_mod_hue);
+  const uint32_t hash = face_set_color_hash(face_set, seed);
+  float random_mod_hue = float(hash & 0xFFFFu) / 65536.0f;
   /* Out of the red around scarlet. */
   float from_scarlet = random_mod_hue - PHANTOM_FACE_SET_DEFAULT_HUE;
   from_scarlet -= floorf(from_scarlet + 0.5f);
@@ -2798,11 +2824,11 @@ void BKE_paint_face_set_overlay_color_get(const int face_set, const int seed, uc
                                             2.0f * PHANTOM_FACE_SET_RED_BAND;
     random_mod_hue -= floorf(random_mod_hue);
   }
-  const float random_mod_sat = BLI_hash_int_01(face_set + seed + 1);
-  const float random_mod_val = BLI_hash_int_01(face_set + seed + 2);
+  const float random_mod_sat = float((hash >> 16) & 0xFFu) / 255.0f;
+  const float random_mod_val = float(hash >> 24) / 255.0f;
   hsv_to_rgb(random_mod_hue,
-             0.65f + (random_mod_sat * 0.3f),
-             1.0f - (random_mod_val * 0.2f),
+             0.45f + (random_mod_sat * 0.55f),
+             1.0f - (random_mod_val * 0.4f),
              &rgba[0],
              &rgba[1],
              &rgba[2]);

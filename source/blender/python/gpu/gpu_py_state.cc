@@ -653,11 +653,98 @@ static PyObject *pygpu_state_phantom_viewport_depth_get(PyObject * /*self*/)
   return BPyGPUTexture_CreatePyObject(depth_copy, true);
 }
 
+PyDoc_STRVAR(
+    /* Wrap. */
+    pygpu_state_phantom_viewport_backdrop_get_doc,
+    ".. function:: phantom_viewport_backdrop_get()\n"
+    "\n"
+    "   What the 3D Viewport region being drawn shows so far, as two textures: the scene (in the\n"
+    "   scene's linear colors, before the view transform) and the overlays drawn over it so far\n"
+    "   (premultiplied, in display colors), or None. Only valid in a region draw callback\n"
+    "   (Phantom: the simple view blurs it behind its bars and windows).\n"
+    "\n"
+    "   :return: (scene, overlays); the overlays are a copy, reused (and refreshed) by every call.\n"
+    "   :rtype: tuple[:class:`gpu.types.GPUTexture`, :class:`gpu.types.GPUTexture`] | None\n");
+static PyObject *pygpu_state_phantom_viewport_backdrop_get(PyObject * /*self*/)
+{
+  bContext *C = BPY_context_get();
+  ARegion *region = C ? CTX_wm_region(C) : nullptr;
+  GPUViewport *viewport = region ? WM_draw_region_get_bound_viewport(region) : nullptr;
+  if (viewport == nullptr) {
+    Py_RETURN_NONE;
+  }
+  gpu::Texture *color = GPU_viewport_color_texture(viewport, 0);
+  gpu::Texture *overlay = GPU_viewport_overlay_texture(viewport, 0);
+  if (color == nullptr || overlay == nullptr) {
+    Py_RETURN_NONE;
+  }
+  /* Copy the overlays rather than share them: they are attached to the frame-buffer being
+   * drawn. */
+  static gpu::Texture *overlay_copy = nullptr;
+  const int width = GPU_texture_width(overlay);
+  const int height = GPU_texture_height(overlay);
+  if (overlay_copy == nullptr || GPU_texture_width(overlay_copy) != width ||
+      GPU_texture_height(overlay_copy) != height ||
+      GPU_texture_format(overlay_copy) != GPU_texture_format(overlay))
+  {
+    GPU_TEXTURE_FREE_SAFE(overlay_copy);
+    overlay_copy = GPU_texture_create_2d("phantom_viewport_overlay",
+                                         width,
+                                         height,
+                                         1,
+                                         GPU_texture_format(overlay),
+                                         GPU_TEXTURE_USAGE_SHADER_READ |
+                                             GPU_TEXTURE_USAGE_ATTACHMENT,
+                                         nullptr);
+  }
+  GPU_texture_copy(overlay_copy, overlay);
+  PyObject *result = PyTuple_New(2);
+  PyTuple_SET_ITEM(result, 0, BPyGPUTexture_CreatePyObject(color, true));
+  PyTuple_SET_ITEM(result, 1, BPyGPUTexture_CreatePyObject(overlay_copy, true));
+  return result;
+}
+
+PyDoc_STRVAR(
+    /* Wrap. */
+    pygpu_state_phantom_backdrop_publish_doc,
+    ".. function:: phantom_backdrop_publish(texture, xmin, ymin, xmax, ymax)\n"
+    "\n"
+    "   Give the simple view's popups a blurred copy of the 3D Viewport (frosted glass), covering\n"
+    "   the window rectangle given; None stops it. The texture must stay alive until replaced.\n");
+static PyObject *pygpu_state_phantom_backdrop_publish(PyObject * /*self*/, PyObject *args)
+{
+  PyObject *py_texture;
+  rcti rect = {0, 0, 0, 0};
+  if (!PyArg_ParseTuple(args, "O|iiii", &py_texture, &rect.xmin, &rect.ymin, &rect.xmax,
+                        &rect.ymax))
+  {
+    return nullptr;
+  }
+  if (py_texture == Py_None) {
+    WM_phantom_backdrop_set(nullptr, nullptr);
+    Py_RETURN_NONE;
+  }
+  if (!BPyGPUTexture_Check(py_texture)) {
+    PyErr_SetString(PyExc_TypeError, "expected a GPUTexture or None");
+    return nullptr;
+  }
+  WM_phantom_backdrop_set(reinterpret_cast<BPyGPUTexture *>(py_texture)->tex, &rect);
+  Py_RETURN_NONE;
+}
+
 static PyMethodDef pygpu_state__tp_methods[] = {
+    {"phantom_backdrop_publish",
+     reinterpret_cast<PyCFunction>(pygpu_state_phantom_backdrop_publish),
+     METH_VARARGS,
+     pygpu_state_phantom_backdrop_publish_doc},
     {"phantom_viewport_depth_get",
      reinterpret_cast<PyCFunction>(pygpu_state_phantom_viewport_depth_get),
      METH_NOARGS,
      pygpu_state_phantom_viewport_depth_get_doc},
+    {"phantom_viewport_backdrop_get",
+     reinterpret_cast<PyCFunction>(pygpu_state_phantom_viewport_backdrop_get),
+     METH_NOARGS,
+     pygpu_state_phantom_viewport_backdrop_get_doc},
     /* Manage Stack */
     {"blend_set",
      static_cast<PyCFunction>(pygpu_state_blend_set),

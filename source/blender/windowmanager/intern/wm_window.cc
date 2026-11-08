@@ -607,11 +607,14 @@ static void wm_window_title_text(wmWindowManager *wm,
 
   const char *filename = BLI_path_basename(filepath);
   const bool has_filepath = filepath[0] != '\0';
-  const bool native_filepath_display = (window_filepath_fn != std::nullopt);
+  /* Phantom: the preference to keep the file's folder out of the title. */
+  const bool hide_filepath = U.title_hide_filepath != 0;
+  const bool native_filepath_display = (window_filepath_fn != std::nullopt) && !hide_filepath;
   if (native_filepath_display) {
     (*window_filepath_fn)(filepath_as_bytes);
   }
-  const bool include_filepath = has_filepath && (filepath != filename) && !native_filepath_display;
+  const bool include_filepath = has_filepath && (filepath != filename) &&
+                                !native_filepath_display && !hide_filepath;
 
   /* File saved state. */
   if (!wm->file_saved) {

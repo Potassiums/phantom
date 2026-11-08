@@ -974,7 +974,7 @@ def _draw_row():
     sv = _sv()
     s = _ui_scale(context)
     gpu.state.blend_set('ALPHA')
-    outline = sv._rounded_rect(*row["rect"], sv.BAR_CORNER * s, sv.BAR_COLOR)
+    outline = sv._panel(*row["rect"], sv.BAR_CORNER * s, shadow=False)
     sv._outline(outline, sv.OUTLINE_COLOR)
     for x, y0, y1 in row["dividers"]:
         sv._line(x, y0, x, y1, sv.DIVIDER_COLOR)
@@ -1026,7 +1026,7 @@ def _draw_row_tip(context, row, s):
 def _draw_types(context, row, s):
     sv = _sv()
     g = _types_layout(context, row)
-    points = sv._rounded_rect(*g["rect"], sv.BAR_CORNER * s, sv.BAR_COLOR)
+    points = sv._panel(*g["rect"], sv.BAR_CORNER * s)
     sv._outline(points, sv.OUTLINE_COLOR)
     x, cy = g["title"]
     sv._text_mid(x, cy, "Transform types", 13 * s, sv.TEXT_COLOR, align='LEFT')

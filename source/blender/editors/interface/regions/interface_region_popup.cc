@@ -24,6 +24,7 @@
 #include "BLI_listbase.hh"
 #include "BLI_math_vector_c.hh"
 #include "BLI_rect.hh"
+#include "BLI_time.hh"
 #include "BLI_utildefines.hh"
 #include "BLI_vector_set.hh"
 
@@ -71,9 +72,14 @@ void popup_translate(ARegion *region, const int mdiff[2])
 static rcti g_popup_anchor_rect = {0, 0, 0, 0};
 static char g_popup_anchor_side = 0;
 static bool g_popup_anchor_simple_style = false;
+static bool g_popup_anchor_centered = false;
 
-void popup_anchor_set(const rcti &rect, const char side, const bool simple_style)
+void popup_anchor_set(const rcti &rect,
+                      const char side,
+                      const bool simple_style,
+                      const bool centered)
 {
+  g_popup_anchor_centered = side != 0 && centered;
   g_popup_anchor_rect = rect;
   g_popup_anchor_side = side;
   g_popup_anchor_simple_style = side != 0 && simple_style;
@@ -87,9 +93,21 @@ bool popup_anchor_offset(const wmWindow *window,
                          const int event_xy[2],
                          int r_offset[2])
 {
-  if (g_popup_anchor_side == 0 || block.buttons_ptrs.is_empty()) {
+  if (block.buttons_ptrs.is_empty()) {
     return false;
   }
+  /* The anchor set for this popup (kept on it), or the one it opened with (on a refresh). */
+  if (g_popup_anchor_side != 0) {
+    handle.phantom_anchor_rect = g_popup_anchor_rect;
+    handle.phantom_anchor_side = g_popup_anchor_side;
+    handle.phantom_anchor_centered = g_popup_anchor_centered;
+    handle.phantom_simple_style = g_popup_anchor_simple_style;
+  }
+  else if (handle.phantom_anchor_side == 0) {
+    return false;
+  }
+  const char side = handle.phantom_anchor_side;
+  const bool centered = handle.phantom_anchor_centered;
   rctf content;
   BLI_rctf_init_minmax(&content);
   for (const Button &but : block.buttons()) {
@@ -97,15 +115,18 @@ bool popup_anchor_offset(const wmWindow *window,
   }
   const float width = std::max(BLI_rctf_size_x(&content) + 2 * margin, float(min_width));
   const float height = BLI_rctf_size_y(&content) + 2 * margin;
-  const rcti &anchor = g_popup_anchor_rect;
+  const rcti &anchor = handle.phantom_anchor_rect;
   const float gap = 6.0f * UI_SCALE_FAC;
   /* Where the popup's corner goes (its bounds included); the window clamps it later. Beside the
    * anchor, it runs down from the anchor's top in the upper half of the window, up from its bottom
    * in the lower half (keeping clear of what is along the window's bottom). */
   const bool lower_half = BLI_rcti_cent_y(&anchor) < WM_window_native_pixel_size(window)[1] / 2;
-  const float ymin_beside = lower_half ? anchor.ymin : anchor.ymax - height;
+  /* Centered: level with the anchor's middle (the window keeps it inside). */
+  const float ymin_beside = centered   ? BLI_rcti_cent_y(&anchor) - height / 2.0f :
+                            lower_half ? anchor.ymin :
+                                         anchor.ymax - height;
   float xmin, ymin;
-  switch (g_popup_anchor_side) {
+  switch (side) {
     case 'L':
       xmin = anchor.xmin - gap - width;
       ymin = ymin_beside;
@@ -121,7 +142,6 @@ bool popup_anchor_offset(const wmWindow *window,
   }
   r_offset[0] = int(xmin - event_xy[0] - (content.xmin - margin));
   r_offset[1] = int(ymin - event_xy[1] - (content.ymin - margin));
-  handle.phantom_simple_style = g_popup_anchor_simple_style;
   return true;
 }
 
@@ -133,7 +153,10 @@ bool popup_anchor_offset(const wmWindow *window,
  */
 void simple_style_apply(ThemeUI &tui)
 {
-  const uchar panel[4] = {27, 27, 29, 240};
+  /* Translucent over the frosted glass behind (#phantom_popup_glass), as the simple view's own
+   * windows. */
+  /* The alpha is the simple view's `GLASS_TINT` (0.72), for the same darkness everywhere. */
+  const uchar panel[4] = {27, 27, 29, 184};
   const uchar surface[4] = {255, 255, 255, 14};
   const uchar raised[4] = {255, 255, 255, 34};
   const uchar hairline[4] = {255, 255, 255, 20};
@@ -165,7 +188,10 @@ void simple_style_apply(ThemeUI &tui)
     wcol->shaded = 0;
     wcol->roundness = 0.5f;
   }
-  /* Menu items: no box until the mouse is over one, then a quiet surface step. */
+  /* Menu items: no box until the mouse is over one, then a quiet surface step. Hover blends the
+   * box's color 20% toward the text and makes it opaque, so the box starts from the panel's tone
+   * (from white the hover would be near white under the light text). */
+  copy_v3_v3_uchar(tui.wcol_menu_item.inner, panel);
   tui.wcol_menu_item.inner[3] = 0;
   copy_v4_v4_uchar(tui.wcol_menu_item.outline_sel, raised);
   tui.wcol_menu_item.roundness = 0.4f;
@@ -180,6 +206,9 @@ void simple_style_apply(ThemeUI &tui)
   for (uiWidgetColors *wcol : {&tui.wcol_text, &tui.wcol_num, &tui.wcol_numslider}) {
     copy_v4_v4_uchar(wcol->inner_sel, editing);
   }
+  /* A soft shadow under the popup, as under the simple view's own windows. */
+  tui.menu_shadow_fac = 0.45f;
+  tui.menu_shadow_width = 18;
   copy_v4_v4_uchar(tui.wcol_menu_back.inner, panel);
   copy_v4_v4_uchar(tui.wcol_menu_back.outline, hairline);
   copy_v4_v4_uchar(tui.wcol_menu_back.text, text);
@@ -811,7 +840,6 @@ void popup_dummy_panel_set(ARegion *region, Block *block, StringRef idname)
 
 Block *popup_block_refresh(bContext *C, PopupBlockHandle *handle, ARegion *butregion, Button *but)
 {
-  const int margin = UI_POPUP_MARGIN;
   wmWindow *window = CTX_wm_window(C);
   ARegion *region = handle->region;
 
@@ -852,6 +880,8 @@ Block *popup_block_refresh(bContext *C, PopupBlockHandle *handle, ARegion *butre
     handle->phantom_simple_style = true;
   }
   block->phantom_simple_style = handle->phantom_simple_style;
+  /* Phantom: room around the popup for its shadow (the simple view's is softer and wider). */
+  const int margin = block->phantom_simple_style ? UI_POPUP_MARGIN_SIMPLE : UI_POPUP_MARGIN;
 
   /* callbacks _must_ leave this for us, otherwise we can't call block_update_from_old */
   BLI_assert(!block->endblock);
@@ -1011,8 +1041,12 @@ Block *popup_block_refresh(bContext *C, PopupBlockHandle *handle, ARegion *butre
     popup_block_clip(window, block);
 
     /* Avoid menu moving down and losing cursor focus by keeping it at the same height when the
-     * popup is displaced down by at least one window unit. */
-    if (handle->refresh && (handle->prev_block_rect.ymax - block->rect.ymax) > 1.0f) {
+     * popup is displaced down by at least one window unit.
+     * Phantom: not the simple view's popups, placed beside their button (centered on it): a
+     * section closing takes them back where they were. */
+    if (handle->refresh && !block->phantom_simple_style &&
+        (handle->prev_block_rect.ymax - block->rect.ymax) > 1.0f)
+    {
       if (block->bounds_type != BLOCK_BOUNDS_POPUP_CENTER) {
         const float offset = handle->prev_block_rect.ymax - block->rect.ymax;
         block_translate(block, 0, offset);
@@ -1025,10 +1059,19 @@ Block *popup_block_refresh(bContext *C, PopupBlockHandle *handle, ARegion *butre
     /* the block and buttons were positioned in window space as in 2.4x, now
      * these menu blocks are regions so we bring it back to region space.
      * additionally we add some padding for the menu shadow or rounded menus */
+    const rcti winrct_prev = region->winrct;
     region->winrct.xmin = block->rect.xmin - margin;
     region->winrct.xmax = block->rect.xmax + margin;
     region->winrct.ymin = block->rect.ymin - margin;
     region->winrct.ymax = block->rect.ymax + UI_POPUP_MENU_TOP;
+    /* Phantom: the simple view's popups glide to their new size (#wm_draw_region_blend). */
+    if (handle->refresh && block->phantom_simple_style &&
+        BLI_rcti_size_y(&winrct_prev) != BLI_rcti_size_y(&region->winrct) &&
+        BLI_rcti_size_y(&winrct_prev) > 0)
+    {
+      region->runtime->popup_resize_from = winrct_prev;
+      region->runtime->popup_resize_start = BLI_time_now_seconds();
+    }
 
     block_translate(block, -region->winrct.xmin, -region->winrct.ymin);
     /* Popups can change size, fix scroll offset if a panel was closed. */

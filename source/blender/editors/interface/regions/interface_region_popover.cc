@@ -211,7 +211,17 @@ static Block *block_func_POPOVER(bContext *C, PopupBlockHandle *handle, void *ar
                                                     handle->popup_create_vars.event_xy,
                                                     handle->prev_bounds_offset)))
   {
-    /* Phantom: beside the anchor, also when refreshed (the offset is kept). */
+    /* Phantom: beside the anchor, also when refreshed: placed again for the new size (a centered
+     * popup stays centered, so closing a section takes it back where it was). */
+    if (pup->anchored && handle->refresh) {
+      popup_anchor_offset(CTX_wm_window(C),
+                          *handle,
+                          *block,
+                          block_margin,
+                          UI_MENU_WIDTH_MIN,
+                          handle->popup_create_vars.event_xy,
+                          handle->prev_bounds_offset);
+    }
     pup->anchored = true;
     block_flag_enable(block, BLOCK_LOOP);
     block_theme_style_set(block, BLOCK_THEME_STYLE_POPUP);

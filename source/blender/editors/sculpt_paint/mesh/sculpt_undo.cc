@@ -271,6 +271,13 @@ struct StepData {
     float4x4 after;
   };
   Vector<OtherObject> other_objects;
+  /**
+   * Phantom: #Mesh.face_sets_color_seed and #Mesh.face_sets_color_default before and after the
+   * step, for face set steps (New Colors changes only them).
+   */
+  int2 face_sets_color_seed = int2(0);
+  int2 face_sets_color_default = int2(0);
+  bool has_face_sets_colors = false;
 
   /* Geometry modification operations. */
   /* Original geometry is stored before the modification and is restored from when undoing. */
@@ -1358,16 +1365,32 @@ static void restore_list(bContext *C, Depsgraph *depsgraph, StepData &step_data)
       break;
     }
     case Type::Mask: {
-      IndexMaskMemory memory;
-      const IndexMask node_mask = bke::pbvh::all_leaf_nodes(pbvh, memory);
-
       BKE_sculptsession_update_for_edit(depsgraph, &object, false);
       if (!topology_matches(step_data, object)) {
         return;
       }
 
       if (use_multires_undo(step_data, ss)) {
-        MutableSpan<bke::pbvh::GridsNode> nodes = pbvh.nodes<bke::pbvh::GridsNode>();
+        /* Phantom: the grids may have no mask layer, when a whole-scene undo step reloaded the
+         * mesh from before the first mask (redo after undoing past the first sculpt step).
+         * Swapping into the empty mask array would write over the #SubdivCCG, so the layer is
+         * added first. That re-evaluates the object and rebuilds the PBVH, so the PBVH is taken
+         * after. */
+        if (ss.subdiv_ccg->masks.is_empty()) {
+          if (MultiresModifierData *mmd = BKE_sculpt_multires_active(scene, &object)) {
+            BKE_sculpt_mask_layers_ensure(depsgraph, CTX_data_main(C), &object, mmd);
+          }
+          if (ss.subdiv_ccg == nullptr || ss.subdiv_ccg->masks.is_empty() ||
+              !topology_matches(step_data, object))
+          {
+            CLOG_WARN(&LOG, "Multires grids have no mask layer: skipping undo state restore");
+            return;
+          }
+        }
+        bke::pbvh::Tree &grids_pbvh = bke::object::pbvh_ensure(*depsgraph, object);
+        IndexMaskMemory memory;
+        const IndexMask node_mask = bke::pbvh::all_leaf_nodes(grids_pbvh, memory);
+        MutableSpan<bke::pbvh::GridsNode> nodes = grids_pbvh.nodes<bke::pbvh::GridsNode>();
         Array<bool> modified_grids(ss.subdiv_ccg->grids_num, false);
         for (std::unique_ptr<Node> &unode : step_data.nodes) {
           restore_mask_grids(object, *unode, modified_grids);
@@ -1377,13 +1400,15 @@ static void restore_list(bContext *C, Depsgraph *depsgraph, StepData &step_data)
             memory,
             [&](const int i) { return indices_contain_true(modified_grids, nodes[i].grids()); },
             exec_mode::grain_size(1));
-        bke::pbvh::update_mask_grids(*ss.subdiv_ccg, changed_nodes, pbvh);
-        pbvh.tag_masks_changed(changed_nodes);
+        bke::pbvh::update_mask_grids(*ss.subdiv_ccg, changed_nodes, grids_pbvh);
+        grids_pbvh.tag_masks_changed(changed_nodes);
         /* Phantom: the grids must be written back to the modifier on leaving Sculpt Mode, or the
          * mask from before the undo comes back. */
         multires_mark_as_modified(depsgraph, &object, MULTIRES_COORDS_MODIFIED);
       }
       else {
+        IndexMaskMemory memory;
+        const IndexMask node_mask = bke::pbvh::all_leaf_nodes(pbvh, memory);
         MutableSpan<bke::pbvh::MeshNode> nodes = pbvh.nodes<bke::pbvh::MeshNode>();
         const Mesh &mesh = *id_cast<const Mesh *>(object.data);
         Array<bool> modified_verts(mesh.verts_num, false);
@@ -2100,6 +2125,12 @@ static void save_common_data(Object &ob, SculptUndoStep *us)
   us->data.pivot_pos = ss.pivot_pos;
   us->data.pivot_rot = ss.pivot_rot;
 
+  if (ob.type == OB_MESH) {
+    const Mesh &mesh = *id_cast<const Mesh *>(ob.data);
+    us->data.face_sets_color_seed[0] = mesh.face_sets_color_seed;
+    us->data.face_sets_color_default[0] = mesh.face_sets_color_default;
+  }
+
   if (const KeyBlock *key = BKE_keyblock_from_object(&ob)) {
     us->data.active_shape_key_name = key->name;
   }
@@ -2142,7 +2173,10 @@ static void history_begin(Object &ob, const char *name)
   }
 }
 
-static void history_record(Object &ob, const bool topology_changed, const BitSpan touched = {})
+static void history_record(Object &ob,
+                           const bool topology_changed,
+                           const BitSpan touched = {},
+                           const bool face_sets_edited = false)
 {
   if (!history_applies(ob)) {
     return;
@@ -2150,7 +2184,8 @@ static void history_record(Object &ob, const bool topology_changed, const BitSpa
   const PhantomHistory *history = ob.phantom_history;
   const bool had_later = history && history->current < history->steps_num - 1;
   const int before = bke::phantom_history::cursor_get(ob);
-  bke::phantom_history::record(ob, history_step_name(), topology_changed, touched);
+  bke::phantom_history::record(
+      ob, history_step_name(), topology_changed, touched, face_sets_edited);
   if (had_later && bke::phantom_history::cursor_get(ob) != before) {
     /* An edit on an older step deleted the steps after it: undo must not lead into them. */
     history_steps_deleted(ob, before);
@@ -2191,6 +2226,16 @@ static BitVector<> history_touched_points(const Object &ob, const StepData &step
     }
   });
   return touched;
+}
+
+/** Phantom: the number of points of the history (#history_touched_points). */
+static int64_t history_point_count(const Object &ob)
+{
+  const SculptSession *ss = ob.runtime->sculpt_session;
+  if (ss && ss->subdiv_ccg && ss->subdiv_ccg->grids_num > 0) {
+    return ss->subdiv_ccg->positions.size();
+  }
+  return id_cast<const Mesh *>(ob.data)->verts_num;
 }
 
 /** Phantom: the history cursor after the step being pushed, for redo. */
@@ -2328,8 +2373,19 @@ void push_end_ex(Object &ob, const bool use_nested_undo)
         std::plus<size_t>());
   }
 
+  if (step_data->type == Type::FaceSet && ob.type == OB_MESH) {
+    const Mesh &mesh = *id_cast<const Mesh *>(ob.data);
+    step_data->face_sets_color_seed[1] = mesh.face_sets_color_seed;
+    step_data->face_sets_color_default[1] = mesh.face_sets_color_default;
+    step_data->has_face_sets_colors = true;
+  }
+
   if (ELEM(step_data->type, Type::Position, Type::Mask)) {
     history_record(ob, false, history_touched);
+  }
+  else if (step_data->type == Type::FaceSet) {
+    /* No point can have moved: only the face sets (and their colors) are compared. */
+    history_record(ob, false, BitVector<>(history_point_count(ob), false), true);
   }
   history_cursor_store_after(ob);
 
@@ -2560,6 +2616,32 @@ static void restore_gizmo_extras(bContext *C, const StepData &step_data, const b
   object->runtime->sculpt_session->pivot_rot = step_data.pivot_rot_end;
 }
 
+/** Phantom: the face set colors as the step found them (undo) or left them (redo). */
+static void restore_face_sets_colors(bContext *C, const StepData &step_data, const bool redo)
+{
+  if (!step_data.has_face_sets_colors) {
+    return;
+  }
+  Object *ob = CTX_data_active_object(C);
+  if (ob == nullptr || ob->type != OB_MESH || step_data.object_name != ob->id.name) {
+    return;
+  }
+  Mesh &mesh = *id_cast<Mesh *>(ob->data);
+  const int i = redo ? 1 : 0;
+  if (mesh.face_sets_color_seed == step_data.face_sets_color_seed[i] &&
+      mesh.face_sets_color_default == step_data.face_sets_color_default[i])
+  {
+    return;
+  }
+  mesh.face_sets_color_seed = step_data.face_sets_color_seed[i];
+  mesh.face_sets_color_default = step_data.face_sets_color_default[i];
+  if (bke::pbvh::Tree *pbvh = bke::object::pbvh_get(*ob)) {
+    IndexMaskMemory memory;
+    pbvh->tag_face_sets_changed(bke::pbvh::all_leaf_nodes(*pbvh, memory));
+  }
+  WM_main_add_notifier(NC_OBJECT | ND_DRAW, ob);
+}
+
 static void step_decode_undo_impl(bContext *C, Depsgraph *depsgraph, SculptUndoStep *us)
 {
   BLI_assert(us->step.is_applied == true);
@@ -2571,6 +2653,7 @@ static void step_decode_undo_impl(bContext *C, Depsgraph *depsgraph, SculptUndoS
     restore_list(C, depsgraph, us->data);
   }
   restore_gizmo_extras(C, us->data, false);
+  restore_face_sets_colors(C, us->data, false);
   us->step.is_applied = false;
   history_cursor_restore(C, us->history_cursor_before);
 }
@@ -2586,6 +2669,7 @@ static void step_decode_redo_impl(bContext *C, Depsgraph *depsgraph, SculptUndoS
     restore_list(C, depsgraph, us->data);
   }
   restore_gizmo_extras(C, us->data, true);
+  restore_face_sets_colors(C, us->data, true);
   us->step.is_applied = true;
   history_cursor_restore(C, us->history_cursor_after);
 }

@@ -998,7 +998,10 @@ wmOperatorStatus popover_panel_invoke(
  * `simple_style`, they (and the popups opened from them) are drawn in the simple sculpting view's
  * style: its graphite panels, hairlines and orange accent instead of the theme's colors.
  */
-void popup_anchor_set(const rcti &rect, char side, bool simple_style = false);
+void popup_anchor_set(const rcti &rect,
+                      char side,
+                      bool simple_style = false,
+                      bool centered = false);
 
 /**
  * Phantom: the simple sculpting view's look (see #popup_anchor_set) over the theme's widget

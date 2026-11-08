@@ -873,6 +873,10 @@ gpu::Texture *wm_draw_region_texture(ARegion *region, int view)
 static constexpr float POPUP_ANIM_TIME = 0.14f;
 /** Phantom: duration of the slide-in for menus opened from a button (like the asset shelf). */
 static constexpr float POPUP_SLIDE_TIME = 0.24f;
+/** Phantom: how long a simple view popup takes to glide to a new size, and how tall its bottom
+ * edge is (unscaled pixels: the margin, the corners and the shadow), kept whole meanwhile. */
+static constexpr float POPUP_RESIZE_TIME = 0.2f;
+static constexpr float POPUP_RESIZE_EDGE = 40.0f;
 
 /**
  * Phantom: animate a popup region while it opens. Menus opened from a button slide out of the
@@ -1031,14 +1035,60 @@ void wm_draw_region_blend(ARegion *region, int view, bool blend)
   int texture_bind_loc = GPU_shader_get_sampler_binding(shader, "image");
 
   GPU_texture_bind(texture, texture_bind_loc);
-
-  GPU_shader_uniform_float_ex(shader, rect_tex_loc, 4, 1, rectt);
-  GPU_shader_uniform_float_ex(shader, rect_geo_loc, 4, 1, rectg);
   GPU_shader_uniform_float_ex(shader, color_loc, 4, 1, float4{alpha, alpha, alpha, alpha});
-
   gpu::Batch *quad = GPU_batch_preset_quad();
   GPU_batch_set_shader(quad, shader);
-  GPU_batch_draw(quad);
+
+  auto draw_part = [&](const float part_tex[4], const float part_geo[4]) {
+    GPU_shader_uniform_float_ex(shader, rect_tex_loc, 4, 1, part_tex);
+    GPU_shader_uniform_float_ex(shader, rect_geo_loc, 4, 1, part_geo);
+    GPU_batch_draw(quad);
+  };
+
+  /* Phantom: a simple view popup that changed size glides from its old frame to its new one: its
+   * top moves, and its content shows between that top and a bottom edge (kept whole, with its
+   * rounded corners and shadow) that moves too. */
+  float resize_ease = 1.0f;
+  if (blend && region->regiontype == RGN_TYPE_TEMPORARY &&
+      region->runtime->popup_resize_start != 0.0)
+  {
+    const float t = std::clamp(float(BLI_time_now_seconds() -
+                                     region->runtime->popup_resize_start) /
+                                   POPUP_RESIZE_TIME,
+                               0.0f,
+                               1.0f);
+    if (t >= 1.0f) {
+      region->runtime->popup_resize_start = 0.0;
+    }
+    else {
+      resize_ease = 1.0f - (1.0f - t) * (1.0f - t) * (1.0f - t);
+    }
+  }
+  if (resize_ease < 1.0f) {
+    const rcti &from = region->runtime->popup_resize_from;
+    const float new_h = rectg[3] - rectg[1];
+    const float top = float(from.ymax) + (rectg[3] - float(from.ymax)) * resize_ease;
+    const float old_h = float(BLI_rcti_size_y(&from));
+    /* As tall as the content allows: a closing section tucks away at once, the frame glides. */
+    const float shown_h = std::min(new_h, old_h + (new_h - old_h) * resize_ease);
+    const float edge_h = std::min(shown_h, POPUP_RESIZE_EDGE * UI_SCALE_FAC);
+    const float tex_h = rectt[3] - rectt[1];
+    /* The top part: everything but the bottom edge, as far down as shown. */
+    const float body_h = shown_h - edge_h;
+    const float body_tex[4] = {rectt[0], rectt[3] - tex_h * body_h / new_h, rectt[2], rectt[3]};
+    const float body_geo[4] = {rectg[0], top - body_h, rectg[2], top};
+    if (body_h > 0.0f) {
+      draw_part(body_tex, body_geo);
+    }
+    /* The bottom edge of the new frame, under it. */
+    const float edge_tex[4] = {rectt[0], rectt[1], rectt[2], rectt[1] + tex_h * edge_h / new_h};
+    const float edge_geo[4] = {rectg[0], top - shown_h, rectg[2], top - body_h};
+    draw_part(edge_tex, edge_geo);
+    ED_region_tag_redraw_no_rebuild(region);
+  }
+  else {
+    draw_part(rectt, rectg);
+  }
 
   GPU_texture_unbind(texture);
 
@@ -1055,6 +1105,25 @@ GPUViewport *WM_draw_region_get_viewport(ARegion *region)
 
   GPUViewport *viewport = region->runtime->draw_buffer->viewport;
   return viewport;
+}
+
+static gpu::Texture *g_phantom_backdrop = nullptr;
+static rcti g_phantom_backdrop_rect = {0, 0, 0, 0};
+
+void WM_phantom_backdrop_set(gpu::Texture *texture, const rcti *rect)
+{
+  g_phantom_backdrop = texture;
+  if (rect) {
+    g_phantom_backdrop_rect = *rect;
+  }
+}
+
+gpu::Texture *WM_phantom_backdrop_get(rcti *r_rect)
+{
+  if (r_rect) {
+    *r_rect = g_phantom_backdrop_rect;
+  }
+  return g_phantom_backdrop;
 }
 
 GPUViewport *WM_draw_region_get_bound_viewport(ARegion *region)

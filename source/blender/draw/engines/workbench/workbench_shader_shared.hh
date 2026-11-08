@@ -8,6 +8,9 @@
 
 #pragma once
 
+/** Phantom: the top bit of an object ID marks the lit-up mesh (#SceneState::sculpt_flash). */
+#define WB_OBJECT_ID_FLASH 0x8000u
+
 #include "GPU_shader_shared_utils.hh"
 
 #define WORKBENCH_SHADER_SHARED_H

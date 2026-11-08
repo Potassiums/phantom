@@ -20,6 +20,7 @@
 #include "DNA_userdef_types.h"
 
 #include "BLI_color_types.hh"
+#include "BLI_memory_utils.hh"
 #include "BLI_listbase.hh"
 #include "BLI_math_color_c.hh"
 #include "BLI_math_geom_c.hh"
@@ -53,10 +54,13 @@
 #include "GPU_immediate_util.hh"
 #include "GPU_matrix.hh"
 #include "GPU_state.hh"
+#include "GPU_texture.hh"
 
 #include "UI_abstract_view.hh"
 
 #include "IMB_colormanagement.hh"
+
+#include "WM_api.hh"
 
 #ifdef WITH_INPUT_IME
 #  include "WM_types.hh"
@@ -3643,6 +3647,10 @@ static void widget_softshadow(const rcti *rect, int roundboxalign, const float r
   draw_dropshadow(&shadow_rect, radin, shadow_width, 1.0f, shadow_alpha);
 }
 
+/** Phantom: the popup whose background is being drawn (#phantom_popup_glass). */
+static const Block *g_phantom_glass_block = nullptr;
+static void phantom_popup_glass(const Block *block, const rcti *rect, float radius);
+
 static void widget_menu_back(uiWidgetColors *wcol,
                              const rcti *rect,
                              const int block_flag,
@@ -3678,6 +3686,7 @@ static void widget_menu_back(uiWidgetColors *wcol,
   GPU_blend(GPU_BLEND_ALPHA);
   const float radius = widget_radius_from_zoom(zoom, wcol);
   widget_softshadow(rect, roundboxalign, radius);
+  phantom_popup_glass(g_phantom_glass_block, rect, radius);
 
   round_box_edges(&wtb, roundboxalign, rect, radius);
   wtb.draw_emboss = false;
@@ -6401,11 +6410,70 @@ static void draw_dialog_alert(Block *block, const rcti *rect)
   draw_roundbox_4fv(&line_rect, true, radius, color);
 }
 
+/**
+ * Phantom: frosted glass behind a popup of the simple view: the blurred copy of the 3D Viewport
+ * (#WM_phantom_backdrop_set) where the popup covers it, inside its rounded rectangle.
+ */
+static void phantom_popup_glass(const Block *block, const rcti *rect, const float radius)
+{
+  if (block == nullptr || !block->phantom_simple_style || block->handle == nullptr ||
+      block->handle->region == nullptr)
+  {
+    return;
+  }
+  rcti area;
+  gpu::Texture *texture = WM_phantom_backdrop_get(&area);
+  if (texture == nullptr || BLI_rcti_size_x(&area) <= 0 || BLI_rcti_size_y(&area) <= 0) {
+    return;
+  }
+  const rcti &winrct = block->handle->region->winrct;
+  const float size_x = float(BLI_rcti_size_x(&area));
+  const float size_y = float(BLI_rcti_size_y(&area));
+  const float r = std::max(0.0f, std::min({radius, BLI_rcti_size_x(rect) / 2.0f,
+                                           BLI_rcti_size_y(rect) / 2.0f}));
+  constexpr int segments = 6;
+  const float corners[4][3] = {{rect->xmax - r, rect->ymax - r, 0.0f},
+                               {rect->xmin + r, rect->ymax - r, 0.5f * float(M_PI)},
+                               {rect->xmin + r, rect->ymin + r, float(M_PI)},
+                               {rect->xmax - r, rect->ymin + r, 1.5f * float(M_PI)}};
+
+  GPUVertFormat *format = immVertexFormat();
+  const uint pos = GPU_vertformat_attr_add(format, "pos", gpu::VertAttrType::SFLOAT_32_32);
+  const uint tex_coord = GPU_vertformat_attr_add(
+      format, "texCoord", gpu::VertAttrType::SFLOAT_32_32);
+  immBindBuiltinProgram(GPU_SHADER_3D_IMAGE);
+  GPUSamplerState sampler = GPUSamplerState::default_sampler();
+  sampler.enable_filtering_flag(GPU_SAMPLER_FILTERING_LINEAR);
+  immBindTextureSampler("image", texture, sampler);
+
+  auto vertex = [&](const float x, const float y) {
+    immAttr2f(tex_coord,
+              (float(winrct.xmin) + x - float(area.xmin)) / size_x,
+              (float(winrct.ymin) + y - float(area.ymin)) / size_y);
+    immVertex2f(pos, x, y);
+  };
+  GPU_blend(GPU_BLEND_NONE);
+  immBegin(GPU_PRIM_TRI_FAN, 2 + 4 * (segments + 1));
+  vertex(BLI_rcti_cent_x_fl(rect), BLI_rcti_cent_y_fl(rect));
+  for (int c = 0; c < 4; c++) {
+    for (int i = 0; i <= segments; i++) {
+      const float a = corners[c][2] + 0.5f * float(M_PI) * float(i) / float(segments);
+      vertex(corners[c][0] + r * cosf(a), corners[c][1] + r * sinf(a));
+    }
+  }
+  vertex(corners[0][0] + r, corners[0][1]);
+  immEnd();
+  immUnbindProgram();
+  GPU_blend(GPU_BLEND_ALPHA);
+}
+
 void draw_menu_back(uiStyle * /*style*/, Block *block, const rcti *rect)
 {
   WidgetType *wt = widget_type(WidgetStyle::MenuBack);
 
   wt->state(wt, &STATE_INFO_NULL, EmbossType::Undefined);
+  g_phantom_glass_block = block;
+  BLI_SCOPED_DEFER([]() { g_phantom_glass_block = nullptr; });
   if (block) {
     const float zoom = 1.0f / block->aspect;
     wt->draw_block(&wt->wcol,
@@ -6451,6 +6519,7 @@ static void draw_popover_back_impl(const uiWidgetColors *wcol,
 
     const int roundboxalign = CNR_ALL;
     widget_softshadow(rect, roundboxalign, wcol->roundness * U.widget_unit);
+    phantom_popup_glass(g_phantom_glass_block, rect, wcol->roundness * U.widget_unit);
 
     round_box_edges(&wtb, roundboxalign, rect, wcol->roundness * U.widget_unit);
     wtb.draw_emboss = false;
@@ -6505,6 +6574,8 @@ void draw_popover_back(ARegion *region, uiStyle * /*style*/, Block *block, const
 
   float mval_origin[2] = {float(block->bounds_offset[0]), float(block->bounds_offset[1])};
   window_to_block_fl(region, block, &mval_origin[0], &mval_origin[1]);
+  g_phantom_glass_block = block;
+  BLI_SCOPED_DEFER([]() { g_phantom_glass_block = nullptr; });
   draw_popover_back_impl(
       wt->wcol_theme, rect, block->direction, U.widget_unit / block->aspect, mval_origin);
 

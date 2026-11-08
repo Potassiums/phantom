@@ -214,6 +214,10 @@ class Params:
         self.use_alt_navigation = use_alt_navigation
         # Phantom: which Phantom keymap options are on (all by default).
         self.phantom = PHANTOM_OPTIONS if phantom is None else frozenset(phantom)
+        # Phantom: with right mouse navigation, right-drag navigates and a right-click (released
+        # without dragging) opens the context menus.
+        if "rmb_navigation" in self.phantom and self.context_menu_event.get("type") == 'RIGHTMOUSE':
+            self.context_menu_event = {"type": 'RIGHTMOUSE', "value": 'CLICK'}
 
         self.use_file_single_click = use_file_single_click
 
@@ -1678,6 +1682,13 @@ def km_view3d(params):
         ("view3d.localview_remove_from", {"type": 'SLASH', "value": 'PRESS', "alt": True}, None),
         # Navigation.
         ("view3d.rotate", {"type": 'MOUSEROTATE', "value": 'ANY'}, None),
+        # Phantom: right mouse navigation for tablet users, like ZBrush (right-drag rotates,
+        # Alt pans, Ctrl zooms); a right-click without dragging still opens the context menu.
+        *((
+            ("view3d.rotate", {"type": 'RIGHTMOUSE', "value": 'CLICK_DRAG'}, None),
+            ("view3d.move", {"type": 'RIGHTMOUSE', "value": 'CLICK_DRAG', "alt": True}, None),
+            ("view3d.zoom", {"type": 'RIGHTMOUSE', "value": 'CLICK_DRAG', "ctrl": True}, None),
+        ) if "rmb_navigation" in params.phantom else ()),
         *((
             ("view3d.rotate", {"type": 'MIDDLEMOUSE', "value": 'PRESS', "shift": True}, None),
             ("view3d.move", {"type": 'MIDDLEMOUSE', "value": 'PRESS'}, None),
@@ -5617,8 +5628,11 @@ def km_sculpt(params):
         items.extend([
             ("paint.mask_lasso_gesture", {"type": 'RIGHTMOUSE', "value": 'PRESS', "shift": True, "ctrl": True},
              {"properties": [("value", 1.0)]}),
-            ("paint.mask_lasso_gesture", {"type": 'RIGHTMOUSE', "value": 'PRESS', "ctrl": True},
-             {"properties": [("value", 0.0)]}),
+            # Phantom: with right mouse navigation, Ctrl-right-drag zooms instead.
+            *((
+                ("paint.mask_lasso_gesture", {"type": 'RIGHTMOUSE', "value": 'PRESS', "ctrl": True},
+                 {"properties": [("value", 0.0)]}),
+            ) if "rmb_navigation" not in params.phantom else ()),
         ])
 
     if params.legacy:

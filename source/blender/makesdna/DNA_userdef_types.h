@@ -1059,7 +1059,9 @@ struct UserDef {
   char show_silhouette_always_disabled = 1;
   /** Phantom: the navigation gizmo draws a planar head instead of the axes. */
   char navigate_head = 0;
-  char _pad9[3] = {};
+  /** Phantom: the window title shows the file's name only, not the folder it is in. */
+  char title_hide_filepath = 0;
+  char _pad9[2] = {};
   /**
    * Experimental flag for app-templates to make changes to behavior
    * which are outside the scope of typical preferences.

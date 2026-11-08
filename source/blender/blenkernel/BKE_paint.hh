@@ -285,6 +285,14 @@ void BKE_paint_face_set_overlay_color_get(int face_set, int seed, uchar r_color[
  */
 void BKE_paint_face_set_color_get(int face_set, int default_face_set, int seed, uchar r_color[4]);
 /** Phantom: the hue of scarlet, and how far around it other polygroups' hues stay away. */
+/**
+ * Phantom: the mesh being sculpted lights up for a moment (brighter, a warm gradient sweeping
+ * over it, then fading), e.g. when picked in the simple view's Scene window. The Workbench draws
+ * it from the time it started (0: not lit).
+ */
+void BKE_paint_phantom_flash_start();
+double BKE_paint_phantom_flash_start_time();
+
 #define PHANTOM_FACE_SET_DEFAULT_HUE 0.0235f
 #define PHANTOM_FACE_SET_RED_BAND 0.06f
 

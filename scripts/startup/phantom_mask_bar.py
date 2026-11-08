@@ -491,7 +491,7 @@ def draw_callback():
     def faded(color, k=1.0):
         return (*color[:3], color[3] * a * k)
 
-    outline = sv._rounded_rect(*rect, sv.BAR_CORNER * s, faded(sv.BAR_COLOR))
+    outline = sv._panel(*rect, sv.BAR_CORNER * s, a, shadow=False)
     sv._outline(outline, faded(sv.OUTLINE_COLOR))
     if divider is not None:
         _x, y, _w, h = rect

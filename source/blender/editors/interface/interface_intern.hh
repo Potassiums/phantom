@@ -1123,6 +1123,13 @@ struct PopupBlockHandle {
   bool refresh = false;
   /** Phantom: drawn in the simple view's style (see #popup_anchor_set). */
   bool phantom_simple_style = false;
+  /**
+   * Phantom: the anchor it opened beside (#popup_anchor_set), kept so a refresh (a section
+   * opening or closing) places it again: centered popups stay centered on it.
+   */
+  rcti phantom_anchor_rect = {0, 0, 0, 0};
+  char phantom_anchor_side = 0;
+  bool phantom_anchor_centered = false;
 
   wmTimer *scrolltimer = nullptr;
   float scrolloffset = 0.0f;
@@ -1593,6 +1600,8 @@ void draw_preview_item_stateless(const uiFontStyle *fstyle,
 
 #define UI_TEXT_MARGIN_X 0.4f
 #define UI_POPUP_MARGIN (UI_SCALE_FAC * 12)
+/** Phantom: a popup in the simple view's style, with room for its wider shadow. */
+#define UI_POPUP_MARGIN_SIMPLE (UI_SCALE_FAC * 24)
 /**
  * Margin at top of screen for popups.
  * Note this value must be sufficient to draw a popover arrow to avoid cropping it.

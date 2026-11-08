@@ -759,11 +759,11 @@ static void rna_WindowManager_print_undo_steps(wmWindowManager *wm)
 }
 
 static void rna_WindowManager_phantom_popup_anchor_set(
-    int xmin, int ymin, int xmax, int ymax, int side, bool simple_style)
+    int xmin, int ymin, int xmax, int ymax, int side, bool simple_style, bool centered)
 {
   rcti rect;
   BLI_rcti_init(&rect, xmin, xmax, ymin, ymax);
-  ui::popup_anchor_set(rect, char(side), simple_style);
+  ui::popup_anchor_set(rect, char(side), simple_style, centered);
 }
 
 static void rna_WindowManager_tag_script_reload()
@@ -1017,6 +1017,31 @@ static void rna_WindowManager_phantom_draw_icon(
   GPU_blend(GPU_BLEND_ALPHA);
   ui::icon_draw_ex(
       x, y, icon, float(ICON_DEFAULT_HEIGHT) / size, alpha, 0.0f, white, false, nullptr);
+}
+
+static void rna_WindowManager_phantom_draw_icon_value(
+    const int icon_value, const float x, const float y, const float size, const float alpha)
+{
+  if (size <= 0.0f || icon_value <= 0) {
+    return;
+  }
+  const uchar white[4] = {255, 255, 255, 255};
+  GPU_blend(GPU_BLEND_ALPHA);
+  ui::icon_draw_ex(
+      x, y, icon_value, float(ICON_DEFAULT_HEIGHT) / size, alpha, 0.0f, white, false, nullptr);
+}
+
+static void rna_WindowManager_phantom_sculpt_flash()
+{
+  BKE_paint_phantom_flash_start();
+}
+
+static void rna_WindowManager_phantom_mask_brush_set(const char *library_type,
+                                                     const char *library_identifier,
+                                                     const char *relative_identifier)
+{
+  ed::sculpt_paint::phantom_mask_brush_set(
+      library_type, library_identifier, relative_identifier);
 }
 
 /** Flags for #rna_WindowManager_phantom_sculpt_mask_state. */
@@ -1306,6 +1331,45 @@ void RNA_api_wm(StructRNA *srna)
   RNA_def_function_ui_description(
       func, "Set the folder new files are saved in (empty: the most recent file's folder)");
   parm = RNA_def_string_dir_path(func, "folder", nullptr, FILE_MAX, "Folder", "");
+  RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
+
+  func = RNA_def_function(
+      srna, "phantom_draw_icon_value", "rna_WindowManager_phantom_draw_icon_value");
+  RNA_def_function_flag(func, FUNC_NO_SELF);
+  RNA_def_function_ui_description(
+      func,
+      "Draw an icon by its value (a tool's or a preview's icon) from a draw handler (region "
+      "pixels, its height in pixels)");
+  parm = RNA_def_int(func, "icon_value", 0, 0, INT_MAX, "Icon Value", "", 0, INT_MAX);
+  RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
+  parm = RNA_def_float(func, "x", 0.0f, -FLT_MAX, FLT_MAX, "X", "", -FLT_MAX, FLT_MAX);
+  RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
+  parm = RNA_def_float(func, "y", 0.0f, -FLT_MAX, FLT_MAX, "Y", "", -FLT_MAX, FLT_MAX);
+  RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
+  parm = RNA_def_float(func, "size", 16.0f, 0.0f, FLT_MAX, "Size", "", 0.0f, FLT_MAX);
+  RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
+  RNA_def_float(func, "alpha", 1.0f, 0.0f, 1.0f, "Alpha", "", 0.0f, 1.0f);
+
+  func = RNA_def_function(srna, "phantom_sculpt_flash", "rna_WindowManager_phantom_sculpt_flash");
+  RNA_def_function_flag(func, FUNC_NO_SELF);
+  RNA_def_function_ui_description(
+      func,
+      "Light up the mesh being sculpted for a moment (brighter, a gradient sweeping over it, "
+      "fading after a few seconds); redraw the 3D Viewports meanwhile");
+
+  func = RNA_def_function(
+      srna, "phantom_mask_brush_set", "rna_WindowManager_phantom_mask_brush_set");
+  RNA_def_function_flag(func, FUNC_NO_SELF);
+  RNA_def_function_ui_description(
+      func,
+      "Set the brush Ctrl masks with in Sculpt Mode (an empty relative identifier: the "
+      "Essentials Mask brush)");
+  parm = RNA_def_string(func, "library_type", nullptr, 0, "Library Type",
+                        "ESSENTIALS, CUSTOM or LOCAL");
+  RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
+  parm = RNA_def_string(func, "library_identifier", nullptr, 0, "Library Identifier", "");
+  RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
+  parm = RNA_def_string(func, "relative_identifier", nullptr, 0, "Relative Identifier", "");
   RNA_def_parameter_flags(parm, PropertyFlag(0), PARM_REQUIRED);
 
   func = RNA_def_function(srna, "phantom_draw_icon", "rna_WindowManager_phantom_draw_icon");
@@ -1700,6 +1764,12 @@ void RNA_api_wm(StructRNA *srna)
                   "Simple Style",
                   "Draw the popups (and those opened from them) in the simple sculpting view's "
                   "style");
+  RNA_def_boolean(func,
+                  "centered",
+                  false,
+                  "Centered",
+                  "Beside the rectangle, centered on its middle (off: running from its top or "
+                  "bottom)");
 
   /* Used by (#SCRIPT_OT_reload). */
   func = RNA_def_function(srna, "tag_script_reload", "rna_WindowManager_tag_script_reload");

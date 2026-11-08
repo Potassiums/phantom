@@ -557,11 +557,15 @@ static void uilist_prepare(uiList *ui_list,
     actual_rows = min_ii(dyn_data->height, actual_maxrows);
   }
 
+  /* Phantom: the simple view's Scene list keeps its scroll when rows come and go (a folder opened
+   * or closed shifts the active mesh's row too); it still follows the active mesh otherwise. */
+  const bool length_changed = ui_list->list_last_len != items->item_vec.size();
+  if (length_changed && STRPREFIX(ui_list->list_id, "VIEW3D_UL_phantom_simple_scene")) {
+    ui_list->flag &= ~UILST_SCROLL_TO_ACTIVE_ITEM;
+  }
   /* If list length changes or list is tagged to check this,
    * and active is out of view, scroll to it. */
-  if ((ui_list->list_last_len != items->item_vec.size()) ||
-      (ui_list->flag & UILST_SCROLL_TO_ACTIVE_ITEM))
-  {
+  else if (length_changed || (ui_list->flag & UILST_SCROLL_TO_ACTIVE_ITEM)) {
     if (activei_row < ui_list->list_scroll) {
       ui_list->list_scroll = activei_row;
     }

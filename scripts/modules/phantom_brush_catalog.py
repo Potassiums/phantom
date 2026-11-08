@@ -49,8 +49,13 @@ def _files():
     return files
 
 
+# Bumped when the index gets new fields, so old indexes are read again.
+INDEX_VERSION = 2
+
+
 def _signature(files):
     h = hashlib.sha1()
+    h.update(f"v{INDEX_VERSION}\n".encode())
     for kind, identifier, _root, path in files:
         try:
             stat = os.stat(path)
@@ -153,7 +158,8 @@ def _work(job_path):
                 thumbnail = os.path.join(thumbs, key + ".npy")
                 np.save(thumbnail, data.reshape(height, width, 4).astype(np.float16))
             brushes.append({"type": kind, "identifier": identifier, "relative": relative,
-                            "name": brush.name, "thumbnail": thumbnail})
+                            "name": brush.name, "thumbnail": thumbnail,
+                            "brush_type": brush.sculpt_brush_type})
     brushes.sort(key=lambda b: (b["type"] != 'ESSENTIALS', b["identifier"], b["name"].lower()))
     with open(os.path.join(out, INDEX + ".tmp"), "w", encoding="utf-8") as fh:
         json.dump({"signature": job["signature"], "brushes": brushes}, fh, indent=1)

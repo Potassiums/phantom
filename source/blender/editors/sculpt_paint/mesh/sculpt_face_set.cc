@@ -1208,7 +1208,7 @@ void SCULPT_OT_face_set_change_visibility(wmOperatorType *ot)
   RNA_def_property_flag(prop, (PROP_SKIP_SAVE | PROP_HIDDEN));
 }
 
-static wmOperatorStatus randomize_colors_exec(bContext *C, wmOperator * /*op*/)
+static wmOperatorStatus randomize_colors_exec(bContext *C, wmOperator *op)
 {
   Object &ob = *CTX_data_active_object(C);
 
@@ -1218,6 +1218,9 @@ static wmOperatorStatus randomize_colors_exec(bContext *C, wmOperator * /*op*/)
     return OPERATOR_CANCELLED;
   }
 
+  const Scene &scene = *CTX_data_scene(C);
+  Depsgraph &depsgraph = *CTX_data_ensure_evaluated_depsgraph(C);
+  BKE_sculptsession_update_for_edit(&depsgraph, &ob, false);
   bke::pbvh::Tree &pbvh = *bke::object::pbvh_get(ob);
 
   /* Dyntopo not supported. */
@@ -1228,21 +1231,24 @@ static wmOperatorStatus randomize_colors_exec(bContext *C, wmOperator * /*op*/)
   Mesh *mesh = id_cast<Mesh *>(ob.data);
   const bke::AttributeAccessor attributes = mesh->attributes();
 
-  if (!attributes.contains(".sculpt_face_set")) {
-    return OPERATOR_CANCELLED;
-  }
+  /* Phantom: a sculpt undo step (and a step of the sculpt history), which keeps the colors before
+   * and after (#undo::StepData::face_sets_color_seed). Its nodes hold the face sets, which don't
+   * change. */
+  IndexMaskMemory memory;
+  const IndexMask node_mask = bke::pbvh::all_leaf_nodes(pbvh, memory);
+  undo::push_begin(scene, ob, op);
+  undo::push_nodes(depsgraph, ob, node_mask, undo::Type::FaceSet);
 
-  const VArray<int> face_sets = *attributes.lookup<int>(".sculpt_face_set", bke::AttrDomain::Face);
-  const int random_index = clamp_i(mesh->faces_num * BLI_hash_int_01(mesh->face_sets_color_seed),
-                                   0,
-                                   max_ii(0, mesh->faces_num - 1));
-  mesh->face_sets_color_default = face_sets[random_index];
+  /* Phantom: every polygroup takes a new random color, none stays the default (scarlet) one
+   * (polygroup ids start at 1). Upstream kept a random polygroup in the default color, so a
+   * mesh of one polygroup (or none: it is all in polygroup 1) never changed. */
+  UNUSED_VARS(attributes);
+  mesh->face_sets_color_default = 0;
 
   mesh->face_sets_color_seed += 1;
 
-  IndexMaskMemory memory;
-  const IndexMask node_mask = bke::pbvh::all_leaf_nodes(pbvh, memory);
   pbvh.tag_face_sets_changed(node_mask);
+  undo::push_end(ob);
 
   tag_update_overlays(C);
 

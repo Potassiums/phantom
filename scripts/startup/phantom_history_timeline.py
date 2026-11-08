@@ -456,6 +456,17 @@ def _panel(shader, rect, radius, fill, line=HAIRLINE_COLOR):
         _draw(shader, 'LINE_STRIP', points + [points[0]], line)
 
 
+def _glass_panel(shader, rect, radius, alpha, shadow, line):
+    """A panel like the simple view's bars and windows (frosted glass, same darkness), with a
+    hairline."""
+    import phantom_simple_view as sv
+    x, y, w, h = rect
+    sv._panel(x, y, w, h, radius, alpha, shadow=shadow)
+    if line is not None:
+        points = _rounded(x, y, w, h, radius)
+        _draw(shader, 'LINE_STRIP', points + [points[0]], line)
+
+
 def _disc(shader, cx, cy, radius, color, segments=24):
     points = [(cx + radius * math.cos(2 * math.pi * i / segments),
                cy + radius * math.sin(2 * math.pi * i / segments)) for i in range(segments + 1)]
@@ -662,8 +673,8 @@ def _draw_warning(shader, region, s):
     grow = 0.94 + 0.06 * t
     cx, cy = region.width / 2, region.height / 2
     x0, y0 = cx - w * grow / 2, cy - h * grow / 2
-    _panel(shader, (x0, y0, w * grow, h * grow), CORNER * s, _faded((*BAR_COLOR[:3], 0.97), t),
-           _faded((1.0, 1.0, 1.0, 0.12), t))
+    _glass_panel(shader, (x0, y0, w * grow, h * grow), CORNER * s, t, True,
+                 _faded((1.0, 1.0, 1.0, 0.12), t))
     if t < 1.0:
         return
     y = y0 + h - pad - cap / 2
@@ -701,7 +712,7 @@ def draw_callback():
     # The question is about one history state: once that changes (undo, scrub...), it's moot.
     if _warning["key"] is not None and _warning["key"] != _history_key(ob, history):
         _set_warning(False)
-    _panel(shader, lay.bar, CORNER * s, BAR_COLOR)
+    _glass_panel(shader, lay.bar, CORNER * s, 1.0, False, HAIRLINE_COLOR)
     a, b = lay.track
     _draw(shader, 'TRIS', _across(lay, (a + b) / 2, abs(b - a) / 2, 1 * s), TRACK_COLOR)
 

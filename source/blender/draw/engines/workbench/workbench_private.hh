@@ -206,6 +206,10 @@ struct SceneState {
    */
   float sculpt_mask_opacity = 0.0f;
   float sculpt_face_sets_opacity = 0.0f;
+  /** Phantom: the lit-up mesh being sculpted (#BKE_paint_phantom_flash_start): how lit (0..1)
+   * and where the gradient sweeping over it is (0..1 across the view). */
+  float sculpt_flash = 0.0f;
+  float sculpt_flash_phase = 0.0f;
 
   void init(const DRWContext *context, bool scene_updated, Object *camera_ob = nullptr);
 };
@@ -231,6 +235,8 @@ struct ObjectState {
   bool draw_shadow = false;
   bool use_per_material_batches = false;
   bool sculpt_pbvh = false;
+  /** Phantom: polygroups show: drawn over a light neutral (no polypaint, no material color). */
+  bool polygroup_base = false;
 
   ObjectState(const DRWContext *draw_ctx,
               const SceneState &scene_state,
@@ -341,6 +347,9 @@ class MeshPass : public PassMain {
   ePipelineType pipeline_;
   eLightingType lighting_;
   bool clip_;
+  /** Phantom: the lit-up mesh being sculpted (#SceneState::sculpt_flash): how lit, where the
+   * gradient is. */
+  float2 sculpt_flash_ = float2(0.0f);
   /** Phantom: mask and polygroup opacity for sculpt meshes (#SceneState::sculpt_mask_opacity). */
   float2 sculpt_tint_opacity_ = float2(0.0f);
 
@@ -551,6 +560,11 @@ class VolumePass {
 class OutlinePass {
  private:
   bool enabled_ = false;
+  /** Phantom: the object outline setting, and the lit-up mesh's own outline (how lit, where its
+   * gradient is), drawn by the same pass. */
+  bool object_outline_ = false;
+  float flash_ = 0.0f;
+  float flash_phase_ = 0.0f;
 
   PassSimple ps_ = PassSimple("Workbench.Outline");
   Framebuffer fb_ = Framebuffer("Workbench.Outline");

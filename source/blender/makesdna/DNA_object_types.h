@@ -682,8 +682,9 @@ struct Object {
 
 /**
  * Phantom: one step of an object's sculpt history (see `BKE_phantom_history.hh`). A keyframe
- * holds the whole shape and mask; any other step holds the points that moved and the points whose
- * mask changed since the step before. Points are mesh vertices, or Multires grid points.
+ * holds the whole shape, mask and face sets; any other step holds the points that moved, the
+ * points whose mask changed and the faces whose face set changed since the step before. Points
+ * are mesh vertices, or Multires grid points; faces are always the (base) mesh's.
  */
 struct PhantomHistoryStep {
   /** Keyframe: positions (`verts_num * 3`) and faces (none for grids). Null for deltas. */
@@ -718,12 +719,31 @@ struct PhantomHistoryStep {
    */
   int grids_num = 0;
   int grid_size = 0;
+  /**
+   * Keyframe with #PHANTOM_HISTORY_STEP_FACE_SETS: the number of faces of the (base) mesh, which
+   * hold the face sets (polygroups) also with Multires.
+   */
+  int face_sets_num = 0;
+  /** Keyframe: the face set of each face (`face_sets_num`); a mesh without face sets has 1s. */
+  int *face_sets = nullptr;
+  /** Delta: the faces whose face set changed and their new values (`face_set_delta_num`). */
+  int *face_set_delta_indices = nullptr;
+  int *face_set_delta_values = nullptr;
+  int face_set_delta_num = 0;
+  /** #Mesh.face_sets_color_seed and #Mesh.face_sets_color_default at this step. */
+  int face_sets_color_seed = 0;
+  int face_sets_color_default = 0;
   char _pad1[4] = {};
 };
 
 /** #PhantomHistoryStep.flag */
 enum ePhantomHistoryStepFlag {
   PHANTOM_HISTORY_STEP_KEYFRAME = 1 << 0,
+  /**
+   * Keyframe: the face sets are recorded (from Phantom 0.5.2), for this step and the deltas after
+   * it. Histories saved before only hold shapes and masks: their face sets aren't restored.
+   */
+  PHANTOM_HISTORY_STEP_FACE_SETS = 1 << 1,
 };
 
 /** Phantom: an object's sculpt history, #Object.phantom_history. */

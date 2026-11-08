@@ -50,6 +50,7 @@ void MeshPass::init_subpasses(ePipelineType pipeline,
   clip_ = clip;
   sculpt_tint_opacity_ = float2(scene_state.sculpt_mask_opacity,
                                 scene_state.sculpt_face_sets_opacity);
+  sculpt_flash_ = float2(scene_state.sculpt_flash, scene_state.sculpt_flash_phase);
 
   for (auto geom : IndexRange(geometry_type_len)) {
     for (auto shader : IndexRange(shader_type_len)) {
@@ -75,6 +76,8 @@ PassMain::Sub &MeshPass::get_subpass(eGeometryType geometry_type, eShaderType sh
       /* Before any sub-pass, so texture sub-passes get them too. */
       sub_pass->push_constant("sculpt_mask_opacity", sculpt_tint_opacity_.x);
       sub_pass->push_constant("sculpt_face_sets_opacity", sculpt_tint_opacity_.y);
+      sub_pass->push_constant("sculpt_flash", sculpt_flash_.x);
+      sub_pass->push_constant("sculpt_flash_phase", sculpt_flash_.y);
     }
   }
 

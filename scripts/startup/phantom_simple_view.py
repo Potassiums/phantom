@@ -88,6 +88,12 @@ STAGGER = 0.018
 BAR_DELAYS = (0.0, 0.04, 0.08)
 
 BAR_COLOR = (0.105, 0.105, 0.115, 0.93)
+# Over the blurred view behind (frosted glass): the same graphite, letting the blur through.
+GLASS_TINT = (0.105, 0.105, 0.115, 0.72)
+# The soft shadow under windows: its spread, darkness and drop (unscaled pixels).
+SHADOW_SOFT = 24
+SHADOW_ALPHA = 0.32
+SHADOW_OFFSET = 6
 OUTLINE_COLOR = (1.0, 1.0, 1.0, 0.06)
 DIVIDER_COLOR = (1.0, 1.0, 1.0, 0.12)
 HOVER_COLOR = (1.0, 1.0, 1.0, 0.09)
@@ -143,15 +149,22 @@ MAT_CURRENT = 184
 MAT_ROW = 32
 MAT_ROW_GAP = 4
 MAT_MIN_GRID = 360
-# The brush strip: padding, a brush tile (and its label), the gap between tiles and under the
-# header, the header, the least width, and the gap above the bottom toolbar.
-STRIP_PAD = 12
-STRIP_TILE = 76
+# The brush browser (the quick brushes' +, or Ctrl's mask brush): padding, a brush tile (and its
+# label), the gap between tiles, the header (title, search, mask shapes), its gap to the grid, and
+# the gap kept to the toolbars and the window's top.
+# The Scene window's list: rows shown before it scrolls.
+SCENE_ROWS = 16
+# Popups centered beside their toolbar: on the viewport's height (tall ones) or on their button.
+CENTERED_POPUPS = {'SUBTOOLS': 'VIEW', 'ALPHA': 'BUTTON'}
+STRIP_PAD = 16
+STRIP_TILE = 96
 STRIP_LABEL = 20
 STRIP_GAP = 8
-STRIP_HEADER = 20
-STRIP_MIN_W = 480
-STRIP_ABOVE = 12
+STRIP_HEADER = 32
+STRIP_HEADER_GAP = 12
+STRIP_AROUND = 12
+STRIP_TOP = 72
+STRIP_SEARCH_W = 260
 # What the ring card's squares do, shown when hovered: by (ring, option) or by option.
 CARD_TIPS = {
     ('SIZE', 'PRESSURE'): "Pen pressure: press harder for a bigger brush",
@@ -268,7 +281,7 @@ TIPS = {
     'DYNTOPO': "Dyntopo: add detail where you sculpt. Right-click for its settings",
     'QUAD': "Quad Remesh: rebuild the mesh with clean quads",
     'DIVIDE': "Divide: subdivide the mesh one level (Ctrl D)",
-    'ADD_SLOT': "Brushes: every sculpt brush in a row. Pick one to add it to these quick brushes",
+    'ADD_SLOT': "Brushes: every sculpt brush, with search. Pick one to add it to these quick brushes",
 }
 
 # Buttons with options (right-click or hold): what they open.
@@ -297,8 +310,13 @@ _settings = {
     "color_shape": 'SQUARE',
     # The color card stays open while sculpting (and opens with the simple view).
     "color_pinned": False,
+    # Tools pinned to the left toolbar, under Tools (their ids).
+    "left_tools": [],
+    # The brush Ctrl masks with ({type, identifier, relative}; empty: the Essentials Mask brush).
+    "mask_brush": {},
 }
 _draw_handle = None
+_glass_handle = None
 _addon_keymaps = []
 # Windows switching views right now: window pointer -> "ENTER" or "LEAVE".
 _busy = {}
@@ -325,11 +343,16 @@ _color_card = {"open": False, "h": 0.0, "s": 0.0, "v": 1.0, "linear": None, "hov
 # The Materials card: whether it is open, the kind shown, the search text and whether it is being
 # typed in, how far the grid is scrolled, the part under the cursor or pressed, and a drag
 # scrolling the grid (its start: cursor y and scroll).
+# What a matcap picked on the Materials card goes to: the viewport (every object), the active
+# object, or the objects chosen for it (by name).
+MAT_APPLY = (('ALL', "All"), ('ACTIVE', "Active"), ('CHOSEN', "Chosen"))
+_mat_targets = {"apply": 'ALL', "chosen": []}
 _mat = {"open": False, "kind": "", "search": "", "focus": False, "scroll": 0.0, "hover": None,
         "pressed": None, "drag": None}
 # The brush strip: whether it is open, how far it is scrolled, the brush under the cursor or
 # pressed, and a drag scrolling it (its start: cursor x and scroll, and whether it moved).
-_strip = {"open": False, "scroll": 0.0, "hover": None, "pressed": None, "drag": None}
+_strip = {"open": False, "scroll": 0.0, "hover": None, "pressed": None, "drag": None,
+          "mask": False, "search": "", "focus": False}
 # A primitive just added from the Scene popup, being placed with the gizmo: its object's name, its
 # vertex positions when added (for Cancel), the tool to go back to, and the pill under the cursor
 # or pressed on the placement card.
@@ -694,7 +717,7 @@ def _watch():
 # The toolbars' slide
 
 def _bars_duration():
-    longest = max(len(LEFT_KEYS), sum(len(group) for group in RIGHT_GROUPS))
+    longest = max(len(_left_keys()), sum(len(group) for group in RIGHT_GROUPS))
     return BAR_DELAYS[-1] + BAR_IN + STAGGER * longest + 0.05
 
 
@@ -786,6 +809,52 @@ def _scrubbed(key, start, dy):
     return start + dy / (220.0 * s)
 
 
+def _left_keys():
+    """The left toolbar's buttons: Tools, the tools pinned under it, then the rest."""
+    pinned = tuple("TOOL:" + idname for idname in _settings["left_tools"])
+    return LEFT_KEYS[:1] + pinned + LEFT_KEYS[1:]
+
+
+def _ctrl_masking():
+    """Ctrl alone is held: strokes mask (the Tools button shows the mask brush)."""
+    try:
+        import phantom_quick_brushes as quick_brushes
+        return quick_brushes.held["ctrl"] and not quick_brushes.held["shift"]
+    except (ImportError, AttributeError, KeyError):
+        return False
+
+
+ESSENTIALS_MASK = "brushes/essentials_brushes-mesh_sculpt.blend/Brush/Mask"
+
+
+def _mask_brush_entry():
+    """The catalog entry of the brush Ctrl masks with (the Essentials Mask brush by default)."""
+    import phantom_brush_catalog
+    chosen = _settings["mask_brush"] or {"type": 'ESSENTIALS', "identifier": "",
+                                         "relative": ESSENTIALS_MASK}
+    for entry in phantom_brush_catalog.entries() or ():
+        if (entry["type"], entry["identifier"], entry["relative"]) == \
+                (chosen.get("type"), chosen.get("identifier"), chosen.get("relative")):
+            return entry
+    return None
+
+
+def _apply_mask_brush():
+    """Tell sculpting which brush Ctrl masks with."""
+    setter = getattr(bpy.types.WindowManager, "phantom_mask_brush_set", None)
+    if setter is None:
+        return
+    chosen = _settings["mask_brush"]
+    setter(chosen.get("type", ""), chosen.get("identifier", ""), chosen.get("relative", ""))
+
+
+def _tool_def(context, idname):
+    try:
+        return next((item for item, _c in _sculpt_tools(context) if item.idname == idname), None)
+    except (ImportError, AttributeError):
+        return None
+
+
 def _direction_is_add(brush):
     prop = brush.bl_rna.properties.get("direction") if brush else None
     if prop is None or not prop.enum_items:
@@ -832,7 +901,7 @@ class Layout:
         # The brush toolbar on the left and the view toolbar on the right (swapped left-handed).
         left_x = left_inset + margin
         brush_left = not _settings["left_handed"]
-        self._column(0, [list(LEFT_KEYS)], left_x if brush_left else None,
+        self._column(0, [list(_left_keys())], left_x if brush_left else None,
                      corner_left if brush_left else corner_right, margin, W, right_inset)
         if _settings["right_bar"]:
             self._column(1, [list(group) for group in RIGHT_GROUPS], None if brush_left else left_x,
@@ -1205,6 +1274,37 @@ def _draw(kind, verts, color):
     batch.draw(shader)
 
 
+def _rounded_points(x, y, w, h, radius, segments=6):
+    radius = max(0.0, min(radius, w / 2.0, h / 2.0))
+    corners = ((x + w - radius, y + h - radius, 0.0), (x + radius, y + h - radius, 0.5 * math.pi),
+               (x + radius, y + radius, math.pi), (x + w - radius, y + radius, 1.5 * math.pi))
+    outline = []
+    for cx, cy, start in corners:
+        for i in range(segments + 1):
+            a = start + 0.5 * math.pi * i / segments
+            outline.append((cx + radius * math.cos(a), cy + radius * math.sin(a)))
+    return outline
+
+
+def _panel(x, y, w, h, radius, alpha=1.0, shadow=True):
+    """A bar's or a window's body: a soft shadow under it (windows), the view behind it blurred
+    (frosted glass), the graphite tint over that. Opaque graphite where there is no glass."""
+    import phantom_glass
+    s = _ui_scale()
+    if shadow:
+        phantom_glass.shadow(x, y, w, h, radius, SHADOW_SOFT * s, SHADOW_ALPHA * alpha,
+                             offset=SHADOW_OFFSET * s)
+    outline = _rounded_points(x, y, w, h, radius)
+    if phantom_glass.ready():
+        phantom_glass.glass(outline, (x + w / 2.0, y + h / 2.0), alpha)
+        color = GLASS_TINT
+    else:
+        color = BAR_COLOR
+    _draw('TRI_FAN', [(x + w / 2.0, y + h / 2.0)] + outline + [outline[0]],
+          (*color[:3], color[3] * alpha))
+    return outline
+
+
 def _rounded_rect(x, y, w, h, radius, color, segments=6):
     radius = max(0.0, min(radius, w / 2.0, h / 2.0))
     corners = ((x + w - radius, y + h - radius, 0.0), (x + radius, y + h - radius, 0.5 * math.pi),
@@ -1391,6 +1491,12 @@ def _item_active(context, key):
         index = int(key[4:])
         return index < len(slots) and slots[index] is not None and \
             slots[index] == quick_brushes.current_reference(context)
+    if key.startswith("TOOL:"):
+        tool = context.workspace.tools.from_space_view3d_mode('SCULPT', create=False)
+        return tool is not None and tool.idname == key[5:]
+    if key == 'TOOLS':
+        # Ctrl held: the mask brush stands in for the brush.
+        return _ctrl_masking()
     return False
 
 
@@ -1419,12 +1525,36 @@ def _draw_item(context, item, alpha, rise):
     brush = _brush(context)
     thumb = w * 0.78
     if key == 'TOOLS':
-        # The brush while a brush tool is on (as the Brush button showed), else the tools mark.
-        texture = _brush_texture(brush) if brush is not None and _brush_tool_on(context) else None
+        if _ctrl_masking():
+            # Ctrl is held: the brush it masks with (click to pick another).
+            entry = _mask_brush_entry()
+            texture = _catalog_texture(entry) if entry is not None else None
+        else:
+            # The brush while a brush tool is on (as the Brush button showed), else the tools mark.
+            texture = _brush_texture(brush) if brush is not None and _brush_tool_on(context) \
+                else None
         if texture is not None:
             _image(texture, cx - thumb / 2, cy - thumb / 2, thumb, thumb, a)
         else:
             _tools_icon(cx, cy, w * 0.3, a)
+    elif key.startswith("TOOL:"):
+        # A tool pinned here: its icon (the tool-bar's).
+        tool = _tool_def(context, key[5:])
+        drawn = False
+        if tool is not None and hasattr(bpy.types.WindowManager, "phantom_draw_icon_value"):
+            from bl_ui.space_toolsystem_common import ToolSelectPanelHelper
+            value = ToolSelectPanelHelper._icon_value_from_icon_handle(tool.icon)
+            if value:
+                # Tool icons draw at twice the size asked for, from the left and centered on the
+                # height asked for (the tool-bar's scaling): ask for half, from the left edge.
+                size = ICON_SIZE * s * 1.5
+                bpy.types.WindowManager.phantom_draw_icon_value(
+                    value, cx - size / 2, cy - size / 4, size / 2, alpha=min(max(a, 0.0), 1.0))
+                gpu.state.blend_set('ALPHA')
+                drawn = True
+        if not drawn:
+            label = (tool.label if tool is not None else key[5:].split(".")[-1])[:2]
+            _text_mid(cx, cy, label, 12 * s, (*TEXT_COLOR[:3], a))
     elif key == 'STROKE':
         _stroke_icon(cx, cy, w * 0.3, a)
     elif key in {'ALPHA', 'TEXTURE'}:
@@ -1632,7 +1762,7 @@ def _draw_card(context, lay, s):
     if g is None:
         return
     _value, fraction, text, active = ring_value(context, key)
-    points = _rounded_rect(*g["card"], BAR_CORNER * s, BAR_COLOR)
+    points = _panel(*g["card"], BAR_CORNER * s)
     _outline(points, OUTLINE_COLOR)
     # Dimmed like its ring when it does nothing (RGB Intensity with a sculpt brush).
     a = 1.0 if active else 0.45
@@ -1691,7 +1821,7 @@ def _draw_card_tooltip(context, g, s):
     cx, _cy, cw, _ch = g["card"]
     x = cx + cw + 12 * s if g["left_side"] else cx - 12 * s - width - 16 * s
     y = rect[1] + rect[3] / 2 - height / 2
-    _rounded_rect(x, y, width + 16 * s, height, 6 * s, TIP_COLOR)
+    _panel(x, y, width + 16 * s, height, 6 * s, shadow=False)
     _text(x + 8 * s, y + 7 * s, text, size, TEXT_COLOR, align='LEFT')
 
 
@@ -1782,8 +1912,9 @@ def _color_geometry(context, lay, s):
     count = len(palette.colors) if palette is not None else 0
     rows = min(SWATCH_ROWS, (count + 1 + SWATCH_COLUMNS - 1) // SWATCH_COLUMNS)
     inner = COLOR_INNER
-    # Unscaled heights, top to bottom: title, colors, wheel, hue/saturation/value, swatches, fill.
-    sections = [ROW, ROW, inner, 3 * SLIDER + 2 * 4,
+    # Unscaled heights, top to bottom: title, blend mode, colors, wheel, hue/saturation/value,
+    # swatches, fill.
+    sections = [ROW, ROW, ROW, inner, 3 * SLIDER + 2 * 4,
                 LABEL + rows * SWATCH + (rows - 1) * SWATCH_GAP, FILL_H]
     height = 2 * COLOR_PAD + sum(sections) + SECTION_GAP * (len(sections) - 1)
     # Smaller when the viewport is too short for it.
@@ -1803,6 +1934,9 @@ def _color_geometry(context, lay, s):
     g["buttons"] += [('PIN', (x0 + iw - 3 * b - 16 * u, top - b, b, b)),
                      ('SWITCH', (x0 + iw - 2 * b - 8 * u, top - b, b, b)),
                      ('EYEDROPPER', (x0 + iw - b, top - b, b, b))]
+    top -= (ROW + SECTION_GAP) * u
+    # How the color mixes with what is under it (the brush's blend mode).
+    g["buttons"].append(('BLEND', (x0, top - ROW * u, iw, ROW * u)))
     top -= (ROW + SECTION_GAP) * u
     # The two colors and the swap, the hex code on the right.
     g["buttons"] += [('PRIMARY', (x0, top - b, b, b)), ('SECONDARY', (x0 + b + 8 * u, top - b, b, b)),
@@ -1937,7 +2071,7 @@ def _draw_color_card(context, lay, s):
         return
     _color_sync(context)
     u = g["u"]
-    points = _rounded_rect(*g["card"], BAR_CORNER * s, BAR_COLOR)
+    points = _panel(*g["card"], BAR_CORNER * s)
     _outline(points, OUTLINE_COLOR)
     blf.size(0, 11 * u)
     lift = blf.dimensions(0, "Xg")[1] / 3
@@ -1964,7 +2098,7 @@ def _draw_color_card(context, lay, s):
         elif _color_card["hover"] == key:
             fill = HOVER_COLOR
         else:
-            fill = PILL_COLOR if key == 'FILL' else (0, 0, 0, 0)
+            fill = PILL_COLOR if key in {'FILL', 'BLEND'} else (0, 0, 0, 0)
         outline = _rounded_rect(x, y, w, h, 8 * u, fill)
         if (key == 'EYEDROPPER' and _color_card["picking"]) or \
                 (key == 'PIN' and _settings["color_pinned"]):
@@ -1979,6 +2113,14 @@ def _draw_color_card(context, lay, s):
             _draw_icon('EYEDROPPER', cx, cy, ICON_SIZE * u * 0.9, 0.92)
         elif key == 'SWAP':
             _draw_icon('ARROW_LEFTRIGHT', cx, cy, ICON_SIZE * u * 0.9, 0.92)
+        elif key == 'BLEND':
+            brush = _brush(context)
+            prop = brush.bl_rna.properties["blend"] if brush is not None else None
+            mode = next((i.name for i in prop.enum_items if i.identifier == brush.blend), "") \
+                if prop is not None else ""
+            _text(x + 10 * u, cy - lift, "Blend", 11 * u, DIM_TEXT_COLOR, align='LEFT')
+            _text(x + w - 28 * u, cy - lift, mode, 11 * u, TEXT_COLOR, align='RIGHT')
+            _draw_icon('DOWNARROW_HLT', x + w - 14 * u, cy, ICON_SIZE * u * 0.7, 0.7)
         elif key == 'FILL':
             label = "Fill Object"
             blf.size(0, 11 * u)
@@ -2157,7 +2299,8 @@ def _mat_geometry(context, lay, s):
     tile_w, tile_h, tile_gap = MAT_TILE * s, (MAT_TILE + MAT_LABEL) * s, MAT_TILE_GAP * s
     grid_w = MAT_COLUMNS * tile_w + (MAT_COLUMNS - 1) * tile_gap
     w = pad + left_w + MAT_SPLIT * s + grid_w + pad
-    left_h = MAT_CURRENT * s + gap + len(kinds) * (MAT_ROW + MAT_ROW_GAP) * s
+    left_h = (MAT_CURRENT * s + gap + 2 * (MAT_ROW + MAT_ROW_GAP) * s + gap +
+              len(kinds) * (MAT_ROW + MAT_ROW_GAP) * s)
     h = pad + MAT_TITLE * s + gap + max(left_h, MAT_MIN_GRID * s) + pad
     h = min(h, region.height - 2 * BAR_MARGIN * s)
     left_side = item.x < region.width / 2
@@ -2172,6 +2315,13 @@ def _mat_geometry(context, lay, s):
     lx = x + pad
     g["current"] = (lx, top - MAT_CURRENT * s, left_w, MAT_CURRENT * s)
     ky = top - MAT_CURRENT * s - gap
+    # Apply to: All / Active / Chosen, then what that is (the active object, the chosen ones).
+    seg_w = left_w / len(MAT_APPLY)
+    g["apply"] = [(key, label, (lx + i * seg_w, ky - MAT_ROW * s, seg_w, MAT_ROW * s))
+                  for i, (key, label) in enumerate(MAT_APPLY)]
+    ky -= (MAT_ROW + MAT_ROW_GAP) * s
+    g["target"] = (lx, ky - MAT_ROW * s, left_w, MAT_ROW * s)
+    ky -= (MAT_ROW + MAT_ROW_GAP) * s + gap
     for kind, count in kinds:
         g["kinds"].append((kind, count, (lx, ky - MAT_ROW * s, left_w, MAT_ROW * s)))
         ky -= (MAT_ROW + MAT_ROW_GAP) * s
@@ -2195,6 +2345,11 @@ def _mat_geometry(context, lay, s):
 def _mat_target(g, mx, my):
     if _in_rect(g["search"], mx, my):
         return ('SEARCH', None)
+    for key, _label, rect in g["apply"]:
+        if _in_rect(rect, mx, my):
+            return ('APPLY', key)
+    if _in_rect(g["target"], mx, my) and _mat_targets["apply"] == 'CHOSEN':
+        return ('CHOOSE', None)
     for kind, _count, rect in g["kinds"]:
         if _in_rect(rect, mx, my):
             return ('KIND', kind)
@@ -2206,6 +2361,60 @@ def _mat_target(g, mx, my):
     return None
 
 
+def _mat_objects(context):
+    """The objects a picked matcap goes to (None: the viewport's matcap, every object)."""
+    mode = _mat_targets["apply"]
+    if mode == 'ACTIVE':
+        ob = context.view_layer.objects.active
+        return [ob] if ob is not None else []
+    if mode == 'CHOSEN':
+        objects = context.view_layer.objects
+        return [objects[name] for name in _mat_targets["chosen"] if name in objects]
+    return None
+
+
+def _mat_current(context):
+    """The matcap shown as in use: the viewport's, or the first target object's own."""
+    shading = context.space_data.shading
+    viewport = shading.studio_light if shading.type == 'SOLID' and shading.light == 'MATCAP' else ""
+    objects = _mat_objects(context)
+    if objects:
+        own = objects[0].get("phantom_matcap")
+        if isinstance(own, str) and own:
+            return own
+    return viewport
+
+
+def _mat_apply(context, name):
+    """Use matcap `name`: in the viewport, or on the target objects only."""
+    shading = context.space_data.shading
+    # Matcaps show in Solid shading with Matcap lighting: switch there if need be.
+    if shading.type != 'SOLID' or shading.light != 'MATCAP':
+        shading.type = 'SOLID'
+        shading.light = 'MATCAP'
+    objects = _mat_objects(context)
+    if objects is None:
+        shading.studio_light = name
+        return
+    for ob in objects:
+        ob["phantom_matcap"] = name
+        ob.update_tag()
+    bpy.ops.ed.undo_push(message="Apply Matcap")
+
+
+def _mat_target_label(context):
+    mode = _mat_targets["apply"]
+    if mode == 'ACTIVE':
+        ob = context.view_layer.objects.active
+        return (ob.name if ob is not None else "No active object"), ob is not None
+    if mode == 'CHOSEN':
+        count = len(_mat_objects(context))
+        if not count:
+            return "Choose objects", True
+        return (f"{count} object" + ("s" if count != 1 else "")), True
+    return "Every object", False
+
+
 def _draw_mat_card(context, lay, s):
     if not _mat["open"]:
         return
@@ -2213,9 +2422,8 @@ def _draw_mat_card(context, lay, s):
     if g is None:
         return
     region = context.region
-    shading = context.space_data.shading
-    current = shading.studio_light if shading.type == 'SOLID' and shading.light == 'MATCAP' else ""
-    points = _rounded_rect(*g["card"], BAR_CORNER * s, BAR_COLOR)
+    current = _mat_current(context)
+    points = _panel(*g["card"], BAR_CORNER * s)
     _outline(points, OUTLINE_COLOR)
     _text_mid(g["title"][0], g["title"][1], "Materials", 13 * s, TEXT_COLOR, align='LEFT')
 
@@ -2231,6 +2439,28 @@ def _draw_mat_card(context, lay, s):
              (1.0, 1.0, 1.0, 0.25))
     label = _matcap_label(current) if current else "Not Solid shading"
     _text_mid(x + w / 2, y + 16 * s, _fit(label, 12 * s, w - 16 * s), 12 * s, TEXT_COLOR)
+
+    # Apply to: a segmented control, the choice a surface step with the accent outline.
+    x0, y0 = g["apply"][0][2][0], g["apply"][0][2][1]
+    _rounded_rect(x0, y0, g["target"][2], MAT_ROW * s, 8 * s, PILL_COLOR)
+    for key, text, (x, y, w, h) in g["apply"]:
+        chosen = key == _mat_targets["apply"]
+        if chosen or _mat["hover"] == ('APPLY', key):
+            outline = _rounded_rect(x + 2 * s, y + 2 * s, w - 4 * s, h - 4 * s, 6 * s,
+                                    PRESS_COLOR if chosen else HOVER_COLOR)
+            if chosen:
+                _outline(outline, ACCENT, max(1.0, s))
+        _text_mid(x + w / 2, y + h / 2, text, 11 * s, TEXT_COLOR if chosen else PILL_TEXT_COLOR)
+    # What it goes to: the chosen objects open a list to pick them.
+    x, y, w, h = g["target"]
+    text, strong = _mat_target_label(context)
+    choose = _mat_targets["apply"] == 'CHOSEN'
+    if choose:
+        _rounded_rect(x, y, w, h, 8 * s, HOVER_COLOR if _mat["hover"] == ('CHOOSE', None)
+                      else PILL_COLOR)
+        _draw_icon('RIGHTARROW_THIN', x + w - 14 * s, y + h / 2, ICON_SIZE * s * 0.7, 0.7)
+    _text_mid(x + 12 * s, y + h / 2, _fit(text, 11 * s, w - 36 * s), 11 * s,
+              TEXT_COLOR if strong else DIM_TEXT_COLOR, align='LEFT')
 
     # The kinds: the one shown gets a surface step and the accent mark (a search shows them all).
     searching = bool(_mat["search"].strip())
@@ -2319,42 +2549,83 @@ def _close_mat_card(context):
 # The brush strip: every sculpt brush of the asset libraries in a row above the bottom toolbar,
 # from the quick brushes' +. Picking one adds it to the quick brushes.
 
-def _strip_geometry(context, lay, s):
-    bottom = next((b for b in lay.bars if b[0] == 2), None)
-    if bottom is None:
-        return None
+def _strip_entries():
+    """The brushes the browser shows: every sculpt brush, or the mask brushes; the search filters
+    them by name."""
     import phantom_brush_catalog
+    entries = phantom_brush_catalog.entries() or []
+    if _strip["mask"]:
+        entries = [e for e in entries if e.get("brush_type") == 'MASK']
+    search = _strip["search"].strip().lower()
+    if search:
+        entries = [e for e in entries if search in e["name"].lower()]
+    return entries
+
+
+def _strip_geometry(context, lay, s):
+    """The browser fills the viewport between the toolbars: header on top, the grid under it."""
     region = context.region
-    entries = phantom_brush_catalog.entries()
-    pad = STRIP_PAD * s
-    tile_w, tile_h, gap = STRIP_TILE * s, (STRIP_TILE + STRIP_LABEL) * s, STRIP_GAP * s
+    bottom = next((b for b in lay.bars if b[0] == 2), None)
     left, right = side_reserve(context.area, region)
-    available = region.width - left - right - 2 * BAR_MARGIN * s
-    count = len(entries) if entries else 0
-    content = count * tile_w + max(0, count - 1) * gap
-    w = min(available, max(content, STRIP_MIN_W * s) + 2 * pad)
-    h = pad + STRIP_HEADER * s + STRIP_GAP * s + tile_h + pad
-    x = left + BAR_MARGIN * s + (available - w) / 2
-    y = bottom[2] + bottom[4] + STRIP_ABOVE * s
-    g = {"card": (x, y, w, h), "tiles": [], "entries": entries}
-    g["title"] = (x + pad, y + h - pad - STRIP_HEADER * s / 2)
-    row = (x + pad, y + pad, w - 2 * pad, tile_h)
-    g["row"] = row
-    g["scroll_max"] = max(0.0, content - row[2])
+    x = left + STRIP_AROUND * s
+    w = region.width - right - STRIP_AROUND * s - x
+    y = (bottom[2] + bottom[4] if bottom is not None else 0) + STRIP_AROUND * s
+    h = region.height - STRIP_TOP * s - y
+    if w < 200 * s or h < 200 * s:
+        return None
+    pad = STRIP_PAD * s
+    entries = _strip_entries()
+    g = {"card": (x, y, w, h), "tiles": [], "entries": entries, "shapes": []}
+    top = y + h - pad
+    g["title"] = (x + pad, top - STRIP_HEADER * s / 2)
+    g["search"] = (x + w - pad - STRIP_SEARCH_W * s, top - STRIP_HEADER * s, STRIP_SEARCH_W * s,
+                   STRIP_HEADER * s)
+    if _strip["mask"]:
+        # Ctrl-drag off the mesh: the mask shape, as pills after the title.
+        sx = x + pad + 140 * s
+        for identifier, label, _desc, _icon in _mask_shapes():
+            pw = 72 * s
+            g["shapes"].append((identifier, label, (sx, top - STRIP_HEADER * s, pw,
+                                                    STRIP_HEADER * s)))
+            sx += pw + STRIP_GAP * s
+    grid_top = top - (STRIP_HEADER + STRIP_HEADER_GAP) * s
+    grid = (x + pad, y + pad, w - 2 * pad, grid_top - (y + pad))
+    g["grid"] = grid
+    tile_w, tile_h, gap = STRIP_TILE * s, (STRIP_TILE + STRIP_LABEL) * s, STRIP_GAP * s
+    columns = max(1, int((grid[2] + gap) // (tile_w + gap)))
+    # Centered: the room left over goes either side.
+    gx = grid[0] + (grid[2] - (columns * tile_w + (columns - 1) * gap)) / 2
+    rows = (len(entries) + columns - 1) // columns
+    content = rows * tile_h + max(0, rows - 1) * gap
+    g["scroll_max"] = max(0.0, content - grid[3])
     _strip["scroll"] = min(max(_strip["scroll"], 0.0), g["scroll_max"])
-    for i, entry in enumerate(entries or ()):
-        tx = row[0] + i * (tile_w + gap) - _strip["scroll"]
-        g["tiles"].append((i, (tx, row[1], tile_w, tile_h)))
+    for i in range(len(entries)):
+        row, col = divmod(i, columns)
+        ty = grid_top - (row + 1) * tile_h - row * gap + _strip["scroll"]
+        g["tiles"].append((i, (gx + col * (tile_w + gap), ty, tile_w, tile_h)))
     return g
 
 
+def _mask_shapes():
+    try:
+        import phantom_mask_bar
+        return phantom_mask_bar.MASK_SHAPES
+    except (ImportError, AttributeError):
+        return ()
+
+
 def _strip_target(g, mx, my):
-    if not _in_rect(g["row"], mx, my):
+    if _in_rect(g["search"], mx, my):
+        return ('SEARCH', None)
+    for identifier, _label, rect in g["shapes"]:
+        if _in_rect(rect, mx, my):
+            return ('SHAPE', identifier)
+    if not _in_rect(g["grid"], mx, my):
         return None
     for i, rect in g["tiles"]:
         if _in_rect(rect, mx, my):
-            return i
-    return None
+            return ('TILE', i)
+    return ('GRID', None)
 
 
 def _draw_strip(context, lay, s):
@@ -2366,37 +2637,73 @@ def _draw_strip(context, lay, s):
     import phantom_brush_catalog
     import phantom_quick_brushes as quick_brushes
     region = context.region
-    points = _rounded_rect(*g["card"], BAR_CORNER * s, BAR_COLOR)
+    points = _panel(*g["card"], BAR_CORNER * s)
     _outline(points, OUTLINE_COLOR)
     tx, ty = g["title"]
-    _text_mid(tx, ty, "Brushes", 13 * s, TEXT_COLOR, align='LEFT')
-    x, y, w, h = g["card"]
-    hint = "Pick one to add it to the quick brushes"
+    _text_mid(tx, ty, "Mask Brushes" if _strip["mask"] else "Brushes", 13 * s, TEXT_COLOR,
+              align='LEFT')
+    # Mask shapes (Ctrl-drag off the mesh).
+    try:
+        import phantom_mask_bar
+        shape_now = phantom_mask_bar._settings["mask_shape"]
+    except (ImportError, AttributeError, KeyError):
+        shape_now = None
+    for identifier, label, (x, y, w, h) in g["shapes"]:
+        on = identifier == shape_now
+        hovered = _strip["hover"] == ('SHAPE', identifier)
+        outline = _rounded_rect(x, y, w, h, 8 * s, HOVER_COLOR if hovered else PILL_COLOR)
+        if on:
+            _outline(outline, ACCENT, max(1.5, 1.5 * s))
+        _text_mid(x + w / 2, y + h / 2, label, 11 * s, TEXT_COLOR if on else PILL_TEXT_COLOR)
+    # The search field.
+    x, y, w, h = g["search"]
+    outline = _rounded_rect(x, y, w, h, 8 * s, PILL_COLOR)
+    if _strip["focus"]:
+        _outline(outline, ACCENT, max(1.5, 1.5 * s))
+    _draw_icon('VIEWZOOM', x + 16 * s, y + h / 2, ICON_SIZE * s * 0.85, 0.6)
+    text = _strip["search"]
+    width = 0.0
+    if text:
+        width, _h = _text_mid(x + 32 * s, y + h / 2, _fit(text, 12 * s, w - 48 * s), 12 * s,
+                              TEXT_COLOR, align='LEFT')
+    else:
+        _text_mid(x + 32 * s, y + h / 2, "Search", 12 * s, DIM_TEXT_COLOR, align='LEFT')
+    if _strip["focus"]:
+        cx = x + 32 * s + width + 1 * s
+        _line(cx, y + 9 * s, cx, y + h - 9 * s, TEXT_COLOR, max(1.0, s))
     if phantom_brush_catalog.reading():
-        hint = "Reading the brush libraries…"
-    _text_mid(x + w - STRIP_PAD * s, ty, hint, 11 * s, DIM_TEXT_COLOR, align='RIGHT')
+        _text_mid(x - 16 * s, y + h / 2, "Reading the brush libraries\u2026", 11 * s,
+                  DIM_TEXT_COLOR, align='RIGHT')
+
     entries = g["entries"]
+    grid = g["grid"]
     if not entries:
-        rx, ry, rw, rh = g["row"]
-        _text_mid(rx + rw / 2, ry + rh / 2, "No brushes yet" if not phantom_brush_catalog.reading()
-                  else "One moment", 12 * s, DIM_TEXT_COLOR)
+        _text_mid(grid[0] + grid[2] / 2, grid[1] + grid[3] - 24 * s,
+                  "No brushes match" if _strip["search"].strip() else
+                  ("No mask brushes" if _strip["mask"] else "One moment"), 12 * s,
+                  DIM_TEXT_COLOR)
         return
-    current = quick_brushes.current_reference(context)
-    slots = [slot for slot in quick_brushes.slots() if slot]
-    in_slots = {(sl["type"], sl["identifier"], sl["relative"].replace("\\", "/")) for sl in slots}
-    with _clip(region, g["row"]):
+    if _strip["mask"]:
+        chosen = _mask_brush_entry()
+        current = (chosen["type"], chosen["identifier"], chosen["relative"]) if chosen else None
+    else:
+        ref = quick_brushes.current_reference(context)
+        current = (ref["type"], ref["identifier"], ref["relative"].replace("\\", "/")) \
+            if ref else None
+    in_slots = {(sl["type"], sl["identifier"], sl["relative"].replace("\\", "/"))
+                for sl in quick_brushes.slots() if sl}
+    with _clip(region, grid):
         for i, (x, y, w, h) in g["tiles"]:
-            if x > g["row"][0] + g["row"][2] or x + w < g["row"][0]:
+            if y > grid[1] + grid[3] or y + h < grid[1]:
                 continue
             entry = entries[i]
             ref = (entry["type"], entry["identifier"], entry["relative"])
-            active = current is not None and (current["type"], current["identifier"],
-                                              current["relative"].replace("\\", "/")) == ref
-            if _strip["hover"] == i or _strip["pressed"] == i:
-                _rounded_rect(x, y, w, h, 10 * s, PRESS_COLOR if _strip["pressed"] == i
-                              else HOVER_COLOR)
-            size = STRIP_TILE * s - 12 * s
-            ix, iy = x + (w - size) / 2, y + h - 6 * s - size
+            active = ref == current
+            if _strip["hover"] == ('TILE', i) or _strip["pressed"] == ('TILE', i) or active:
+                _rounded_rect(x, y, w, h, 10 * s, PRESS_COLOR if active or
+                              _strip["pressed"] == ('TILE', i) else HOVER_COLOR)
+            size = STRIP_TILE * s - 16 * s
+            ix, iy = x + (w - size) / 2, y + h - 8 * s - size
             texture = _catalog_texture(entry)
             if texture is not None:
                 _image(texture, ix, iy, size, size, 1.0)
@@ -2405,31 +2712,32 @@ def _draw_strip(context, lay, s):
             if active:
                 outline = _rounded_rect(x, y, w, h, 10 * s, (0, 0, 0, 0))
                 _outline(outline, ACCENT, max(1.5, 1.5 * s))
-            if ref in in_slots:
+            if not _strip["mask"] and ref in in_slots:
                 # Already a quick brush: a small dot in the corner.
-                _disc(x + w - 8 * s, y + h - 8 * s, 3 * s, ACCENT)
+                _disc(x + w - 9 * s, y + h - 9 * s, 3 * s, ACCENT)
             _text_mid(x + w / 2, y + STRIP_LABEL * s / 2 + 2 * s,
                       _fit(entry["name"], 11 * s, w - 6 * s), 11 * s,
                       TEXT_COLOR if active else PILL_TEXT_COLOR)
-    # Soft ends when there is more to scroll to.
-    rx, ry, rw, rh = g["row"]
-    if _strip["scroll"] > 0:
-        _draw_smooth('TRIS', [(rx, ry), (rx + 24 * s, ry), (rx + 24 * s, ry + rh),
-                              (rx, ry), (rx + 24 * s, ry + rh), (rx, ry + rh)],
-                     [BAR_COLOR, (*BAR_COLOR[:3], 0.0), (*BAR_COLOR[:3], 0.0),
-                      BAR_COLOR, (*BAR_COLOR[:3], 0.0), BAR_COLOR])
-    if _strip["scroll"] < g["scroll_max"]:
-        ex = rx + rw
-        _draw_smooth('TRIS', [(ex - 24 * s, ry), (ex, ry), (ex, ry + rh),
-                              (ex - 24 * s, ry), (ex, ry + rh), (ex - 24 * s, ry + rh)],
-                     [(*BAR_COLOR[:3], 0.0), BAR_COLOR, BAR_COLOR,
-                      (*BAR_COLOR[:3], 0.0), BAR_COLOR, (*BAR_COLOR[:3], 0.0)])
+    if g["scroll_max"] > 0:
+        gx, gy, gw, gh = grid
+        content = gh + g["scroll_max"]
+        bar_h = max(24 * s, gh * gh / content)
+        by = gy + gh - bar_h - (gh - bar_h) * _strip["scroll"] / g["scroll_max"]
+        _rounded_rect(gx + gw + 5 * s, by, 3 * s, bar_h, 1.5 * s, (1.0, 1.0, 1.0, 0.18))
 
 
 def _close_strip(context):
-    _strip.update(open=False, hover=None, pressed=None, drag=None)
+    _strip.update(open=False, hover=None, pressed=None, drag=None, focus=False)
     if context.area is not None:
         context.area.tag_redraw()
+
+
+def _strip_pick_mask(entry):
+    """Ctrl masks with this brush from now on."""
+    _settings["mask_brush"] = {"type": entry["type"], "identifier": entry["identifier"],
+                               "relative": entry["relative"]}
+    _save_settings()
+    _apply_mask_brush()
 
 
 def _strip_pick(context, entry):
@@ -2489,7 +2797,7 @@ def _draw_place_card(context, lay, s):
         return
     import phantom_transpose
     mode = phantom_transpose._settings["mode"]
-    points = _rounded_rect(*g["card"], BAR_CORNER * s, BAR_COLOR)
+    points = _panel(*g["card"], BAR_CORNER * s)
     _outline(points, OUTLINE_COLOR)
     for option, label, rect in g["pills"]:
         x, y, w, h = rect
@@ -2621,12 +2929,20 @@ def _draw_tooltip(context, lay, s):
     else:
         x = item.x - 14 * s - width - 16 * s
         y = item.y + item.h / 2 - height / 2
-    _rounded_rect(x, y, width + 16 * s, height, 6 * s, TIP_COLOR)
+    _panel(x, y, width + 16 * s, height, 6 * s, shadow=False)
     _text(x + 8 * s, y + 7 * s, text, size, TEXT_COLOR, align='LEFT')
 
 
 def _tooltip(context, key):
     brush = _brush(context)
+    if key == 'TOOLS' and _ctrl_masking():
+        entry = _mask_brush_entry()
+        return (f"Mask brush (Ctrl): {entry['name'] if entry else 'Mask'}. Click to pick the brush "
+                "Ctrl masks with")
+    if key.startswith("TOOL:"):
+        tool = _tool_def(context, key[5:])
+        name = tool.label if tool is not None else key[5:]
+        return f"{name}. Right-click to take it off the toolbar"
     if key.startswith("SLOT"):
         import phantom_quick_brushes as quick_brushes
         slots = quick_brushes.slots()
@@ -2669,8 +2985,7 @@ def draw_callback():
         if p <= 0.0:
             continue
         dx, dy = _slide(bar, x, y, w, h, W, p)
-        points = _rounded_rect(x + dx, y + dy, w, h, BAR_CORNER * s,
-                               (*BAR_COLOR[:3], BAR_COLOR[3] * min(1.0, p * 1.5)))
+        points = _panel(x + dx, y + dy, w, h, BAR_CORNER * s, min(1.0, p * 1.5), shadow=False)
         _outline(points, (*OUTLINE_COLOR[:3], OUTLINE_COLOR[3] * p))
     for bar, x0, y0, x1, y1 in lay.dividers:
         p = _progress(bar)
@@ -2684,13 +2999,78 @@ def draw_callback():
         dx, dy = _slide(item.bar, item.x, item.y, item.w, item.h, W, p_bar)
         moved = Item(item.key, item.bar, item.index, item.x + dx, item.y + dy, item.w, item.h)
         _draw_item(context, moved, p_item, -(1.0 - p_item) * 8 * s)
-    _draw_card(context, lay, s)
-    _draw_color_card(context, lay, s)
-    _draw_mat_card(context, lay, s)
-    _draw_strip(context, lay, s)
-    _draw_place_card(context, lay, s)
+    # Each window pops out of its button as it opens (#_pop).
+    ring = _scrub["key"] or _card["key"]
+    with _pop('RING', bool(ring), _item_center(lay, ring, region)):
+        _draw_card(context, lay, s)
+    with _pop('COLOR', _color_card["open"], _item_center(lay, 'COLOR', region)):
+        _draw_color_card(context, lay, s)
+    with _pop('MATCAP', _mat["open"], _item_center(lay, 'MATCAP', region)):
+        _draw_mat_card(context, lay, s)
+    with _pop('STRIP', _strip["open"],
+              _item_center(lay, 'TOOLS' if _strip["mask"] else 'ADD_SLOT', region)):
+        _draw_strip(context, lay, s)
+    with _pop('PLACE', _place["object"] is not None, (region.width / 2, 0.0)):
+        _draw_place_card(context, lay, s)
     _draw_tooltip(context, lay, s)
     gpu.state.blend_set('NONE')
+
+
+# Windows popping out of their button: how long it takes, and how small they start.
+POP_TIME = 0.18
+POP_FROM = 0.9
+_pops = {}
+_pop_redraw = {"queued": False}
+
+
+def _item_center(lay, key, region):
+    item = next((i for i in lay.items if i.key == key), None) if key else None
+    if item is None:
+        return (region.width / 2, region.height / 2)
+    return (item.x + item.w / 2, item.y + item.h / 2)
+
+
+def _pop_redraw_tick():
+    _pop_redraw["queued"] = False
+    _redraw_simple()
+    return None
+
+
+@contextlib.contextmanager
+def _pop(name, is_open, origin):
+    """Draw a window growing out of `origin` (its button) for a moment after it opens: from
+    POP_FROM of its size to all of it, easing out."""
+    state = _pops.setdefault(name, {"open": False, "start": 0.0})
+    now = time.perf_counter()
+    if is_open and not state["open"]:
+        state["start"] = now
+    state["open"] = is_open
+    t = (now - state["start"]) / POP_TIME if is_open else 1.0
+    if t >= 1.0:
+        yield
+        return
+    ease = 1.0 - (1.0 - max(t, 0.0)) ** 3
+    scale = POP_FROM + (1.0 - POP_FROM) * ease
+    ox, oy = origin
+    with gpu.matrix.push_pop():
+        gpu.matrix.translate((ox, oy))
+        gpu.matrix.scale((scale, scale))
+        gpu.matrix.translate((-ox, -oy))
+        yield
+    if not _pop_redraw["queued"]:
+        _pop_redraw["queued"] = True
+        bpy.app.timers.register(_pop_redraw_tick, first_interval=1.0 / 120.0)
+
+
+def glass_prepare_callback():
+    """Before any overlay of the simple view draws (all of them, in every module): what is behind
+    the bars and windows, blurred once for all of them (frosted glass, #_panel)."""
+    import phantom_glass
+    context = bpy.context
+    if _drawable(context) and context.region.width >= 200 and context.region.height >= 200:
+        phantom_glass.prepare(context.region)
+    else:
+        phantom_glass.unprepare()
 
 
 def _slide(bar, x, y, w, h, W, p):
@@ -2762,7 +3142,7 @@ def _call_panel(name):
 
 
 @contextlib.contextmanager
-def _beside(context, key):
+def _beside(context, key, centered=None):
     """Popups opened meanwhile pop out beside the button's toolbar (to the right of the left one,
     to the left of the right one, above the bottom one), not over it."""
     wm = context.window_manager
@@ -2779,9 +3159,15 @@ def _beside(context, key):
         rect, side = (item.x, y, item.x + item.w, y + h), 'UP'
     else:
         rect, side = (x, item.y, x + w, item.y + item.h), 'RIGHT' if x < region.width / 2 else 'LEFT'
+    if centered is None:
+        centered = CENTERED_POPUPS.get(key, False)
+    if centered == 'VIEW':
+        # Tall windows sit centered on the viewport's height, beside the toolbar.
+        rect = (rect[0], 0, rect[2], region.height)
     # In the toolbars' style too (graphite panel, hairlines, the orange accent), like the ring card.
+    extra = {"centered": True} if centered else {}
     wm.phantom_popup_anchor_set(*(int(v) + (region.x if i % 2 == 0 else region.y)
-                                  for i, v in enumerate(rect)), side, simple_style=True)
+                                  for i, v in enumerate(rect)), side, simple_style=True, **extra)
     try:
         yield
     finally:
@@ -2829,7 +3215,16 @@ def _perform(context, key):
     space = context.space_data
     ob = context.active_object
     if key == 'TOOLS':
-        _call_panel(VIEW3D_PT_phantom_simple_tools.__name__)
+        if _ctrl_masking():
+            # Ctrl held: pick the brush Ctrl masks with.
+            bpy.ops.view3d.phantom_simple_brush_strip('INVOKE_DEFAULT', mask=True)
+        else:
+            _call_panel(VIEW3D_PT_phantom_simple_tools.__name__)
+    elif key.startswith("TOOL:"):
+        bpy.ops.wm.tool_set_by_id(name=key[5:])
+    elif key == 'ALPHA' and context.mode == 'SCULPT':
+        # The simple view's own: the alphas, large and centered, then how the alpha maps.
+        _call_panel(VIEW3D_PT_phantom_simple_alpha.__name__)
     elif key in {'STROKE', 'ALPHA'}:
         bpy.ops.paint.phantom_brush_slot(slot=key)
     elif key == 'MATCAP':
@@ -2885,10 +3280,14 @@ def _perform(context, key):
 
 
 def _has_options(key):
-    return key in OPTIONS or key.startswith("SLOT")
+    return key in OPTIONS or key.startswith(("SLOT", "TOOL:"))
 
 
 def _open_options(context, key):
+    if key.startswith("TOOL:"):
+        # Right-click a pinned tool: off the toolbar.
+        _pin_tool(key[5:], False)
+        return
     if key.startswith("SLOT"):
         _slot_menu["slot"] = int(key[4:])
         bpy.ops.wm.call_menu(name=VIEW3D_MT_phantom_simple_slot.__name__)
@@ -3224,7 +3623,25 @@ class VIEW3D_OT_phantom_simple_color_card(Operator):
         _redraw_simple()
 
     def _act(self, context, target):
-        if target == 'PIN':
+        if target == 'BLEND':
+            # The blend modes, beside the card, in its style.
+            g = _color_geometry(context, Layout(context, context.area, context.region), _ui_scale())
+            rect = next(r for k, r in g["buttons"] if k == 'BLEND')
+            wm = context.window_manager
+            region = context.region
+            if hasattr(wm, "phantom_popup_anchor_set"):
+                # Beside the card, level with the Blend button.
+                x, y, _w, h = rect
+                w = g["card"][0] + g["card"][2] - x
+                wm.phantom_popup_anchor_set(int(region.x + x), int(region.y + y),
+                                            int(region.x + x + w), int(region.y + y + h),
+                                            'RIGHT', simple_style=True)
+            try:
+                bpy.ops.wm.call_menu(name=VIEW3D_MT_phantom_simple_blend.__name__)
+            finally:
+                if hasattr(wm, "phantom_popup_anchor_set"):
+                    wm.phantom_popup_anchor_set(0, 0, 0, 0, 'NONE')
+        elif target == 'PIN':
             _set_setting("color_pinned", not _settings["color_pinned"])
         elif target == 'SWITCH':
             _set_setting("color_shape", 'TRIANGLE' if _settings["color_shape"] == 'SQUARE' else 'SQUARE')
@@ -3284,8 +3701,9 @@ class VIEW3D_OT_phantom_simple_color_card(Operator):
                     # The eyedropper: the color of the mesh under the cursor.
                     _color_card["picking"] = False
                     try:
-                        bpy.ops.sculpt.sample_color('INVOKE_DEFAULT')
-                    except RuntimeError as ex:
+                        # (Any mesh's color, like C: `paint.sample_color`.)
+                        bpy.ops.paint.sample_color('INVOKE_DEFAULT', merged=False)
+                    except (RuntimeError, AttributeError) as ex:
                         self.report({'WARNING'}, str(ex).replace("Error: ", "").strip())
                     _color_card["linear"] = None
                     _redraw_simple()
@@ -3337,6 +3755,96 @@ class VIEW3D_OT_phantom_simple_color_card(Operator):
         if event.type.startswith('WHEEL') and inside:
             return {'RUNNING_MODAL'}
         return {'PASS_THROUGH'}
+
+
+def _open_mat_objects(context, g):
+    """The list of meshes to choose from, beside the Materials card."""
+    wm = context.window_manager
+    region = context.region
+    x, y, w, h = g["card"]
+    tx, ty, tw, th = g["target"]
+    anchor = hasattr(wm, "phantom_popup_anchor_set")
+    if anchor:
+        left = x < region.width / 2
+        wm.phantom_popup_anchor_set(int(region.x + x), int(region.y + ty), int(region.x + x + w),
+                                    int(region.y + ty + th), 'RIGHT' if left else 'LEFT',
+                                    simple_style=True, centered=True)
+    try:
+        bpy.ops.wm.call_panel(name=VIEW3D_PT_phantom_simple_mat_objects.__name__, keep_open=True)
+    finally:
+        if anchor:
+            wm.phantom_popup_anchor_set(0, 0, 0, 0, 'NONE')
+
+
+class VIEW3D_OT_phantom_simple_mat_choose(Operator):
+    """Choose this object for the matcaps picked on the Materials card (or not)"""
+    bl_idname = "view3d.phantom_simple_mat_choose"
+    bl_label = "Choose Object"
+    bl_options = {'INTERNAL'}
+
+    name: StringProperty(options={'SKIP_SAVE'})
+    action: EnumProperty(items=(('TOGGLE', "Toggle", ""), ('SELECTED', "Selected", ""),
+                                ('NONE', "None", "")), options={'SKIP_SAVE'})
+
+    def execute(self, context):
+        chosen = list(_mat_targets["chosen"])
+        if self.action == 'SELECTED':
+            chosen = [ob.name for ob in context.selected_objects if ob.type == 'MESH']
+        elif self.action == 'NONE':
+            chosen = []
+        elif self.name in chosen:
+            chosen.remove(self.name)
+        else:
+            chosen.append(self.name)
+        _mat_targets["chosen"] = chosen
+        _redraw_simple()
+        return {'FINISHED'}
+
+
+class VIEW3D_PT_phantom_simple_mat_objects(Panel):
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'WINDOW'
+    bl_label = "Apply To"
+    bl_ui_units_x = 12
+
+    def draw(self, context):
+        layout = self.layout
+        layout.label(text="Apply To")
+        row = layout.row(align=True)
+        row.scale_y = 1.2
+        op = VIEW3D_OT_phantom_simple_mat_choose.bl_idname
+        row.operator(op, text="Selected").action = 'SELECTED'
+        row.operator(op, text="None").action = 'NONE'
+        layout.separator()
+        meshes = sum(1 for ob in context.view_layer.objects if ob.type == 'MESH')
+        # Up to SCENE_ROWS rows, then it scrolls (as the Scene window).
+        rows = max(1, min(meshes, SCENE_ROWS))
+        layout.template_list(VIEW3D_UL_phantom_simple_mat_objects.__name__, "",
+                             context.view_layer, "objects", context.window_manager,
+                             "phantom_simple_mat_index", rows=rows, maxrows=rows, sort_lock=True)
+
+
+class VIEW3D_UL_phantom_simple_mat_objects(UIList):
+    """The meshes, each with a check: chosen for the Materials card's matcaps or not"""
+
+    def filter_items(self, context, data, propname):
+        objects = getattr(data, propname)
+        flags = [self.bitflag_filter_item if ob.type == 'MESH' else 0 for ob in objects]
+        return flags, []
+
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index=0):
+        # Left-aligned like the Scene window's rows; clicking the row toggles it
+        # (#_mat_index_set).
+        on = item.name in _mat_targets["chosen"]
+        layout.label(text=item.name, icon='CHECKBOX_HLT' if on else 'CHECKBOX_DEHLT',
+                     translate=False)
+
+
+def _mat_index_set(_self, value):
+    """Clicking a row of the objects list: chosen or not."""
+    objects = bpy.context.view_layer.objects
+    if 0 <= value < len(objects) and objects[value].type == 'MESH':
+        bpy.ops.view3d.phantom_simple_mat_choose(name=objects[value].name)
 
 
 class VIEW3D_OT_phantom_simple_matcap_card(Operator):
@@ -3409,7 +3917,8 @@ class VIEW3D_OT_phantom_simple_matcap_card(Operator):
                 _mat["scroll"] = drag[1] + (my - drag[0])
                 context.area.tag_redraw()
                 return {'RUNNING_MODAL'}
-            hover = target if target and target[0] in {'KIND', 'TILE'} else None
+            hover = target if target and target[0] in {'KIND', 'TILE', 'APPLY', 'CHOOSE'} \
+                else None
             if hover != _mat["hover"]:
                 _mat["hover"] = hover
                 context.area.tag_redraw()
@@ -3429,7 +3938,7 @@ class VIEW3D_OT_phantom_simple_matcap_card(Operator):
                     return {'FINISHED'}
                 return {'FINISHED', 'PASS_THROUGH'}
             _mat["focus"] = target is not None and target[0] == 'SEARCH'
-            if target is not None and target[0] in {'KIND', 'TILE', 'GRID'}:
+            if target is not None and target[0] in {'KIND', 'TILE', 'GRID', 'APPLY', 'CHOOSE'}:
                 _mat["pressed"] = target if target[0] != 'GRID' else None
                 if target[0] in {'TILE', 'GRID'}:
                     _mat["drag"] = (my, _mat["scroll"])
@@ -3442,12 +3951,16 @@ class VIEW3D_OT_phantom_simple_matcap_card(Operator):
                 _play("click")
                 if pressed[0] == 'KIND':
                     _mat.update(kind=pressed[1], search="", scroll=0.0)
+                elif pressed[0] == 'APPLY':
+                    _mat_targets["apply"] = pressed[1]
+                    if pressed[1] == 'CHOSEN' and not _mat_objects(context):
+                        # Nothing chosen yet: start from the selection.
+                        _mat_targets["chosen"] = [ob.name for ob in context.selected_objects
+                                                  if ob.type == 'MESH']
+                elif pressed[0] == 'CHOOSE':
+                    _open_mat_objects(context, g)
                 else:
-                    shading = context.space_data.shading
-                    # Matcaps show in Solid shading with Matcap lighting: switch there if need be.
-                    shading.type = 'SOLID'
-                    shading.light = 'MATCAP'
-                    shading.studio_light = pressed[1]
+                    _mat_apply(context, pressed[1])
             _redraw_simple()
             return {'RUNNING_MODAL'}
         if event.type == 'RIGHTMOUSE' and event.value == 'PRESS' and target and target[0] == 'TILE':
@@ -3468,17 +3981,21 @@ class VIEW3D_OT_phantom_simple_matcap_card(Operator):
 
 
 class VIEW3D_OT_phantom_simple_brush_strip(Operator):
-    """Every sculpt brush in a row: click one to use it and add it to the quick brushes"""
+    """Every sculpt brush (or the mask brushes): click one to use it and add it to the quick """ \
+        """brushes (or to mask with it when Ctrl is held); type to search"""
     bl_idname = "view3d.phantom_simple_brush_strip"
     bl_label = "Brushes"
     bl_options = {'INTERNAL'}
+
+    mask: bpy.props.BoolProperty(options={'SKIP_SAVE'})
 
     @classmethod
     def poll(cls, context):
         return _interactive(context)
 
     def invoke(self, context, event):
-        _strip.update(open=True, hover=None, pressed=None, drag=None)
+        _strip.update(open=True, hover=None, pressed=None, drag=None, mask=self.mask, search="",
+                      focus=False, scroll=0.0)
         # Redraw while the libraries are read (the first time, or after they changed).
         self.timer = context.window_manager.event_timer_add(0.25, window=context.window)
         context.area.tag_redraw()
@@ -3488,6 +4005,25 @@ class VIEW3D_OT_phantom_simple_brush_strip(Operator):
     def _end(self, context):
         context.window_manager.event_timer_remove(self.timer)
         _close_strip(context)
+
+    def _type(self, context, event):
+        """Keys while typing in the search field; every key goes there."""
+        if event.value != 'PRESS':
+            return True
+        if event.type in {'RET', 'NUMPAD_ENTER'}:
+            _strip["focus"] = False
+        elif event.type == 'ESC':
+            if _strip["search"]:
+                _strip["search"] = ""
+            else:
+                _strip["focus"] = False
+        elif event.type == 'BACK_SPACE':
+            _strip["search"] = "" if event.ctrl else _strip["search"][:-1]
+        elif event.unicode and event.unicode.isprintable() and not event.ctrl and not event.alt:
+            _strip["search"] += event.unicode
+        _strip["scroll"] = 0.0
+        context.area.tag_redraw()
+        return True
 
     def modal(self, context, event):
         if not _strip["open"] or not _interactive(context):
@@ -3511,28 +4047,37 @@ class VIEW3D_OT_phantom_simple_brush_strip(Operator):
         if event.type in {'MOUSEMOVE', 'INBETWEEN_MOUSEMOVE'}:
             drag = _strip["drag"]
             if drag is not None:
-                if abs(mx - drag[0]) > DRAG_THRESHOLD * s:
-                    # Dragging the row scrolls it, not a click.
+                if abs(my - drag[0]) > DRAG_THRESHOLD * s:
+                    # Dragging the grid scrolls it, not a click.
                     _strip["pressed"] = None
-                _strip["scroll"] = drag[1] - (mx - drag[0])
+                _strip["scroll"] = drag[1] + (my - drag[0])
                 context.area.tag_redraw()
                 return {'RUNNING_MODAL'}
-            if target != _strip["hover"]:
-                _strip["hover"] = target
+            hover = target if target and target[0] in {'TILE', 'SHAPE'} else None
+            if hover != _strip["hover"]:
+                _strip["hover"] = hover
                 context.area.tag_redraw()
             if inside:
                 _hide_cursor(context)
                 return {'RUNNING_MODAL'}
             return {'PASS_THROUGH'}
+        if _strip["focus"] and event.type not in {'LEFTMOUSE', 'RIGHTMOUSE', 'WHEELUPMOUSE',
+                                                  'WHEELDOWNMOUSE', 'TIMER'}:
+            self._type(context, event)
+            return {'RUNNING_MODAL'}
         if event.type == 'LEFTMOUSE' and event.value == 'PRESS':
             if not inside:
                 item, _on_bar = lay.hit(mx, my)
                 self._end(context)
-                if item is not None and item.key == 'ADD_SLOT':
-                    # The + again closes the strip.
+                if item is not None and item.key in {'ADD_SLOT', 'TOOLS'}:
+                    # The button that opened it closes it again.
                     return {'FINISHED'}
                 return {'FINISHED', 'PASS_THROUGH'}
-            _strip.update(pressed=target, drag=(mx, _strip["scroll"]))
+            _strip["focus"] = target is not None and target[0] == 'SEARCH'
+            if target is not None and target[0] in {'TILE', 'GRID', 'SHAPE'}:
+                _strip["pressed"] = target if target[0] != 'GRID' else None
+                if target[0] != 'SHAPE':
+                    _strip["drag"] = (my, _strip["scroll"])
             context.area.tag_redraw()
             return {'RUNNING_MODAL'}
         if event.type == 'LEFTMOUSE' and event.value == 'RELEASE':
@@ -3540,8 +4085,16 @@ class VIEW3D_OT_phantom_simple_brush_strip(Operator):
             _strip.update(pressed=None, drag=None)
             if pressed is not None and pressed == target:
                 _play("click")
+                if pressed[0] == 'SHAPE':
+                    bpy.ops.sculpt.phantom_mask_shape_set(shape=pressed[1])
+                    context.area.tag_redraw()
+                    return {'RUNNING_MODAL'}
+                entry = g["entries"][pressed[1]]
                 try:
-                    _strip_pick(context, g["entries"][pressed])
+                    if _strip["mask"]:
+                        _strip_pick_mask(entry)
+                    else:
+                        _strip_pick(context, entry)
                 except RuntimeError as ex:
                     self.report({'WARNING'}, str(ex).replace("Error: ", "").strip())
                 self._end(context)
@@ -3553,7 +4106,7 @@ class VIEW3D_OT_phantom_simple_brush_strip(Operator):
             self._end(context)
             return {'CANCELLED'}
         if event.type in {'WHEELUPMOUSE', 'WHEELDOWNMOUSE'} and inside:
-            step = 2 * (STRIP_TILE + STRIP_GAP) * s
+            step = (STRIP_TILE + STRIP_LABEL + STRIP_GAP) * s
             _strip["scroll"] += step if event.type == 'WHEELDOWNMOUSE' else -step
             context.area.tag_redraw()
             return {'RUNNING_MODAL'}
@@ -3626,6 +4179,8 @@ class VIEW3D_OT_phantom_simple_subtool(Operator):
             ob.hide_set(not ob.hide_get())
             return {'FINISHED'}
         if ob == context.active_object:
+            # Already the one: light it up anyway, to show which it is.
+            _flash_mesh()
             return {'FINISHED'}
         if ob.hide_get():
             ob.hide_set(False)
@@ -3636,7 +4191,33 @@ class VIEW3D_OT_phantom_simple_subtool(Operator):
         ob.select_set(True)
         context.view_layer.objects.active = ob
         bpy.ops.object.mode_set(mode='SCULPT')
+        _flash_mesh()
         return {'FINISHED'}
+
+
+# How long the picked mesh stays lit (the Workbench fades it out by then, #SceneState::sculpt_flash).
+FLASH_TIME = 1.3
+_flash = {"until": 0.0}
+
+
+def _flash_tick():
+    _redraw_simple()
+    if time.perf_counter() < _flash["until"]:
+        return 1.0 / 60.0
+    return None
+
+
+def _flash_mesh():
+    """Light up the mesh being sculpted for a moment (brighter, a warm gradient sweeping over it,
+    fading after a few seconds), so the one picked in the Scene window shows in the view."""
+    flash = getattr(bpy.types.WindowManager, "phantom_sculpt_flash", None)
+    if flash is None:
+        return
+    flash()
+    restart = time.perf_counter() >= _flash["until"]
+    _flash["until"] = time.perf_counter() + FLASH_TIME
+    if restart or not bpy.app.timers.is_registered(_flash_tick):
+        bpy.app.timers.register(_flash_tick, first_interval=0.0)
 
 
 class VIEW3D_OT_phantom_simple_subtool_delete(Operator):
@@ -3654,7 +4235,7 @@ class VIEW3D_OT_phantom_simple_subtool_delete(Operator):
     def invoke(self, context, event):
         # Asked first: while sculpting, undo keeps to the mesh being sculpted, so it can't bring a
         # deleted one back. In the simple view's style, like the Scene popup it comes from.
-        with _beside(context, 'SUBTOOLS'):
+        with _beside(context, 'SUBTOOLS', centered=False):
             return context.window_manager.invoke_confirm(
                 self, event, title=f"Delete {self.name}", message="It is removed from the scene",
                 confirm_text="Delete", icon='WARNING')
@@ -3896,6 +4477,78 @@ def _tool_category_set(_self, value):
         _tools_menu["category"] = _tools_menu["items"][value][0]
 
 
+def _pin_tool(idname, pin):
+    tools = list(_settings["left_tools"])
+    if pin and idname not in tools:
+        tools.append(idname)
+    elif not pin and idname in tools:
+        tools.remove(idname)
+    _settings["left_tools"] = tools
+    _save_settings()
+    _redraw_simple()
+
+
+class VIEW3D_OT_phantom_simple_pin_tool(Operator):
+    """Pin this tool to the left toolbar, or take it off"""
+    bl_idname = "view3d.phantom_simple_pin_tool"
+    bl_label = "Pin Tool"
+    bl_options = {'INTERNAL'}
+
+    idname: StringProperty(options={'SKIP_SAVE'})
+
+    def execute(self, context):
+        _pin_tool(self.idname, self.idname not in _settings["left_tools"])
+        return {'FINISHED'}
+
+
+class VIEW3D_PT_phantom_simple_alpha(Panel):
+    """The brush's alpha: pick one (a large preview, centered), then how it maps"""
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'WINDOW'
+    bl_label = "Alpha"
+    bl_ui_units_x = 12
+
+    def draw(self, context):
+        layout = self.layout
+        brush = _brush(context)
+        layout.label(text="Alpha")
+        if brush is None:
+            layout.label(text="No brush")
+            return
+        slot = brush.texture_slot
+        if hasattr(brush, "zbp_alpha"):
+            # The ZBrush alphas: a large preview, centered, opening a grid of them.
+            row = layout.row()
+            row.alignment = 'CENTER'
+            row.template_icon_view(brush, "zbp_alpha", show_labels=True, scale=7.0,
+                                   scale_popup=4.0)
+            if brush.get("zbp_alpha"):
+                row = layout.row()
+                row.alignment = 'CENTER'
+                row.operator("brush.zbp_clear_alpha", text="Clear", icon='X')
+        else:
+            layout.template_ID_preview(slot, "texture", new="texture.new", rows=3, cols=6)
+        layout.separator()
+        col = layout.column()
+        col.use_property_split = True
+        col.use_property_decorate = False
+        col.prop(slot, "map_mode", text="Mapping")
+        if hasattr(brush, "zbp_alpha_tile") and brush.get("zbp_alpha"):
+            col.prop(brush, "zbp_alpha_tile", text="Tile")
+        if slot.has_texture_angle:
+            col.prop(slot, "angle", text="Angle")
+            if slot.has_texture_angle_source:
+                sub = col.column(heading="Angle From")
+                sub.prop(slot, "use_rake", text="Stroke")
+                if brush.sculpt_capabilities.has_random_texture_angle and \
+                        slot.has_random_texture_angle:
+                    sub.prop(slot, "use_random", text="Random")
+                    if slot.use_random:
+                        col.prop(slot, "random_angle", text="Random Angle")
+        col.prop(slot, "scale", text="Size")
+        col.prop(brush, "texture_sample_bias", slider=True, text="Sample Bias")
+
+
 class VIEW3D_PT_phantom_simple_tools(Panel):
     """Every Sculpt Mode tool, by kind, as ZBrush for iPad's tool menu"""
     bl_space_type = 'VIEW_3D'
@@ -3926,13 +4579,28 @@ class VIEW3D_PT_phantom_simple_tools(Panel):
             if current != "All" and category != current:
                 continue
             icon_value = ToolSelectPanelHelper._icon_value_from_icon_handle(item.icon)
-            col.operator("wm.tool_set_by_id", text=item.label or item.idname, icon_value=icon_value,
-                         depress=(item.idname == active_id)).name = item.idname
+            row = col.row(align=True)
+            row.operator("wm.tool_set_by_id", text=item.label or item.idname,
+                         icon_value=icon_value, depress=(item.idname == active_id)).name = item.idname
+            # Pin it to the left toolbar (or take it off).
+            pinned = item.idname in _settings["left_tools"]
+            row.operator(VIEW3D_OT_phantom_simple_pin_tool.bl_idname, text="",
+                         icon='PINNED' if pinned else 'UNPINNED', emboss=False).idname = item.idname
         if current in {TOOL_CATEGORIES[0][0], "All"}:
             # The brushes themselves (the Brush button's library used to open from the toolbar).
             col.separator()
             col.operator("wm.call_asset_shelf_popover", text="Brush Library",
                          icon='ASSET_MANAGER').name = BRUSH_SHELF
+
+
+class VIEW3D_MT_phantom_simple_blend(Menu):
+    """How the brush's color mixes with what is under it"""
+    bl_label = "Blend"
+
+    def draw(self, context):
+        brush = _brush(context)
+        if brush is not None:
+            self.layout.props_enum(brush, "blend")
 
 
 class VIEW3D_PT_phantom_simple_quick_menu(Panel):
@@ -4155,6 +4823,9 @@ SCENE_ACTIONS = (
     ('FLOOR', "On Floor", "Stand the mesh on the floor (its lowest point at the grid)"),
     ('SHOW_ALL', "Show All", "Show every mesh"),
     ('HIDE_OTHERS', "Hide Others", "Hide every mesh but this one"),
+    ('SELECT_ALL', "Select All", "Select every shown mesh (the one being sculpted stays active)"),
+    ('DELETE_ALL', "Delete All", "Delete every mesh but the one being sculpted (there has to be one "
+     "to sculpt)"),
 )
 
 
@@ -4175,6 +4846,20 @@ class VIEW3D_OT_phantom_simple_scene_action(Operator):
     def poll(cls, context):
         ob = context.active_object
         return ob is not None and ob.type == 'MESH'
+
+    def invoke(self, context, event):
+        if self.action == 'DELETE_ALL':
+            # Asked first: while sculpting, undo keeps to the mesh being sculpted.
+            count = sum(1 for other in _scene_meshes(context) if other != context.active_object)
+            if not count:
+                self.report({'INFO'}, "There is only the mesh being sculpted")
+                return {'CANCELLED'}
+            with _beside(context, 'SUBTOOLS', centered=False):
+                return context.window_manager.invoke_confirm(
+                    self, event, title=f"Delete {count} mesh" + ("es" if count != 1 else ""),
+                    message=f"All but {context.active_object.name}, which you are sculpting",
+                    confirm_text="Delete All", icon='WARNING')
+        return self.execute(context)
 
     def execute(self, context):
         ob = context.active_object
@@ -4277,6 +4962,20 @@ class VIEW3D_OT_phantom_simple_scene_action(Operator):
         for other in _scene_meshes(context):
             if other != ob:
                 other.hide_set(True)
+
+    def _select_all(self, context, ob):
+        for other in _scene_meshes(context):
+            if not other.hide_get():
+                other.select_set(True)
+        ob.select_set(True)
+
+    def _delete_all(self, context, ob):
+        others = [other for other in _scene_meshes(context) if other != ob]
+        if _place["object"] in {other.name for other in others}:
+            _place.update(object=None, positions=None, tool=None, hover=None, pressed=None)
+        for other in others:
+            bpy.data.objects.remove(other, do_unlink=True)
+        self.report({'INFO'}, f"Deleted {len(others)} mesh" + ("es" if len(others) != 1 else ""))
 
 
 class PhantomSimpleSceneRow(bpy.types.PropertyGroup):
@@ -4495,6 +5194,11 @@ class VIEW3D_OT_phantom_simple_scene_plain_delete(Operator):
             if row is None:
                 return {'PASS_THROUGH'}
             self.name, self.folder = row.name, row.kind == 'FOLDER'
+        if event.type == 'DEL':
+            # The Delete key: straight away (undo brings it back), as in a file list.
+            if not self.folder:
+                return bpy.ops.view3d.phantom_simple_subtool_delete('EXEC_DEFAULT', name=self.name)
+            return self.execute(context)
         if not self.folder:
             # A mesh: the Scene window's delete, which asks first and keeps something to sculpt.
             return bpy.ops.view3d.phantom_simple_subtool_delete('INVOKE_DEFAULT', name=self.name)
@@ -4585,10 +5289,14 @@ class VIEW3D_MT_phantom_simple_scene_more(Menu):
         op = VIEW3D_OT_phantom_simple_scene_action.bl_idname
         layout.operator(op, text="Show All", icon='HIDE_OFF').action = 'SHOW_ALL'
         layout.operator(op, text="Hide Others", icon='HIDE_ON').action = 'HIDE_OTHERS'
+        layout.separator()
+        layout.operator(op, text="Select All", icon='RESTRICT_SELECT_OFF').action = 'SELECT_ALL'
         if ob is not None:
             layout.separator()
             layout.operator(VIEW3D_OT_phantom_simple_subtool_delete.bl_idname, text="Delete",
                             icon='TRASH').name = ob.name
+        layout.operator_context = 'INVOKE_DEFAULT'
+        layout.operator(op, text="Delete All", icon='TRASH').action = 'DELETE_ALL'
 
 
 class VIEW3D_MT_phantom_simple_boolean(Menu):
@@ -4630,9 +5338,11 @@ class VIEW3D_PT_phantom_simple_subtools(Panel):
         wm = context.window_manager
         rows = len(wm.phantom_simple_scene_rows)
         if rows:
+            # Up to SCENE_ROWS rows, then it scrolls: Actions and Polygroups stay in view.
+            shown = min(rows, SCENE_ROWS)
             layout.template_list(VIEW3D_UL_phantom_simple_scene_plain.__name__, "", wm,
                                  "phantom_simple_scene_rows", wm, "phantom_simple_scene_index",
-                                 rows=rows, maxrows=rows, sort_lock=True)
+                                 rows=shown, maxrows=shown, sort_lock=True)
         else:
             layout.label(text="No meshes")
 
@@ -4653,6 +5363,67 @@ class VIEW3D_PT_phantom_simple_subtools(Panel):
             col.separator()
             col.operator(op, text="Center", icon='PIVOT_CURSOR').action = 'CENTER'
             col.operator(op, text="On Floor", icon='TRIA_DOWN').action = 'FLOOR'
+
+        header, body = layout.panel("phantom_simple_scene_masking", default_closed=True)
+        header.label(text="Masking")
+        if body is not None:
+            col = body.column(align=True)
+            col.scale_y = 1.3
+            fill = "paint.mask_flood_fill"
+            col.operator(fill, text="Invert", icon='IMAGE_ALPHA').mode = 'INVERT'
+            op = col.operator(fill, text="Clear", icon='X')
+            op.mode, op.value = 'VALUE', 0.0
+            op = col.operator(fill, text="Fill", icon='MOD_MASK')
+            op.mode, op.value = 'VALUE', 1.0
+            col.separator()
+            mask_filter = "sculpt.mask_filter"
+            for kind, label, icon in (('GROW', "Grow", 'ADD'), ('SHRINK', "Shrink", 'REMOVE'),
+                                      ('SMOOTH', "Smooth", 'SMOOTHCURVE'),
+                                      ('SHARPEN', "Sharpen", 'SHARPCURVE'),
+                                      ('CONTRAST_INCREASE', "More Contrast", 'TRIA_UP'),
+                                      ('CONTRAST_DECREASE', "Less Contrast", 'TRIA_DOWN')):
+                col.operator(mask_filter, text=label, icon=icon).filter_type = kind
+            col.separator()
+            op = col.operator("sculpt.mask_from_cavity", text="From Cavity", icon='SHADING_RENDERED')
+            op.mix_mode, op.mix_factor = 'MIX', 1.0
+            col.operator("sculpt.phantom_mask_to_face_set", text="To Polygroup", icon='FACE_MAPS')
+            col.separator()
+            op = col.operator("paint.hide_show_masked", text="Hide Masked", icon='HIDE_ON')
+            op.action = 'HIDE'
+            col.operator("paint.hide_show_all", text="Unhide All", icon='HIDE_OFF').action = 'SHOW'
+            col.separator()
+            col.operator_context = 'INVOKE_DEFAULT'
+            col.operator("sculpt.phantom_extract", text="Extract", icon='MOD_SOLIDIFY')
+            col.operator("sculpt.paint_mask_slice", text="Slice to Object",
+                         icon='MOD_BOOLEAN').new_object = True
+            overlay = context.space_data.overlay if context.space_data else None
+            if overlay is not None:
+                col.prop(overlay, "show_sculpt_mask", text="Show Mask", toggle=True, icon='MOD_MASK')
+
+        header, body = layout.panel("phantom_simple_scene_polygroups", default_closed=True)
+        header.label(text="Polygroups")
+        if body is not None:
+            col = body.column(align=True)
+            col.scale_y = 1.3
+            col.operator("sculpt.phantom_mask_to_face_set", text="From Mask", icon='MOD_MASK')
+            col.operator("sculpt.face_sets_create", text="From Visible",
+                         icon='HIDE_OFF').mode = 'VISIBLE'
+            col.separator()
+            init = "sculpt.face_sets_init"
+            for mode, label, icon in (('LOOSE_PARTS', "From Loose Parts", 'MOD_EXPLODE'),
+                                      ('MATERIALS', "From Materials", 'MATERIAL'),
+                                      ('NORMALS', "From Normals", 'NORMALS_FACE'),
+                                      ('UV_SEAMS', "From UV Seams", 'UV'),
+                                      ('CREASES', "From Creases", 'EDGESEL'),
+                                      ('SHARP_EDGES', "From Sharp Edges", 'SHARPCURVE'),
+                                      ('FACE_SET_BOUNDARIES', "Split at Boundaries", 'FACE_MAPS')):
+                col.operator(init, text=label, icon=icon).mode = mode
+            col.separator()
+            col.operator("sculpt.face_sets_randomize_colors", text="New Colors", icon='COLOR')
+            overlay = context.space_data.overlay if context.space_data else None
+            if overlay is not None:
+                col.prop(overlay, "show_sculpt_face_sets", text="Show Polygroups", toggle=True,
+                         icon='FACE_MAPS')
 
 
 class TOPBAR_PT_phantom_simple_customize(Panel):
@@ -4677,6 +5448,11 @@ class TOPBAR_PT_phantom_simple_customize(Panel):
             sub.active = wm.phantom_silhouette
             sub.prop(context.preferences, "show_silhouette_always", text="Silhouette in Every Mode")
         col.prop(context.preferences.view, "show_navigate_head", text="Head Navigation Gizmo")
+        # The keymap's option (Preferences > Keymap), here too: right-drag navigates, for tablets.
+        keyconfig = wm.keyconfigs.active
+        kc_prefs = keyconfig.preferences if keyconfig else None
+        if kc_prefs is not None and hasattr(kc_prefs, "phantom_rmb_navigation"):
+            col.prop(kc_prefs, "phantom_rmb_navigation", text="Right Mouse Navigation (Tablet)")
         layout.separator()
         sub = layout.column()
         sub.enabled = False
@@ -4849,7 +5625,13 @@ _PROPS = {
 
 classes = (
     TOPBAR_OT_phantom_simple_file_menu,
+    VIEW3D_OT_phantom_simple_pin_tool,
+    VIEW3D_PT_phantom_simple_alpha,
+    VIEW3D_OT_phantom_simple_mat_choose,
+    VIEW3D_UL_phantom_simple_mat_objects,
+    VIEW3D_PT_phantom_simple_mat_objects,
     VIEW3D_PT_phantom_simple_tools,
+    VIEW3D_MT_phantom_simple_blend,
     VIEW3D_OT_phantom_simple_view_toggle,
     VIEW3D_OT_phantom_simple_press,
     VIEW3D_OT_phantom_simple_options,
@@ -4885,6 +5667,8 @@ classes = (
 def register():
     global _draw_handle
     _load_settings()
+    # The brush Ctrl masks with, as chosen last time.
+    _apply_mask_brush()
     for prop_name, (key, name, description) in _PROPS.items():
         get, set_ = _make_accessors(key)
         setattr(bpy.types.WindowManager, prop_name,
@@ -4892,6 +5676,9 @@ def register():
     bpy.types.WindowManager.phantom_simple_scene_index = bpy.props.IntProperty(
         name="Mesh", description="The mesh being sculpted (the Scene window's list)",
         get=_scene_index_get, set=_scene_index_set)
+    # The Materials card's list of objects to choose: checks, no highlighted row.
+    bpy.types.WindowManager.phantom_simple_mat_index = bpy.props.IntProperty(
+        name="Object", get=lambda _self: -1, set=_mat_index_set)
     bpy.types.WindowManager.phantom_simple_tool_category = EnumProperty(
         name="Tools", description="Which tools the tool menu shows", items=_tool_category_items,
         get=_tool_category_get, set=_tool_category_set)
@@ -4905,6 +5692,9 @@ def register():
     bpy.app.handlers.save_pre.append(_restore_brush_circle)
     bpy.app.handlers.load_pre.append(_restore_brush_circle)
     _draw_handle = bpy.types.SpaceView3D.draw_handler_add(draw_callback, (), 'WINDOW', 'POST_PIXEL')
+    global _glass_handle
+    _glass_handle = bpy.types.SpaceView3D.draw_handler_add(glass_prepare_callback, (), 'WINDOW',
+                                                           'POST_VIEW')
     if not bpy.app.background:
         bpy.app.timers.register(_watch, first_interval=1.0, persistent=True)
 
@@ -4928,6 +5718,10 @@ def unregister():
     if _draw_handle is not None:
         bpy.types.SpaceView3D.draw_handler_remove(_draw_handle, 'WINDOW')
         _draw_handle = None
+    global _glass_handle
+    if _glass_handle is not None:
+        bpy.types.SpaceView3D.draw_handler_remove(_glass_handle, 'WINDOW')
+        _glass_handle = None
     for timer in (_watch, _anim_tick, _load_pending):
         if bpy.app.timers.is_registered(timer):
             bpy.app.timers.unregister(timer)
@@ -4946,4 +5740,5 @@ def unregister():
         delattr(bpy.types.WindowManager, prop_name)
     del bpy.types.WindowManager.phantom_simple_tool_category
     del bpy.types.WindowManager.phantom_simple_scene_index
+    del bpy.types.WindowManager.phantom_simple_mat_index
     _forget_thumbnails()
